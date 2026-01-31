@@ -99,6 +99,114 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def stat_fingerprint(path: Path) -> Tuple[int, int, int]:
+    st = path.stat()
+    mtime = int(st.st_mtime * 1000)
+    ctime = int(getattr(st, "st_ctime", st.st_mtime) * 1000)
+    size = int(st.st_size)
+    return mtime, ctime, size
+
+
+def is_same_file(master: Path, remote: Path, compare_ctime: bool = True) -> bool:
+    try:
+        m_mtime, m_ctime, m_size = stat_fingerprint(master)
+        r_mtime, r_ctime, r_size = stat_fingerprint(remote)
+    except FileNotFoundError:
+        return False
+    if compare_ctime:
+        return (m_mtime == r_mtime) and (m_ctime == r_ctime) and (m_size == r_size)
+    return (m_mtime == r_mtime) and (m_size == r_size)
+
+
+def copy_file_atomic(src: Path, dst: Path) -> None:
+    ensure_dir(dst.parent)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+    shutil.copy2(src, tmp)
+    bak = dst.with_suffix(dst.suffix + ".bak")
+    try:
+        if dst.exists():
+            try:
+                if bak.exists():
+                    bak.unlink()
+            except Exception:
+                pass
+            try:
+                dst.replace(bak)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    tmp.replace(dst)
+
+
+SYNC_EXTS = {".mp4", ".mov", ".jpg", ".jpeg", ".png", ".webp"}
+
+
+def sync_mirror_dir(
+    master_dir: Path,
+    remote_dir: Path,
+    logger=None,
+    dry_run: bool = False,
+    compare_ctime: bool = True,
+) -> Dict[str, int]:
+    result = {"copied": 0, "updated": 0, "deleted": 0, "skipped": 0, "errors": 0}
+    ensure_dir(remote_dir)
+
+    master_files: Dict[str, Path] = {}
+    for entry in master_dir.rglob("*"):
+        if entry.is_file() and entry.suffix.lower() in SYNC_EXTS:
+            rel = entry.relative_to(master_dir).as_posix()
+            master_files[rel] = entry
+
+    remote_files: Dict[str, Path] = {}
+    for entry in remote_dir.rglob("*"):
+        if entry.is_file() and entry.suffix.lower() in SYNC_EXTS:
+            rel = entry.relative_to(remote_dir).as_posix()
+            remote_files[rel] = entry
+
+    for rel, rp in sorted(remote_files.items()):
+        if rel not in master_files:
+            try:
+                if logger:
+                    logger(f"[DEL] {rel}")
+                if not dry_run:
+                    rp.unlink()
+                result["deleted"] += 1
+            except Exception as exc:
+                if logger:
+                    logger(f"[ERR] delete {rel}: {exc}")
+                result["errors"] += 1
+
+    for rel, mp in sorted(master_files.items()):
+        rp = remote_dir / Path(rel)
+        try:
+            if rp.exists():
+                if is_same_file(mp, rp, compare_ctime=compare_ctime):
+                    result["skipped"] += 1
+                else:
+                    if logger:
+                        logger(f"[UPD] {rel}")
+                    if not dry_run:
+                        copy_file_atomic(mp, rp)
+                    result["updated"] += 1
+            else:
+                if logger:
+                    logger(f"[ADD] {rel}")
+                if not dry_run:
+                    copy_file_atomic(mp, rp)
+                result["copied"] += 1
+        except Exception as exc:
+            if logger:
+                logger(f"[ERR] copy {rel}: {exc}")
+            result["errors"] += 1
+
+    return result
+
 def write_json_atomic(path: Path, payload: dict) -> None:
     ensure_dir(path.parent)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -1404,75 +1512,89 @@ QPushButton:disabled {
         self._log_command_accept(command)
         self._log_command_run(command)
         timeout = self.settings.get("network_timeout_seconds", 4)
+        max_workers = self.settings.get("sync_workers", 4)
         futures = {}
         ok_count = 0
         skip_count = 0
         err_count = 0
-        for state in self.sign_states.values():
-            if not state.exists:
-                skip_count += 1
-                self._log_sign_skip(state, "到達不可")
-                continue
-            if not state.enabled:
-                skip_count += 1
-                self._log_sign_skip(state, "非アクティブ")
-                continue
-            futures[self._executor.submit(self.sync_sign_content, state)] = state
-        for future, state in futures.items():
-            try:
-                ok, message = future.result(timeout=timeout)
-                state.last_error = message if not ok else ""
-                if ok:
-                    ok_count += 1
-                    self._log_sign_ok(state, "同期完了")
-                else:
-                    if "共有" in message or "到達" in message:
-                        skip_count += 1
-                        self._log_sign_skip(state, f"到達不可 ({message})")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for state in self.sign_states.values():
+                if not state.exists:
+                    skip_count += 1
+                    self._log_sign_skip(state, "到達不可")
+                    continue
+                if not state.enabled:
+                    skip_count += 1
+                    self._log_sign_skip(state, "非アクティブ")
+                    continue
+                futures[executor.submit(self.sync_sign_content, state)] = state
+            for future, state in futures.items():
+                try:
+                    ok, message = future.result(timeout=timeout)
+                    state.last_error = message if not ok else ""
+                    if ok:
+                        ok_count += 1
+                        self._log_sign_ok(state, "同期完了")
                     else:
-                        err_count += 1
-                        self._log_sign_error(state, message)
-            except Exception as exc:
-                state.last_error = str(exc)
-                err_count += 1
-                self._log_sign_error(state, str(exc))
-            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+                        if "共有" in message or "到達" in message:
+                            skip_count += 1
+                            self._log_sign_skip(state, f"到達不可 ({message})")
+                        else:
+                            err_count += 1
+                            self._log_sign_error(state, message)
+                except Exception as exc:
+                    state.last_error = str(exc)
+                    err_count += 1
+                    self._log_sign_error(state, str(exc))
+                self._update_column(int(state.name.replace("Sign", "")) - 1, state)
         self._log_command_done(command, ok_count, skip_count, err_count)
 
     def sync_sign_content(self, state: SignState) -> Tuple[bool, str]:
+        logging.info("[RUN] %s 同期開始", state.name)
         ok, msg = self.is_share_reachable(state)
         if not ok:
             return False, msg
-        staging_base = self.settings.get("sync_staging_subdir", "staging\\sync_tmp")
+        compare_ctime = self.settings.get("compare_ctime", True)
+        total_copied = 0
+        total_updated = 0
+        total_deleted = 0
+        total_skipped = 0
+        total_errors = 0
+
+        def log_line(text: str) -> None:
+            logging.info("%s", text)
+
         for channel in CHANNELS:
             local_dir = CONTENT_DIR / channel
             if not local_dir.exists():
                 continue
-            remote_staging = build_unc_path(state.ip, state.share_name, f"{staging_base}\\{channel}")
             remote_content = build_unc_path(state.ip, state.share_name, f"content\\{channel}")
-            if not Path(remote_content).exists():
+            remote_dir = Path(remote_content)
+            if not remote_dir.exists():
                 return False, f"remote content missing: {remote_content}"
-            if not Path(remote_staging).exists():
-                return False, f"remote staging missing: {remote_staging}"
-            for entry in local_dir.iterdir():
-                if entry.is_dir():
-                    continue
-                remote_file = Path(remote_content) / entry.name
-                if self.file_needs_sync(entry, remote_file):
-                    shutil.copy2(entry, Path(remote_staging) / entry.name)
-                    shutil.copy2(Path(remote_staging) / entry.name, remote_file)
-        logging.info("Content sync completed for %s", state.name)
+            result = sync_mirror_dir(
+                local_dir,
+                remote_dir,
+                logger=log_line,
+                compare_ctime=compare_ctime,
+            )
+            total_copied += result["copied"]
+            total_updated += result["updated"]
+            total_deleted += result["deleted"]
+            total_skipped += result["skipped"]
+            total_errors += result["errors"]
+        logging.info(
+            "[DONE] %s 完了 ADD=%d UPD=%d DEL=%d SKIP=%d ERR=%d",
+            state.name,
+            total_copied,
+            total_updated,
+            total_deleted,
+            total_skipped,
+            total_errors,
+        )
+        if total_errors:
+            return False, "sync errors"
         return True, ""
-
-    def file_needs_sync(self, local_file: Path, remote_file: Path) -> bool:
-        if not remote_file.exists():
-            return True
-        try:
-            local_stat = local_file.stat()
-            remote_stat = remote_file.stat()
-        except Exception:
-            return True
-        return local_stat.st_size != remote_stat.st_size or int(local_stat.st_mtime) != int(remote_stat.st_mtime)
 
     def collect_logs(self) -> None:
         command = "LOGファイル取得"
