@@ -14,6 +14,14 @@ from typing import Dict, List, Optional, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+try:
+    from PySide6 import QtMultimedia, QtMultimediaWidgets
+    HAS_QTMULTIMEDIA = True
+except Exception:
+    QtMultimedia = None
+    QtMultimediaWidgets = None
+    HAS_QTMULTIMEDIA = False
+
 if importlib.util.find_spec("cv2"):
     import cv2
 else:
@@ -41,6 +49,10 @@ AI_STATUS_PATH = CONFIG_DIR / "ai_status.json"
 SETTINGS_PATH = CONFIG_DIR / "controller_settings.json"
 
 CHANNELS = [f"ch{idx:02d}" for idx in range(1, 21)]
+NORMAL_CHOICES = [f"ch{n:02d}" for n in range(5, 11)]
+TIMER_CHOICES = [f"ch{n:02d}" for n in range(11, 21)]
+AI_CHOICES = ["通常時と同じ", "ch02", "ch03", "ch04"]
+SLEEP_FIXED = "ch01"
 TIMER_CHANNEL_COLORS = {
     "ch11": QtGui.QColor(220, 50, 32),
     "ch12": QtGui.QColor(255, 140, 0),
@@ -120,6 +132,26 @@ def parse_time(value: str) -> time:
     return datetime.strptime(value, "%H:%M").time()
 
 
+def normalize_hhmm(text: str) -> str:
+    s = (text or "").strip()
+    s = s.replace("：", ":")
+    if ":" in s:
+        parts = s.split(":")
+        if len(parts) != 2:
+            raise ValueError("時刻形式が不正です")
+        hh = parts[0].zfill(2)
+        mm = parts[1].zfill(2)
+    else:
+        if len(s) != 4 or not s.isdigit():
+            raise ValueError("時刻は 00:00 または 0000 形式で入力してください")
+        hh, mm = s[:2], s[2:]
+    h = int(hh)
+    m = int(mm)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError("時刻の範囲が不正です")
+    return f"{h:02d}:{m:02d}"
+
+
 def time_in_range(now: time, start: time, end: time) -> bool:
     if start <= end:
         return start <= now <= end
@@ -158,8 +190,11 @@ def compute_active_channel(
     if level >= 2:
         ai_channels = sign_config.get("ai_channels", {})
         key = f"level{level}"
-        if key in ai_channels:
-            return ai_channels[key]
+        ai_choice = ai_channels.get(key)
+        if ai_choice == "same_as_normal":
+            return sign_config.get("normal_channel", "ch05")
+        if ai_choice:
+            return ai_choice
 
     matched_channel = None
     for rule in sign_config.get("timer_rules", []):
@@ -197,52 +232,43 @@ class ConfigDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
 
-        self.enabled_checkbox = QtWidgets.QCheckBox("有効")
-        self.enabled_checkbox.setChecked(config.get("enabled", True))
-        form.addRow("有効/無効", self.enabled_checkbox)
-
         self.sleep_combo = QtWidgets.QComboBox()
-        self.sleep_combo.addItems(CHANNELS)
-        self.sleep_combo.setCurrentText(config.get("sleep_channel", "ch01"))
+        self.sleep_combo.addItems([SLEEP_FIXED])
+        self.sleep_combo.setCurrentText(SLEEP_FIXED)
+        self.sleep_combo.setEnabled(False)
         form.addRow("休眠チャンネル", self.sleep_combo)
 
         self.normal_combo = QtWidgets.QComboBox()
-        self.normal_combo.addItems(CHANNELS)
-        self.normal_combo.setCurrentText(config.get("normal_channel", "ch05"))
+        self.normal_combo.addItems(NORMAL_CHOICES)
+        normal_value = config.get("normal_channel", "ch05")
+        if normal_value not in NORMAL_CHOICES:
+            normal_value = NORMAL_CHOICES[0]
+        self.normal_combo.setCurrentText(normal_value)
         form.addRow("通常チャンネル", self.normal_combo)
 
         self.ai_level2 = QtWidgets.QComboBox()
-        self.ai_level2.addItems(CHANNELS)
-        self.ai_level2.setCurrentText(config.get("ai_channels", {}).get("level2", "ch02"))
+        self.ai_level2.addItems(AI_CHOICES)
+        self.ai_level2.setCurrentText(self._ai_choice_to_display(config.get("ai_channels", {}).get("level2")))
         form.addRow("AI LV2", self.ai_level2)
 
         self.ai_level3 = QtWidgets.QComboBox()
-        self.ai_level3.addItems(CHANNELS)
-        self.ai_level3.setCurrentText(config.get("ai_channels", {}).get("level3", "ch03"))
+        self.ai_level3.addItems(AI_CHOICES)
+        self.ai_level3.setCurrentText(self._ai_choice_to_display(config.get("ai_channels", {}).get("level3")))
         form.addRow("AI LV3", self.ai_level3)
 
         self.ai_level4 = QtWidgets.QComboBox()
-        self.ai_level4.addItems(CHANNELS)
-        self.ai_level4.setCurrentText(config.get("ai_channels", {}).get("level4", "ch04"))
+        self.ai_level4.addItems(AI_CHOICES)
+        self.ai_level4.setCurrentText(self._ai_choice_to_display(config.get("ai_channels", {}).get("level4")))
         form.addRow("AI LV4", self.ai_level4)
 
         layout.addLayout(form)
 
         layout.addWidget(QtWidgets.QLabel("休眠時間帯"))
-        self.sleep_table = QtWidgets.QTableWidget(0, 2)
+        self.sleep_table = QtWidgets.QTableWidget(1, 2)
         self.sleep_table.setHorizontalHeaderLabels(["開始", "終了"])
         self.sleep_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         layout.addWidget(self.sleep_table)
-
-        for rule in config.get("sleep_rules", []):
-            self.add_sleep_rule(rule)
-
-        sleep_buttons = QtWidgets.QHBoxLayout()
-        sleep_add = QtWidgets.QPushButton("追加")
-        sleep_remove = QtWidgets.QPushButton("削除")
-        sleep_buttons.addWidget(sleep_add)
-        sleep_buttons.addWidget(sleep_remove)
-        layout.addLayout(sleep_buttons)
+        self._set_sleep_rule(config.get("sleep_rules", []))
 
         self.timer_table = QtWidgets.QTableWidget(0, 3)
         self.timer_table.setHorizontalHeaderLabels(["開始", "終了", "CH"])
@@ -260,10 +286,10 @@ class ConfigDialog(QtWidgets.QDialog):
         buttons_layout.addWidget(remove_button)
         layout.addLayout(buttons_layout)
 
-        add_button.clicked.connect(lambda: self.add_timer_rule({"start": "00:00", "end": "00:00", "channel": "ch01"}))
+        add_button.clicked.connect(
+            lambda: self.add_timer_rule({"start": "00:00", "end": "00:00", "channel": TIMER_CHOICES[0]})
+        )
         remove_button.clicked.connect(self.remove_selected_rule)
-        sleep_add.clicked.connect(lambda: self.add_sleep_rule({"start": "00:00", "end": "00:00"}))
-        sleep_remove.clicked.connect(self.remove_selected_sleep_rule)
 
         action_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("保存")
@@ -273,67 +299,93 @@ class ConfigDialog(QtWidgets.QDialog):
         action_layout.addWidget(cancel_button)
         layout.addLayout(action_layout)
 
-        save_button.clicked.connect(self.accept)
+        self._built_config = None
+        save_button.clicked.connect(self._on_save)
         cancel_button.clicked.connect(self.reject)
+
+    def _ai_choice_to_display(self, value: Optional[str]) -> str:
+        if value == "same_as_normal":
+            return AI_CHOICES[0]
+        if value in AI_CHOICES:
+            return value
+        return AI_CHOICES[1]
+
+    def _set_sleep_rule(self, rules: List[dict]) -> None:
+        default_rule = {"start": "00:00", "end": "05:00"}
+        rule = rules[0] if rules else default_rule
+        self.sleep_table.setItem(0, 0, QtWidgets.QTableWidgetItem(rule.get("start", "")))
+        self.sleep_table.setItem(0, 1, QtWidgets.QTableWidgetItem(rule.get("end", "")))
 
     def add_timer_rule(self, rule: dict) -> None:
         row = self.timer_table.rowCount()
         self.timer_table.insertRow(row)
         self.timer_table.setItem(row, 0, QtWidgets.QTableWidgetItem(rule.get("start", "")))
         self.timer_table.setItem(row, 1, QtWidgets.QTableWidgetItem(rule.get("end", "")))
-        self.timer_table.setItem(row, 2, QtWidgets.QTableWidgetItem(rule.get("channel", "")))
-
-    def add_sleep_rule(self, rule: dict) -> None:
-        row = self.sleep_table.rowCount()
-        self.sleep_table.insertRow(row)
-        self.sleep_table.setItem(row, 0, QtWidgets.QTableWidgetItem(rule.get("start", "")))
-        self.sleep_table.setItem(row, 1, QtWidgets.QTableWidgetItem(rule.get("end", "")))
+        channel_combo = QtWidgets.QComboBox()
+        channel_combo.addItems(TIMER_CHOICES)
+        channel_value = rule.get("channel", TIMER_CHOICES[0])
+        if channel_value not in TIMER_CHOICES:
+            channel_value = TIMER_CHOICES[0]
+        channel_combo.setCurrentText(channel_value)
+        self.timer_table.setCellWidget(row, 2, channel_combo)
 
     def remove_selected_rule(self) -> None:
         row = self.timer_table.currentRow()
         if row >= 0:
             self.timer_table.removeRow(row)
 
-    def remove_selected_sleep_rule(self) -> None:
-        row = self.sleep_table.currentRow()
-        if row >= 0:
-            self.sleep_table.removeRow(row)
+    def _on_save(self) -> None:
+        try:
+            self._built_config = self.build_config()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "入力エラー", str(exc))
+            return
+        self.accept()
+
+    def get_config(self) -> Optional[dict]:
+        return self._built_config
 
     def build_config(self) -> dict:
         timer_rules = []
         for row in range(self.timer_table.rowCount()):
             start_item = self.timer_table.item(row, 0)
             end_item = self.timer_table.item(row, 1)
-            channel_item = self.timer_table.item(row, 2)
+            channel_combo = self.timer_table.cellWidget(row, 2)
+            start_text = start_item.text().strip() if start_item else ""
+            end_text = end_item.text().strip() if end_item else ""
+            channel_text = channel_combo.currentText().strip() if channel_combo else ""
+            if not start_text and not end_text and not channel_text:
+                continue
+            if not start_text or not end_text:
+                raise ValueError("タイマー設定の時刻を入力してください")
             timer_rules.append(
                 {
-                    "start": start_item.text() if start_item else "",
-                    "end": end_item.text() if end_item else "",
-                    "channel": channel_item.text() if channel_item else "",
+                    "start": normalize_hhmm(start_text),
+                    "end": normalize_hhmm(end_text),
+                    "channel": channel_text,
                 }
             )
-        sleep_rules = []
-        for row in range(self.sleep_table.rowCount()):
-            start_item = self.sleep_table.item(row, 0)
-            end_item = self.sleep_table.item(row, 1)
-            sleep_rules.append(
-                {
-                    "start": start_item.text() if start_item else "",
-                    "end": end_item.text() if end_item else "",
-                }
-            )
+        start_item = self.sleep_table.item(0, 0)
+        end_item = self.sleep_table.item(0, 1)
+        sleep_start = normalize_hhmm(start_item.text() if start_item else "")
+        sleep_end = normalize_hhmm(end_item.text() if end_item else "")
+        sleep_rules = [{"start": sleep_start, "end": sleep_end}]
         return {
-            "enabled": self.enabled_checkbox.isChecked(),
-            "sleep_channel": self.sleep_combo.currentText(),
+            "sleep_channel": SLEEP_FIXED,
             "sleep_rules": sleep_rules,
             "normal_channel": self.normal_combo.currentText(),
             "ai_channels": {
-                "level2": self.ai_level2.currentText(),
-                "level3": self.ai_level3.currentText(),
-                "level4": self.ai_level4.currentText(),
+                "level2": self._ai_choice_to_value(self.ai_level2.currentText()),
+                "level3": self._ai_choice_to_value(self.ai_level3.currentText()),
+                "level4": self._ai_choice_to_value(self.ai_level4.currentText()),
             },
             "timer_rules": timer_rules,
         }
+
+    def _ai_choice_to_value(self, value: str) -> str:
+        if value == AI_CHOICES[0]:
+            return "same_as_normal"
+        return value
 
 
 class EmittingStream(QtCore.QObject):
@@ -375,26 +427,33 @@ class TimerLegendWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(ROW_LABEL_WIDTH)
+        self.setMinimumHeight(220)
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.fillRect(self.rect(), QtGui.QColor("white"))
         painter.setPen(QtGui.QPen(QtGui.QColor(80, 80, 80)))
         height = self.height()
-        text_x = self.width() - 10
+        width = self.width()
         for hour in [0, 6, 12, 18, 23]:
             y = int(height * (hour * 60) / (24 * 60))
             painter.drawLine(0, y, 20, y)
-            painter.drawText(text_x - 45, y + 4, f"{hour:02d}:00")
+            painter.drawText(
+                QtCore.QRect(0, y - 8, width - 6, 16),
+                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                f"{hour:02d}:00",
+            )
 
-        legend_top = height - 110
+        legend_item_height = 16
+        legend_height = len(TIMER_CHANNEL_COLORS) * legend_item_height
+        legend_top = max(8, height - legend_height - 20)
         x = 10
         y = legend_top
         for channel, color in TIMER_CHANNEL_COLORS.items():
             painter.fillRect(x, y, 12, 12, color)
             painter.drawRect(x, y, 12, 12)
             painter.drawText(x + 18, y + 11, channel)
-            y += 16
+            y += legend_item_height
 
 
 class TimerBarWidget(QtWidgets.QWidget):
@@ -460,9 +519,26 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.layout.setSpacing(2)
 
         self.display_label = self._make_label("-")
+        self.preview_widget = QtWidgets.QWidget()
+        self.preview_widget.setFixedHeight(120)
+        preview_layout = QtWidgets.QStackedLayout(self.preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
         self.preview_label = QtWidgets.QLabel("サンプルなし")
         self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.preview_label.setFixedHeight(120)
+        preview_layout.addWidget(self.preview_label)
+        self.video_widget = None
+        self.player = None
+        self._current_sample: Optional[Path] = None
+        if HAS_QTMULTIMEDIA:
+            self.video_widget = QtMultimediaWidgets.QVideoWidget()
+            preview_layout.addWidget(self.video_widget)
+            self.player = QtMultimedia.QMediaPlayer()
+            self.player.setVideoOutput(self.video_widget)
+            if hasattr(QtMultimedia.QMediaPlayer, "Loops"):
+                self.player.setLoops(QtMultimedia.QMediaPlayer.Loops.Infinite)
+            else:
+                self.player.mediaStatusChanged.connect(self._restart_media)
+        self.preview_stack = preview_layout
         self.setting_button = QtWidgets.QPushButton("変更")
         self.sleep_label = self._make_label("-")
         self.ai_lv2_label = self._make_label("-")
@@ -492,14 +568,14 @@ class SignageColumnWidget(QtWidgets.QWidget):
         manage_layout.addWidget(self.btn_resend)
 
         for widget, height in [
-            (self.display_label, 48),
-            (self.preview_label, 120),
-            (self.setting_button, 36),
-            (self.sleep_label, 32),
-            (self.ai_lv2_label, 28),
-            (self.ai_lv3_label, 28),
-            (self.ai_lv4_label, 28),
-            (self.normal_label, 32),
+            (self.display_label, 34),
+            (self.preview_widget, 120),
+            (self.setting_button, 30),
+            (self.sleep_label, 26),
+            (self.ai_lv2_label, 26),
+            (self.ai_lv3_label, 26),
+            (self.ai_lv4_label, 26),
+            (self.normal_label, 26),
             (self.timer_bar, 280),
             (self.power_widget, 60),
             (self.manage_widget, 44),
@@ -531,6 +607,37 @@ class SignageColumnWidget(QtWidgets.QWidget):
         label.setWordWrap(True)
         label.setStyleSheet("border: 1px solid #999;")
         return label
+
+    def _restart_media(self, status) -> None:
+        if status == QtMultimedia.QMediaPlayer.MediaStatus.EndOfMedia and self.player:
+            self.player.setPosition(0)
+            self.player.play()
+
+    def show_preview_message(self, text: str) -> None:
+        self.preview_label.setText(text)
+        self.preview_label.setPixmap(QtGui.QPixmap())
+        self.preview_stack.setCurrentWidget(self.preview_label)
+        if self.player:
+            self.player.stop()
+        self._current_sample = None
+
+    def show_preview_pixmap(self, pixmap: QtGui.QPixmap) -> None:
+        self.preview_label.setText("")
+        self.preview_label.setPixmap(pixmap)
+        self.preview_stack.setCurrentWidget(self.preview_label)
+        if self.player:
+            self.player.stop()
+        self._current_sample = None
+
+    def play_preview(self, sample: Path) -> None:
+        if not self.player or not self.video_widget:
+            self.show_preview_message(sample.name)
+            return
+        if self._current_sample != sample:
+            self.player.setSource(QtCore.QUrl.fromLocalFile(str(sample)))
+            self._current_sample = sample
+        self.preview_stack.setCurrentWidget(self.video_widget)
+        self.player.play()
 
     def set_inactive_style(self, inactive: bool) -> None:
         if inactive:
@@ -648,14 +755,14 @@ class ControllerWindow(QtWidgets.QMainWindow):
         left_layout.setContentsMargins(2, 2, 2, 2)
         left_layout.setSpacing(2)
 
-        left_layout.addWidget(self._make_row_label("表示中ch", 48))
+        left_layout.addWidget(self._make_row_label("表示中ch", 34))
         left_layout.addWidget(self._make_row_label("表示中映像", 120))
-        left_layout.addWidget(self._make_row_label("設定", 36))
-        left_layout.addWidget(self._make_row_label("休眠時", 32))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 28))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 28))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 28))
-        left_layout.addWidget(self._make_row_label("通常時", 32))
+        left_layout.addWidget(self._make_row_label("設定", 30))
+        left_layout.addWidget(self._make_row_label("休眠時", 26))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 26))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 26))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 26))
+        left_layout.addWidget(self._make_row_label("通常時", 26))
         timer_label = TimerLegendWidget()
         timer_label.setFixedHeight(280)
         left_layout.addWidget(timer_label)
@@ -773,8 +880,7 @@ QPushButton:disabled {
                 exists=info.get("exists", False),
                 share_name=info.get("share_name", "_TsuyamaSignage"),
             )
-            config = read_config(CONFIG_DIR / name)
-            state.enabled = config.get("enabled", True)
+            state.enabled = info.get("enabled", True)
             self.sign_states[name] = state
 
     def refresh_summary(self) -> None:
@@ -790,9 +896,9 @@ QPushButton:disabled {
         config = read_config(CONFIG_DIR / state.name)
         column.display_label.setText(state.active_channel or "-")
         column.sleep_label.setText(config.get("sleep_channel", "ch01"))
-        column.ai_lv2_label.setText(config.get("ai_channels", {}).get("level2", "ch02"))
-        column.ai_lv3_label.setText(config.get("ai_channels", {}).get("level3", "ch03"))
-        column.ai_lv4_label.setText(config.get("ai_channels", {}).get("level4", "ch04"))
+        column.ai_lv2_label.setText(self._display_ai_channel(config.get("ai_channels", {}).get("level2")))
+        column.ai_lv3_label.setText(self._display_ai_channel(config.get("ai_channels", {}).get("level3")))
+        column.ai_lv4_label.setText(self._display_ai_channel(config.get("ai_channels", {}).get("level4")))
         column.normal_label.setText(config.get("normal_channel", "ch05"))
         column.timer_bar.set_rules(config.get("timer_rules", []))
 
@@ -809,7 +915,7 @@ QPushButton:disabled {
             else:
                 header_label.setStyleSheet("border: 1px solid #999;")
 
-        self.update_preview_cell(state, column.preview_label)
+        self.update_preview_cell(state, column)
         self.update_resend_button(state)
 
     def update_resend_button(self, state: SignState) -> None:
@@ -861,6 +967,11 @@ QPushButton:disabled {
                 "background:#000; color:#fff; border-radius:8px; font-weight:900; font-size:16px;"
             )
 
+    def _display_ai_channel(self, value: Optional[str]) -> str:
+        if value == "same_as_normal":
+            return AI_CHOICES[0]
+        return value or "-"
+
     def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
         root = build_unc_path(state.ip, state.share_name, "")
         try:
@@ -878,35 +989,38 @@ QPushButton:disabled {
         for state in self.sign_states.values():
             column = self._column_widgets.get(state.name.replace("Sign", "Signage"))
             if column:
-                self.update_preview_cell(state, column.preview_label)
+                self.update_preview_cell(state, column)
 
-    def update_preview_cell(self, state: SignState, label: QtWidgets.QLabel) -> None:
-        label.clear()
+    def update_preview_cell(self, state: SignState, column: SignageColumnWidget) -> None:
         if not state.exists or not state.enabled:
-            label.setText("非アクティブ")
+            column.show_preview_message("非アクティブ")
             return
         if not self._preview_enabled or not state.active_channel:
-            label.setText("プレビューOFF")
+            column.show_preview_message("プレビューOFF")
             return
 
         sample = self.find_sample_file(state.active_channel)
         if not sample:
-            label.setText("サンプルなし")
+            column.show_preview_message("サンプルなし")
+            return
+
+        if HAS_QTMULTIMEDIA:
+            column.play_preview(sample)
             return
 
         if cv2 is None:
-            label.setText(f"サンプル: {sample.name}")
+            column.show_preview_message(f"サンプル: {sample.name}")
             return
 
         frame = self.read_sample_frame(sample)
         if frame is None:
-            label.setText(f"サンプル: {sample.name}")
+            column.show_preview_message(f"サンプル: {sample.name}")
             return
 
         height, width, _ = frame.shape
         image = QtGui.QImage(frame.data, width, height, QtGui.QImage.Format_BGR888)
         pixmap = QtGui.QPixmap.fromImage(image).scaled(200, 120, QtCore.Qt.KeepAspectRatio)
-        label.setPixmap(pixmap)
+        column.show_preview_pixmap(pixmap)
 
     def find_sample_file(self, channel: str) -> Optional[Path]:
         path = CONTENT_DIR / channel
@@ -945,7 +1059,7 @@ QPushButton:disabled {
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str]:
-        remote_path = build_unc_path(state.ip, state.share_name, "app\\config")
+        remote_path = build_unc_path(state.ip, state.share_name, "config")
         try:
             return Path(remote_path).exists(), ""
         except Exception as exc:
@@ -959,7 +1073,6 @@ QPushButton:disabled {
             updated_any = False
             for state in self.sign_states.values():
                 config = read_config(CONFIG_DIR / state.name)
-                state.enabled = config.get("enabled", True)
                 if not state.exists or not state.enabled:
                     state.active_channel = None
                     continue
@@ -1006,7 +1119,7 @@ QPushButton:disabled {
         if not ok:
             logging.warning("Share unreachable for %s: %s", state.name, msg)
             return False, msg
-        remote_path = build_unc_path(state.ip, state.share_name, "app\\config\\active.json")
+        remote_path = build_unc_path(state.ip, state.share_name, "config\\active.json")
         try:
             write_json_atomic_remote(Path(remote_path), active)
             logging.info("Distributed active.json to %s", state.name)
@@ -1106,7 +1219,7 @@ QPushButton:disabled {
         backup_root = Path(self.settings.get("log_backup_dir", str(ROOT_DIR.parent / "backup" / "logs")))
         dest = backup_root / state.name / timestamp
         ensure_dir(dest)
-        remote_logs = build_unc_path(state.ip, state.share_name, "app\\logs")
+        remote_logs = build_unc_path(state.ip, state.share_name, "logs")
         try:
             if not Path(remote_logs).exists():
                 return False, "remote logs missing"
@@ -1124,7 +1237,9 @@ QPushButton:disabled {
         config = read_config(CONFIG_DIR / state.name)
         dialog = ConfigDialog(state.name, config, self)
         if dialog.exec() == QtWidgets.QDialog.Accepted:
-            new_config = dialog.build_config()
+            new_config = dialog.get_config()
+            if not new_config:
+                return
             write_json_atomic(config_path, new_config)
             logging.info("Config saved for %s", state.name)
             self.recompute_all()
@@ -1150,7 +1265,7 @@ QPushButton:disabled {
             "command": command,
             "issued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        remote_path = build_unc_path(state.ip, state.share_name, "app\\config\\command.json")
+        remote_path = build_unc_path(state.ip, state.share_name, "config\\command.json")
         try:
             write_json_atomic_remote(Path(remote_path), payload)
             logging.info("Power command %s sent to %s", command, state.name)
