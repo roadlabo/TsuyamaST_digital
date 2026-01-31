@@ -21,9 +21,11 @@ else:
 if importlib.util.find_spec("watchdog"):
     from watchdog.events import FileSystemEventHandler
     from watchdog.observers import Observer
+    WATCHDOG_AVAILABLE = True
 else:
     FileSystemEventHandler = None
     Observer = None
+    WATCHDOG_AVAILABLE = False
 
 APP_NAME = "TsuyamaST SuperAI Signage Controller"
 
@@ -143,13 +145,15 @@ def compute_active_channel(
     return sign_config.get("normal_channel", "ch05")
 
 
-class AiStatusHandler(FileSystemEventHandler):
-    def __init__(self, callback):
-        self._callback = callback
+if WATCHDOG_AVAILABLE:
+    class AiStatusHandler(FileSystemEventHandler):
+        def __init__(self, callback):
+            super().__init__()
+            self._callback = callback
 
-    def on_modified(self, event):
-        if event.src_path.endswith("ai_status.json"):
-            self._callback()
+        def on_modified(self, event):
+            if event.src_path.endswith("ai_status.json"):
+                self._callback()
 
 
 class ConfigDialog(QtWidgets.QDialog):
@@ -272,6 +276,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._executor = ThreadPoolExecutor(max_workers=self.settings.get("thread_workers", 8))
         self._update_lock = threading.Lock()
         self._observer = None
+        self._ai_status_mtime: Optional[float] = None
 
         self._init_ui()
         self._load_sign_states()
@@ -709,11 +714,11 @@ class ControllerWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self.recompute_all)
 
     def start_watchers(self) -> None:
-        if Observer is None:
+        if not WATCHDOG_AVAILABLE:
             logging.warning("watchdog not available, fallback to polling")
             self.poll_ai_timer = QtCore.QTimer(self)
-            self.poll_ai_timer.setInterval(10 * 1000)
-            self.poll_ai_timer.timeout.connect(self.schedule_recompute)
+            self.poll_ai_timer.setInterval(60 * 1000)
+            self.poll_ai_timer.timeout.connect(self.check_ai_status_polling)
             self.poll_ai_timer.start()
             return
 
@@ -722,6 +727,18 @@ class ControllerWindow(QtWidgets.QMainWindow):
         observer.schedule(handler, str(AI_STATUS_PATH.parent), recursive=False)
         observer.start()
         self._observer = observer
+
+    def check_ai_status_polling(self) -> None:
+        try:
+            mtime = AI_STATUS_PATH.stat().st_mtime
+        except FileNotFoundError:
+            mtime = None
+        if self._ai_status_mtime is None:
+            self._ai_status_mtime = mtime
+            return
+        if mtime != self._ai_status_mtime:
+            self._ai_status_mtime = mtime
+            self.schedule_recompute()
 
     def closeEvent(self, event):
         if self._observer:
