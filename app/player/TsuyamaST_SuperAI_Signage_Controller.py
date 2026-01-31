@@ -321,12 +321,26 @@ class ConfigDialog(QtWidgets.QDialog):
 class EmittingStream(QtCore.QObject):
     text_written = QtCore.Signal(str)
 
+    def __init__(self, fallback=None):
+        super().__init__()
+        self._fallback = fallback
+
     def write(self, text):
         if text:
             self.text_written.emit(text)
+            try:
+                if self._fallback:
+                    self._fallback.write(text)
+                    self._fallback.flush()
+            except Exception:
+                pass
 
     def flush(self):
-        return None
+        try:
+            if self._fallback:
+                self._fallback.flush()
+        except Exception:
+            pass
 
 
 class LogHandler(logging.Handler):
@@ -665,14 +679,17 @@ class ControllerWindow(QtWidgets.QMainWindow):
         return label
 
     def _setup_log_stream(self) -> None:
-        self._log_stream = EmittingStream()
+        orig_err = sys.__stderr__
+
+        self._log_stream = EmittingStream(fallback=orig_err)
         self._log_stream.text_written.connect(self.append_log_text)
         sys.stdout = self._log_stream
         sys.stderr = self._log_stream
         handler = LogHandler(self._log_stream)
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        logging.getLogger().addHandler(handler)
-        logging.getLogger().setLevel(logging.INFO)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
         self._log_handler = handler
 
         def excepthook(exc_type, exc_value, exc_traceback):
@@ -1087,16 +1104,35 @@ def setup_logging():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.FileHandler(log_path, encoding="utf-8")],
+        force=True,
     )
 
 
 def main():
-    setup_logging()
-    app = QtWidgets.QApplication(sys.argv)
-    window = ControllerWindow()
-    window.showMaximized()
-    window.recompute_all()
-    sys.exit(app.exec())
+    try:
+        setup_logging()
+    except Exception:
+        pass
+
+    try:
+        app = QtWidgets.QApplication(sys.argv)
+        window = ControllerWindow()
+        window.showMaximized()
+        window.recompute_all()
+        sys.exit(app.exec())
+    except Exception:
+        tb = traceback.format_exc()
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            crash = LOG_DIR / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            crash.write_text(tb, encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            print(tb, file=sys.__stderr__)
+        except Exception:
+            pass
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
