@@ -1,0 +1,22 @@
+{
+  "Sign01": { "ip": "192.168.1.201", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign02": { "ip": "192.168.1.202", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign03": { "ip": "192.168.1.203", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign04": { "ip": "192.168.1.204", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign05": { "ip": "192.168.1.205", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign06": { "ip": "192.168.1.206", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign07": { "ip": "192.168.1.207", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign08": { "ip": "192.168.1.208", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign09": { "ip": "192.168.1.209", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign10": { "ip": "192.168.1.210", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign11": { "ip": "192.168.1.211", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign12": { "ip": "192.168.1.212", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign13": { "ip": "192.168.1.213", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign14": { "ip": "192.168.1.214", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign15": { "ip": "192.168.1.215", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign16": { "ip": "192.168.1.216", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign17": { "ip": "192.168.1.217", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign18": { "ip": "192.168.1.218", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign19": { "ip": "192.168.1.219", "exists": true, "share_name": "_TsuyamaSignage" },
+  "Sign20": { "ip": "192.168.1.220", "exists": false, "share_name": "_TsuyamaSignage" }
+}

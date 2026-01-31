@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "sleep_channel": "ch01",
+  "normal_channel": "ch05",
+  "ai_channels": { "level2": "ch02", "level3": "ch03", "level4": "ch04" },
+  "timer_rules": [
+    { "start": "05:00", "end": "06:00", "channel": "ch11" }
+  ]
+}
