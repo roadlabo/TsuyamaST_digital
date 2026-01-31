@@ -92,7 +92,8 @@ def time_in_range(now: time, start: time, end: time) -> bool:
 
 
 def build_unc_path(ip: str, share: str, relative: str) -> str:
-    return rf"\\{ip}\{share}\{relative.replace('/', '\\')}"
+    rel = relative.replace("/", "\\")
+    return rf"\\{ip}\{share}\{rel}"
 
 
 def read_config(sign_dir: Path) -> dict:
