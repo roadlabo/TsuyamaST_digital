@@ -66,8 +66,8 @@ TIMER_CHANNEL_COLORS = {
     "ch20": QtGui.QColor(255, 105, 180),
 }
 LEFT_COL_WIDTH = 170
-GAP_PX = 6
-OUTER_MARGIN = 12
+GAP_PX = 4
+OUTER_MARGIN = 6
 
 
 @dataclass
@@ -224,6 +224,29 @@ if WATCHDOG_AVAILABLE:
                 self._callback()
 
 
+class TimeNormalizeDelegate(QtWidgets.QStyledItemDelegate):
+    def __init__(self, table: QtWidgets.QTableWidget, parent=None):
+        super().__init__(parent)
+        self._table = table
+
+    def createEditor(self, parent, option, index):
+        editor = QtWidgets.QLineEdit(parent)
+        editor.setProperty("original", index.data() or "")
+        return editor
+
+    def setModelData(self, editor, model, index):
+        text = editor.text()
+        original = editor.property("original") or ""
+        try:
+            normalized = normalize_hhmm(text)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self._table, "入力エラー", str(exc))
+            model.setData(index, original)
+            QtCore.QTimer.singleShot(0, lambda: self._table.edit(index))
+            return
+        model.setData(index, normalized)
+
+
 class ConfigDialog(QtWidgets.QDialog):
     def __init__(self, sign_name: str, config: dict, parent=None):
         super().__init__(parent)
@@ -274,6 +297,9 @@ class ConfigDialog(QtWidgets.QDialog):
         self.timer_table = QtWidgets.QTableWidget(0, 3)
         self.timer_table.setHorizontalHeaderLabels(["開始", "終了", "CH"])
         self.timer_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        delegate = TimeNormalizeDelegate(self.timer_table, self.timer_table)
+        self.timer_table.setItemDelegateForColumn(0, delegate)
+        self.timer_table.setItemDelegateForColumn(1, delegate)
         layout.addWidget(QtWidgets.QLabel("タイマー設定"))
         layout.addWidget(self.timer_table)
 
@@ -509,6 +535,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
     clicked_reboot = QtCore.Signal(str)
     clicked_shutdown = QtCore.Signal(str)
     clicked_resend = QtCore.Signal(str)
+    toggled_active = QtCore.Signal(str, bool)
 
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
@@ -528,15 +555,15 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.video_widget = None
         self.player = None
         self._current_sample: Optional[Path] = None
+        self.sample_list: List[Path] = []
+        self.sample_index = 0
+        self.current_channel: Optional[str] = None
         if HAS_QTMULTIMEDIA:
             self.video_widget = QtMultimediaWidgets.QVideoWidget()
             preview_layout.addWidget(self.video_widget)
             self.player = QtMultimedia.QMediaPlayer()
             self.player.setVideoOutput(self.video_widget)
-            if hasattr(QtMultimedia.QMediaPlayer, "Loops"):
-                self.player.setLoops(QtMultimedia.QMediaPlayer.Loops.Infinite)
-            else:
-                self.player.mediaStatusChanged.connect(self._restart_media)
+            self.player.mediaStatusChanged.connect(self._handle_media_status)
         self.preview_stack = preview_layout
         self.setting_button = QtWidgets.QPushButton("変更")
         self.sleep_label = self._make_label("-")
@@ -545,7 +572,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.ai_lv4_label = self._make_label("-")
         self.normal_label = self._make_label("-")
         self.timer_bar = TimerBarWidget()
-        self.timer_bar.setFixedHeight(280)
+        self.timer_bar.setFixedHeight(250)
 
         self.power_widget = QtWidgets.QWidget()
         power_layout = QtWidgets.QVBoxLayout(self.power_widget)
@@ -553,6 +580,8 @@ class SignageColumnWidget(QtWidgets.QWidget):
         power_layout.setSpacing(2)
         self.btn_reboot = QtWidgets.QPushButton("再起動")
         self.btn_shutdown = QtWidgets.QPushButton("シャットダウン")
+        self.btn_reboot.setFixedHeight(30)
+        self.btn_shutdown.setFixedHeight(30)
         power_layout.addWidget(self.btn_reboot)
         power_layout.addWidget(self.btn_shutdown)
 
@@ -560,29 +589,31 @@ class SignageColumnWidget(QtWidgets.QWidget):
         manage_layout = QtWidgets.QVBoxLayout(self.manage_widget)
         manage_layout.setContentsMargins(0, 0, 0, 0)
         manage_layout.setSpacing(2)
-        self.manage_label = self._make_label("アクティブ")
+        self.btn_active = QtWidgets.QPushButton("アクティブ")
+        self.btn_active.setCheckable(True)
         self.btn_resend = QtWidgets.QPushButton("再送")
         self.btn_resend.setObjectName("resend_button")
-        manage_layout.addWidget(self.manage_label)
+        self.btn_active.setFixedHeight(30)
+        self.btn_resend.setFixedHeight(30)
+        manage_layout.addWidget(self.btn_active)
         manage_layout.addWidget(self.btn_resend)
 
         for widget, height in [
             (self.display_label, 34),
             (self.preview_widget, 120),
-            (self.setting_button, 30),
-            (self.sleep_label, 26),
-            (self.ai_lv2_label, 26),
-            (self.ai_lv3_label, 26),
-            (self.ai_lv4_label, 26),
-            (self.normal_label, 26),
-            (self.timer_bar, 280),
+            (self.setting_button, 32),
+            (self.sleep_label, 24),
+            (self.ai_lv2_label, 24),
+            (self.ai_lv3_label, 24),
+            (self.ai_lv4_label, 24),
+            (self.normal_label, 24),
+            (self.timer_bar, 250),
             (self.power_widget, 60),
-            (self.manage_widget, 44),
+            (self.manage_widget, 60),
         ]:
             widget.setFixedHeight(height)
             self.layout.addWidget(widget)
 
-        self.layout.addStretch()
         self.setting_button.setStyleSheet("background:#ffffff;")
         self.btn_reboot.setStyleSheet("background:#e8f4ff;")
         self.btn_shutdown.setStyleSheet("background:#ffecec;")
@@ -599,6 +630,9 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.btn_resend.clicked.connect(
             lambda: self.clicked_resend.emit(self.name.replace("Signage", "Sign"))
         )
+        self.btn_active.toggled.connect(
+            lambda checked: self.toggled_active.emit(self.name.replace("Signage", "Sign"), checked)
+        )
 
     def _make_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
@@ -607,10 +641,16 @@ class SignageColumnWidget(QtWidgets.QWidget):
         label.setStyleSheet("border: 1px solid #999;")
         return label
 
-    def _restart_media(self, status) -> None:
-        if status == QtMultimedia.QMediaPlayer.MediaStatus.EndOfMedia and self.player:
-            self.player.setPosition(0)
-            self.player.play()
+    def _handle_media_status(self, status) -> None:
+        if status != QtMultimedia.QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+        self._advance_sample()
+
+    def _advance_sample(self) -> None:
+        if not self.sample_list:
+            return
+        self.sample_index = (self.sample_index + 1) % len(self.sample_list)
+        self._play_current_sample()
 
     def show_preview_message(self, text: str) -> None:
         self.preview_label.setText(text)
@@ -628,6 +668,21 @@ class SignageColumnWidget(QtWidgets.QWidget):
             self.player.stop()
         self._current_sample = None
 
+    def set_sample_list(self, samples: List[Path]) -> None:
+        if samples != self.sample_list:
+            self.sample_list = samples
+            self.sample_index = 0
+            self._current_sample = None
+        if not self.sample_list:
+            self.show_preview_message("サンプルなし")
+            return
+        self._play_current_sample()
+
+    def _play_current_sample(self) -> None:
+        if not self.sample_list:
+            return
+        self.play_preview(self.sample_list[self.sample_index])
+
     def play_preview(self, sample: Path) -> None:
         if not self.player or not self.video_widget:
             self.show_preview_message(sample.name)
@@ -637,6 +692,13 @@ class SignageColumnWidget(QtWidgets.QWidget):
             self._current_sample = sample
         self.preview_stack.setCurrentWidget(self.video_widget)
         self.player.play()
+
+    def set_active_state(self, active: bool) -> None:
+        label = "アクティブ" if active else "非アクティブ"
+        blocker = QtCore.QSignalBlocker(self.btn_active)
+        self.btn_active.setText(label)
+        self.btn_active.setChecked(active)
+        del blocker
 
     def set_inactive_style(self, inactive: bool) -> None:
         if inactive:
@@ -664,6 +726,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._ai_status_mtime: Optional[float] = None
         self._log_stream = None
         self._log_handler = None
+        self._last_log_text = ""
+        self._last_log_count = 0
+        self._log_buffer = ""
         self._header_labels: Dict[str, QtWidgets.QPushButton] = {}
         self._column_widgets: Dict[str, SignageColumnWidget] = {}
         self.ai_level_badge: Optional[QtWidgets.QLabel] = None
@@ -687,6 +752,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN)
+        layout.setSpacing(4)
 
         header_layout = QtWidgets.QHBoxLayout()
         title_label = QtWidgets.QLabel("津山駅 SuperAI Signage System Controller")
@@ -726,13 +792,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         header_row = QtWidgets.QHBoxLayout()
         left_header = QtWidgets.QLabel("")
-        left_header.setFixedWidth(LEFT_COL_WIDTH)
+        left_header.setFixedSize(LEFT_COL_WIDTH, 42)
         header_row.addWidget(left_header)
 
-        self.header_scroll = QtWidgets.QScrollArea()
-        self.header_scroll.setWidgetResizable(True)
-        self.header_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.header_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         header_container = QtWidgets.QWidget()
         header_container_layout = QtWidgets.QHBoxLayout(header_container)
         header_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -743,14 +805,14 @@ class ControllerWindow(QtWidgets.QMainWindow):
             name = f"Signage {idx:02d}"
             button = QtWidgets.QPushButton(name)
             button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            button.setFixedHeight(42)
             button.setStyleSheet("border: 1px solid #999;")
             header_container_layout.addWidget(button)
             self.header_buttons.append(button)
             self._header_labels[name.replace("Signage ", "Signage")] = button
 
         header_container_layout.addStretch()
-        self.header_scroll.setWidget(header_container)
-        header_row.addWidget(self.header_scroll)
+        header_row.addWidget(header_container)
         layout.addLayout(header_row)
 
         body_layout = QtWidgets.QHBoxLayout()
@@ -762,23 +824,20 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         left_layout.addWidget(self._make_row_label("表示中ch", 34))
         left_layout.addWidget(self._make_row_label("表示中映像", 120))
-        left_layout.addWidget(self._make_row_label("設定", 30))
-        left_layout.addWidget(self._make_row_label("休眠時", 26))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 26))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 26))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 26))
-        left_layout.addWidget(self._make_row_label("通常時", 26))
+        left_layout.addWidget(self._make_row_label("設定", 32))
+        left_layout.addWidget(self._make_row_label("休眠時", 24))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 24))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 24))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 24))
+        left_layout.addWidget(self._make_row_label("通常時", 24))
         timer_label = TimerLegendWidget()
-        timer_label.setFixedHeight(280)
+        timer_label.setFixedHeight(250)
         left_layout.addWidget(timer_label)
         left_layout.addWidget(self._make_row_label("サイネージPC\n電源管理", 60))
-        left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 44))
-        left_layout.addStretch()
+        left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 60))
 
         body_layout.addWidget(self.left_panel)
 
-        self.body_scroll = QtWidgets.QScrollArea()
-        self.body_scroll.setWidgetResizable(True)
         body_container = QtWidgets.QWidget()
         body_container_layout = QtWidgets.QHBoxLayout(body_container)
         body_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -788,7 +847,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         for idx in range(1, 21):
             name = f"Signage{idx:02d}"
             column = SignageColumnWidget(name)
-            column.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+            column.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             column.setMinimumWidth(0)
             self.columns.append(column)
             body_container_layout.addWidget(column)
@@ -797,10 +856,10 @@ class ControllerWindow(QtWidgets.QMainWindow):
             column.clicked_reboot.connect(self._on_column_reboot)
             column.clicked_shutdown.connect(self._on_column_shutdown)
             column.clicked_resend.connect(self._on_column_resend)
+            column.toggled_active.connect(self._on_column_active_toggle)
 
         body_container_layout.addStretch()
-        self.body_scroll.setWidget(body_container)
-        body_layout.addWidget(self.body_scroll)
+        body_layout.addWidget(body_container)
         layout.addLayout(body_layout)
 
         log_label = QtWidgets.QLabel("ログ")
@@ -809,23 +868,22 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(5000)
         self.log_view.setStyleSheet("background-color: #000; color: #fff;")
-        layout.addWidget(self.log_view, stretch=1)
+        log_font = self.log_view.font()
+        log_font.setPointSize(9)
+        self.log_view.setFont(log_font)
+        self.log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.log_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.log_view.setFixedHeight(100)
+        layout.addWidget(self.log_view)
 
         self.setCentralWidget(central)
 
         self.btn_check.clicked.connect(self.check_connectivity)
         self.btn_bulk_update.clicked.connect(self.bulk_update)
-        self.btn_refresh_content.clicked.connect(self.refresh_preview_info)
+        self.btn_refresh_content.clicked.connect(self.refresh_content_request)
         self.btn_sync.clicked.connect(self.start_sync)
         self.btn_logs.clicked.connect(self.collect_logs)
         self.btn_preview_toggle.clicked.connect(self.toggle_preview)
-
-        self.body_scroll.horizontalScrollBar().valueChanged.connect(
-            self.header_scroll.horizontalScrollBar().setValue
-        )
-        self.header_scroll.horizontalScrollBar().valueChanged.connect(
-            self.body_scroll.horizontalScrollBar().setValue
-        )
 
         self.setStyleSheet(
             """
@@ -897,9 +955,66 @@ QPushButton:disabled {
         sys.excepthook = excepthook
 
     def append_log_text(self, text: str) -> None:
-        self.log_view.moveCursor(QtGui.QTextCursor.End)
-        self.log_view.insertPlainText(text)
-        self.log_view.moveCursor(QtGui.QTextCursor.End)
+        if not text:
+            return
+        self._log_buffer += text
+        while "\n" in self._log_buffer:
+            line, self._log_buffer = self._log_buffer.split("\n", 1)
+            self._append_log_line(line)
+
+    def _append_log_line(self, line: str) -> None:
+        shortened = self._shorten_log_line(line)
+        if shortened == self._last_log_text:
+            self._last_log_count += 1
+            self._replace_last_log_line(f"{shortened} (x{self._last_log_count})")
+            return
+        self._last_log_text = shortened
+        self._last_log_count = 1
+        self.log_view.appendPlainText(shortened)
+
+    def _replace_last_log_line(self, text: str) -> None:
+        cursor = self.log_view.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.select(QtGui.QTextCursor.BlockUnderCursor)
+        cursor.removeSelectedText()
+        cursor.insertText(text)
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.log_view.setTextCursor(cursor)
+
+    def _shorten_log_line(self, line: str) -> str:
+        trimmed = line.rstrip("\r")
+        if not trimmed:
+            return trimmed
+        if not self.log_view:
+            return trimmed
+        width = max(10, self.log_view.viewport().width() - 10)
+        metrics = QtGui.QFontMetrics(self.log_view.font())
+        return metrics.elidedText(trimmed, QtCore.Qt.ElideRight, width)
+
+    def _log_command_accept(self, label: str) -> None:
+        logging.info("[CMD] %s 受理", label)
+
+    def _log_command_run(self, label: str) -> None:
+        logging.info("[RUN] %s 実行中...", label)
+
+    def _log_command_done(self, label: str, ok_count: int, skip_count: int, err_count: int) -> None:
+        logging.info("[DONE] %s 完了 (OK=%d / SKIP=%d / ERR=%d)", label, ok_count, skip_count, err_count)
+
+    def _log_sign_ok(self, state: SignState, message: str) -> None:
+        suffix = f" {message}" if message else ""
+        logging.info("[OK] %s%s", state.name, suffix)
+
+    def _log_sign_skip(self, state: SignState, reason: str) -> None:
+        logging.info("[SKIP] %s %s", state.name, reason)
+
+    def _log_sign_error(self, state: SignState, message: str) -> None:
+        logging.info("[ERR] %s %s", state.name, message)
+
+    def _save_inventory_state(self, state: SignState) -> None:
+        info = self.inventory.get(state.name, {})
+        info["enabled"] = state.enabled
+        self.inventory[state.name] = info
+        write_json_atomic(INVENTORY_PATH, self.inventory)
 
     def _load_sign_states(self) -> None:
         for idx in range(1, 21):
@@ -934,7 +1049,7 @@ QPushButton:disabled {
         column.timer_bar.set_rules(config.get("timer_rules", []))
 
         inactive = (not state.exists) or (not state.enabled)
-        column.manage_label.setText("非アクティブ" if inactive else "アクティブ")
+        column.set_active_state(state.enabled)
         column.set_inactive_style(inactive)
         for btn in [column.setting_button, column.btn_reboot, column.btn_shutdown, column.btn_resend]:
             btn.setEnabled(state.exists and state.enabled)
@@ -1012,33 +1127,75 @@ QPushButton:disabled {
         except Exception as exc:
             return False, str(exc)
 
-    def toggle_preview(self) -> None:
-        self._preview_enabled = not self._preview_enabled
-        self.refresh_preview_info()
+    def refresh_content_request(self) -> None:
+        command = "フォルダ内動画情報取得"
+        self._log_command_accept(command)
+        self._log_command_run(command)
+        ok_count, skip_count, err_count = self.refresh_preview_info(command)
+        self._log_command_done(command, ok_count, skip_count, err_count)
 
-    def refresh_preview_info(self) -> None:
+    def toggle_preview(self) -> None:
+        command = "プレビューON/OFF"
+        self._log_command_accept(command)
+        self._log_command_run(command)
+        self._preview_enabled = not self._preview_enabled
+        ok_count, skip_count, err_count = self.refresh_preview_info(command)
+        self._log_command_done(command, ok_count, skip_count, err_count)
+
+    def refresh_preview_info(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
+        ok_count = 0
+        skip_count = 0
+        err_count = 0
         for state in self.sign_states.values():
             column = self._column_widgets.get(state.name.replace("Sign", "Signage"))
-            if column:
+            if not column:
+                continue
+            if not state.exists:
+                skip_count += 1
+                if log_label:
+                    self._log_sign_skip(state, "到達不可")
                 self.update_preview_cell(state, column)
+                continue
+            if not state.enabled:
+                skip_count += 1
+                if log_label:
+                    self._log_sign_skip(state, "非アクティブ")
+                self.update_preview_cell(state, column)
+                continue
+            try:
+                self.update_preview_cell(state, column)
+                ok_count += 1
+                if log_label:
+                    self._log_sign_ok(state, "プレビュー更新")
+            except Exception as exc:
+                err_count += 1
+                if log_label:
+                    self._log_sign_error(state, str(exc))
+        return ok_count, skip_count, err_count
 
     def update_preview_cell(self, state: SignState, column: SignageColumnWidget) -> None:
         if not state.exists or not state.enabled:
+            column.current_channel = None
+            column.sample_list = []
             column.show_preview_message("非アクティブ")
             return
         if not self._preview_enabled or not state.active_channel:
+            column.current_channel = None
+            column.sample_list = []
             column.show_preview_message("プレビューOFF")
             return
-
-        sample = self.find_sample_file(state.active_channel)
-        if not sample:
+        samples = self.list_sample_videos(state.active_channel)
+        if not samples:
             column.show_preview_message("サンプルなし")
             return
 
         if HAS_QTMULTIMEDIA:
-            column.play_preview(sample)
+            if column.current_channel != state.active_channel or samples != column.sample_list:
+                column.current_channel = state.active_channel
+                column.set_sample_list(samples)
             return
 
+        sample = samples[0]
         if cv2 is None:
             column.show_preview_message(f"サンプル: {sample.name}")
             return
@@ -1053,14 +1210,15 @@ QPushButton:disabled {
         pixmap = QtGui.QPixmap.fromImage(image).scaled(200, 120, QtCore.Qt.KeepAspectRatio)
         column.show_preview_pixmap(pixmap)
 
-    def find_sample_file(self, channel: str) -> Optional[Path]:
+    def list_sample_videos(self, channel: str) -> List[Path]:
         path = CONTENT_DIR / channel
         if not path.exists():
-            return None
-        for entry in path.iterdir():
-            if entry.is_file() and entry.name.endswith("_sample.mp4"):
-                return entry
-        return None
+            return []
+        samples: List[Path] = []
+        for entry in sorted(path.glob("*.mp4")):
+            if entry.is_file() and "sample" in entry.name.lower():
+                samples.append(entry)
+        return samples
 
     def read_sample_frame(self, file_path: Path):
         capture = cv2.VideoCapture(str(file_path))
@@ -1071,10 +1229,22 @@ QPushButton:disabled {
         return frame
 
     def check_connectivity(self) -> None:
+        command = "サイネージPC通信確認"
+        self._log_command_accept(command)
+        self._log_command_run(command)
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
+        ok_count = 0
+        skip_count = 0
+        err_count = 0
         for state in self.sign_states.values():
-            if not state.exists or not state.enabled:
+            if not state.exists:
+                self._log_sign_skip(state, "到達不可")
+                skip_count += 1
+                continue
+            if not state.enabled:
+                self._log_sign_skip(state, "非アクティブ")
+                skip_count += 1
                 continue
             futures[self._executor.submit(self.check_single_connectivity, state)] = state
 
@@ -1084,10 +1254,19 @@ QPushButton:disabled {
                 state.online = online
                 state.last_error = error or ""
                 state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if online:
+                    ok_count += 1
+                    self._log_sign_ok(state, "オンライン")
+                else:
+                    err_count += 1
+                    self._log_sign_error(state, error or "オフライン")
             except Exception as exc:
                 state.online = False
                 state.last_error = str(exc)
+                err_count += 1
+                self._log_sign_error(state, str(exc))
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+        self._log_command_done(command, ok_count, skip_count, err_count)
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str]:
         remote_path = build_unc_path(state.ip, state.share_name, "config")
@@ -1118,15 +1297,29 @@ QPushButton:disabled {
             self.distribute_all()
 
     def bulk_update(self) -> None:
-        logging.info("Bulk update triggered")
+        command = "一斉Ch更新"
+        self._log_command_accept(command)
+        self._log_command_run(command)
         self.recompute_all()
-        self.distribute_all()
+        ok_count, skip_count, err_count = self.distribute_all(command)
+        self._log_command_done(command, ok_count, skip_count, err_count)
 
-    def distribute_all(self) -> None:
+    def distribute_all(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
+        ok_count = 0
+        skip_count = 0
+        err_count = 0
         for state in self.sign_states.values():
-            if not state.exists or not state.enabled:
+            if not state.exists:
+                skip_count += 1
+                if log_label:
+                    self._log_sign_skip(state, "到達不可")
+                continue
+            if not state.enabled:
+                skip_count += 1
+                if log_label:
+                    self._log_sign_skip(state, "非アクティブ")
                 continue
             futures[self._executor.submit(self.distribute_active, state)] = state
 
@@ -1136,11 +1329,28 @@ QPushButton:disabled {
                 state.last_distribute_ok = ok
                 state.last_error = message if not ok else ""
                 state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if ok:
+                    ok_count += 1
+                    if log_label:
+                        self._log_sign_ok(state, "配布完了")
+                else:
+                    if "共有" in message or "到達" in message:
+                        skip_count += 1
+                        if log_label:
+                            self._log_sign_skip(state, f"到達不可 ({message})")
+                    else:
+                        err_count += 1
+                        if log_label:
+                            self._log_sign_error(state, message)
             except Exception as exc:
                 state.last_distribute_ok = False
                 state.last_error = str(exc)
+                err_count += 1
+                if log_label:
+                    self._log_sign_error(state, str(exc))
             self.update_resend_button(state)
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+        return ok_count, skip_count, err_count
 
     def distribute_active(self, state: SignState) -> Tuple[bool, str]:
         active = read_active(CONFIG_DIR / state.name)
@@ -1148,7 +1358,7 @@ QPushButton:disabled {
             return False, "active_channel missing"
         ok, msg = self.is_share_reachable(state)
         if not ok:
-            logging.warning("Share unreachable for %s: %s", state.name, msg)
+            logging.warning("到達不可 %s (%s)", state.name, msg)
             return False, msg
         remote_path = build_unc_path(state.ip, state.share_name, "config\\active.json")
         try:
@@ -1160,6 +1370,7 @@ QPushButton:disabled {
             return False, str(exc)
 
     def resend_active(self, state: SignState) -> None:
+        self._log_command_run(f"{state.name} 再送")
         future = self._executor.submit(self.distribute_active, state)
 
         def _complete(fut):
@@ -1167,9 +1378,21 @@ QPushButton:disabled {
                 ok, message = fut.result()
                 state.last_distribute_ok = ok
                 state.last_error = message if not ok else ""
+                if ok:
+                    self._log_sign_ok(state, "再送完了")
+                    self._log_command_done(f"{state.name} 再送", 1, 0, 0)
+                else:
+                    if "共有" in message or "到達" in message:
+                        self._log_sign_skip(state, f"到達不可 ({message})")
+                        self._log_command_done(f"{state.name} 再送", 0, 1, 0)
+                    else:
+                        self._log_sign_error(state, message)
+                        self._log_command_done(f"{state.name} 再送", 0, 0, 1)
             except Exception as exc:
                 state.last_distribute_ok = False
                 state.last_error = str(exc)
+                self._log_sign_error(state, str(exc))
+                self._log_command_done(f"{state.name} 再送", 0, 0, 1)
             state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.update_resend_button(state)
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
@@ -1177,20 +1400,44 @@ QPushButton:disabled {
         future.add_done_callback(lambda fut: QtCore.QTimer.singleShot(0, lambda: _complete(fut)))
 
     def start_sync(self) -> None:
-        logging.info("Starting content sync")
+        command = "動画の同期開始"
+        self._log_command_accept(command)
+        self._log_command_run(command)
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
+        ok_count = 0
+        skip_count = 0
+        err_count = 0
         for state in self.sign_states.values():
-            if not state.exists or not state.enabled:
+            if not state.exists:
+                skip_count += 1
+                self._log_sign_skip(state, "到達不可")
+                continue
+            if not state.enabled:
+                skip_count += 1
+                self._log_sign_skip(state, "非アクティブ")
                 continue
             futures[self._executor.submit(self.sync_sign_content, state)] = state
         for future, state in futures.items():
             try:
                 ok, message = future.result(timeout=timeout)
                 state.last_error = message if not ok else ""
+                if ok:
+                    ok_count += 1
+                    self._log_sign_ok(state, "同期完了")
+                else:
+                    if "共有" in message or "到達" in message:
+                        skip_count += 1
+                        self._log_sign_skip(state, f"到達不可 ({message})")
+                    else:
+                        err_count += 1
+                        self._log_sign_error(state, message)
             except Exception as exc:
                 state.last_error = str(exc)
+                err_count += 1
+                self._log_sign_error(state, str(exc))
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+        self._log_command_done(command, ok_count, skip_count, err_count)
 
     def sync_sign_content(self, state: SignState) -> Tuple[bool, str]:
         ok, msg = self.is_share_reachable(state)
@@ -1228,19 +1475,44 @@ QPushButton:disabled {
         return local_stat.st_size != remote_stat.st_size or int(local_stat.st_mtime) != int(remote_stat.st_mtime)
 
     def collect_logs(self) -> None:
+        command = "LOGファイル取得"
+        self._log_command_accept(command)
+        self._log_command_run(command)
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
+        ok_count = 0
+        skip_count = 0
+        err_count = 0
         for state in self.sign_states.values():
-            if not state.exists or not state.enabled:
+            if not state.exists:
+                skip_count += 1
+                self._log_sign_skip(state, "到達不可")
+                continue
+            if not state.enabled:
+                skip_count += 1
+                self._log_sign_skip(state, "非アクティブ")
                 continue
             futures[self._executor.submit(self.fetch_logs_for_sign, state)] = state
         for future, state in futures.items():
             try:
                 ok, message = future.result(timeout=timeout)
                 state.last_error = message if not ok else ""
+                if ok:
+                    ok_count += 1
+                    self._log_sign_ok(state, "ログ取得完了")
+                else:
+                    if "共有" in message or "到達" in message:
+                        skip_count += 1
+                        self._log_sign_skip(state, f"到達不可 ({message})")
+                    else:
+                        err_count += 1
+                        self._log_sign_error(state, message)
             except Exception as exc:
                 state.last_error = str(exc)
+                err_count += 1
+                self._log_sign_error(state, str(exc))
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+        self._log_command_done(command, ok_count, skip_count, err_count)
 
     def fetch_logs_for_sign(self, state: SignState) -> Tuple[bool, str]:
         ok, msg = self.is_share_reachable(state)
@@ -1322,9 +1594,23 @@ QPushButton:disabled {
         if state:
             self.send_power_command(state, "shutdown")
 
+    def _on_column_active_toggle(self, sign_name: str, active: bool) -> None:
+        state = self._get_state_by_sign_name(sign_name)
+        if not state:
+            return
+        previous = state.enabled
+        state.enabled = active
+        self._save_inventory_state(state)
+        if previous != active:
+            before_label = "アクティブ" if previous else "非アクティブ"
+            after_label = "アクティブ" if active else "非アクティブ"
+            logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
+        self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+
     def _on_column_resend(self, sign_name: str) -> None:
         state = self._get_state_by_sign_name(sign_name)
         if state:
+            self._log_command_accept(f"{state.name} 再送")
             self.resend_active(state)
 
     def check_timer_transition(self) -> None:
