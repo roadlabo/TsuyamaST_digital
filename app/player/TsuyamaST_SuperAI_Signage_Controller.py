@@ -98,6 +98,24 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     os.replace(tmp_path, path)
 
 
+def write_json_atomic_remote(path: Path, payload: dict) -> None:
+    """
+    UNC(ネットワーク共有)向け: 親ディレクトリ作成はしない。
+    （リモート側のフォルダ構成は前提として存在する）
+    """
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    bak_path = path.with_suffix(path.suffix + ".bak")
+    try:
+        if path.exists():
+            shutil.copy2(path, bak_path)
+    except Exception:
+        pass
+    with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    os.replace(tmp_path, path)
+
+
 def parse_time(value: str) -> time:
     return datetime.strptime(value, "%H:%M").time()
 
@@ -363,22 +381,20 @@ class TimerLegendWidget(QtWidgets.QWidget):
         painter.fillRect(self.rect(), QtGui.QColor("white"))
         painter.setPen(QtGui.QPen(QtGui.QColor(80, 80, 80)))
         height = self.height()
+        text_x = self.width() - 10
         for hour in [0, 6, 12, 18, 23]:
             y = int(height * (hour * 60) / (24 * 60))
             painter.drawLine(0, y, 20, y)
-            painter.drawText(25, y + 4, f"{hour:02d}:00")
+            painter.drawText(text_x - 45, y + 4, f"{hour:02d}:00")
 
         legend_top = height - 110
         x = 10
         y = legend_top
-        for idx, (channel, color) in enumerate(TIMER_CHANNEL_COLORS.items()):
+        for channel, color in TIMER_CHANNEL_COLORS.items():
             painter.fillRect(x, y, 12, 12, color)
             painter.drawRect(x, y, 12, 12)
             painter.drawText(x + 18, y + 11, channel)
             y += 16
-            if (idx + 1) % 5 == 0:
-                y = legend_top
-                x += 70
 
 
 class TimerBarWidget(QtWidgets.QWidget):
@@ -430,6 +446,11 @@ class TimerBarWidget(QtWidgets.QWidget):
 
 
 class SignageColumnWidget(QtWidgets.QWidget):
+    clicked_config = QtCore.Signal(str)
+    clicked_reboot = QtCore.Signal(str)
+    clicked_shutdown = QtCore.Signal(str)
+    clicked_resend = QtCore.Signal(str)
+
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
         self.name = name
@@ -438,9 +459,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.layout.setContentsMargins(4, 2, 4, 2)
         self.layout.setSpacing(2)
 
-        self.no_label = self._make_label(name.replace("Signage", ""))
         self.display_label = self._make_label("-")
-        self.ai_label = self._make_label("-")
         self.preview_label = QtWidgets.QLabel("サンプルなし")
         self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
         self.preview_label.setFixedHeight(120)
@@ -473,9 +492,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
         manage_layout.addWidget(self.btn_resend)
 
         for widget, height in [
-            (self.no_label, 28),
             (self.display_label, 48),
-            (self.ai_label, 40),
             (self.preview_label, 120),
             (self.setting_button, 36),
             (self.sleep_label, 32),
@@ -491,6 +508,22 @@ class SignageColumnWidget(QtWidgets.QWidget):
             self.layout.addWidget(widget)
 
         self.layout.addStretch()
+        self.setting_button.setStyleSheet("background:#ffffff;")
+        self.btn_reboot.setStyleSheet("background:#e8f4ff;")
+        self.btn_shutdown.setStyleSheet("background:#ffecec;")
+
+        self.setting_button.clicked.connect(
+            lambda: self.clicked_config.emit(self.name.replace("Signage", "Sign"))
+        )
+        self.btn_reboot.clicked.connect(
+            lambda: self.clicked_reboot.emit(self.name.replace("Signage", "Sign"))
+        )
+        self.btn_shutdown.clicked.connect(
+            lambda: self.clicked_shutdown.emit(self.name.replace("Signage", "Sign"))
+        )
+        self.btn_resend.clicked.connect(
+            lambda: self.clicked_resend.emit(self.name.replace("Signage", "Sign"))
+        )
 
     def _make_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
@@ -527,6 +560,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._log_handler = None
         self._header_labels: Dict[str, QtWidgets.QLabel] = {}
         self._column_widgets: Dict[str, SignageColumnWidget] = {}
+        self.ai_level_badge: Optional[QtWidgets.QLabel] = None
 
         self._init_ui()
         self._setup_log_stream()
@@ -572,6 +606,11 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         header_layout.addStretch()
         header_layout.addLayout(button_layout)
+        self.ai_level_badge = QtWidgets.QLabel("LEVEL1")
+        self.ai_level_badge.setAlignment(QtCore.Qt.AlignCenter)
+        self.ai_level_badge.setFixedSize(160, 44)
+        self.ai_level_badge.setStyleSheet("border-radius:8px; font-weight:900; font-size:16px;")
+        header_layout.addWidget(self.ai_level_badge)
         layout.addLayout(header_layout)
 
         header_row = QtWidgets.QHBoxLayout()
@@ -609,15 +648,13 @@ class ControllerWindow(QtWidgets.QMainWindow):
         left_layout.setContentsMargins(2, 2, 2, 2)
         left_layout.setSpacing(2)
 
-        left_layout.addWidget(self._make_row_label("番号", 28))
-        left_layout.addWidget(self._make_row_label("表示中\nch", 48))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定", 40))
+        left_layout.addWidget(self._make_row_label("表示中ch", 48))
         left_layout.addWidget(self._make_row_label("表示中映像", 120))
         left_layout.addWidget(self._make_row_label("設定", 36))
         left_layout.addWidget(self._make_row_label("休眠時", 32))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定時\nLV2", 28))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定時\nLV3", 28))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定時\nLV4", 28))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 28))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 28))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 28))
         left_layout.addWidget(self._make_row_label("通常時", 32))
         timer_label = TimerLegendWidget()
         timer_label.setFixedHeight(280)
@@ -640,6 +677,10 @@ class ControllerWindow(QtWidgets.QMainWindow):
             column = SignageColumnWidget(name)
             body_container_layout.addWidget(column)
             self._column_widgets[name] = column
+            column.clicked_config.connect(self._on_column_config)
+            column.clicked_reboot.connect(self._on_column_reboot)
+            column.clicked_shutdown.connect(self._on_column_shutdown)
+            column.clicked_resend.connect(self._on_column_resend)
 
         body_container_layout.addStretch()
         self.body_scroll.setWidget(body_container)
@@ -668,6 +709,25 @@ class ControllerWindow(QtWidgets.QMainWindow):
         )
         self.header_scroll.horizontalScrollBar().valueChanged.connect(
             self.body_scroll.horizontalScrollBar().setValue
+        )
+
+        self.setStyleSheet(
+            """
+QPushButton {
+  border: 1px solid #666;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #f6f6f6;
+  font-weight: 700;
+}
+QPushButton:hover { background: #ffffff; }
+QPushButton:pressed { background: #e6e6e6; }
+QPushButton:disabled {
+  background: #cfcfcf;
+  color: #777;
+  border: 1px solid #999;
+}
+"""
         )
 
     def _make_row_label(self, text: str, height: int) -> QtWidgets.QLabel:
@@ -720,6 +780,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
     def refresh_summary(self) -> None:
         for col, (name, state) in enumerate(sorted(self.sign_states.items())):
             self._update_column(col, state)
+        self.update_ai_badge()
 
     def _update_column(self, col: int, state: SignState) -> None:
         column = self._column_widgets.get(state.name.replace("Sign", "Signage"))
@@ -728,39 +789,12 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         config = read_config(CONFIG_DIR / state.name)
         column.display_label.setText(state.active_channel or "-")
-        column.ai_label.setText(self.build_ai_text())
         column.sleep_label.setText(config.get("sleep_channel", "ch01"))
         column.ai_lv2_label.setText(config.get("ai_channels", {}).get("level2", "ch02"))
         column.ai_lv3_label.setText(config.get("ai_channels", {}).get("level3", "ch03"))
         column.ai_lv4_label.setText(config.get("ai_channels", {}).get("level4", "ch04"))
         column.normal_label.setText(config.get("normal_channel", "ch05"))
         column.timer_bar.set_rules(config.get("timer_rules", []))
-
-        try:
-            column.setting_button.clicked.disconnect()
-        except (TypeError, RuntimeError):
-            # not connected or already disconnected
-            pass
-        try:
-            column.btn_reboot.clicked.disconnect()
-        except (TypeError, RuntimeError):
-            # not connected or already disconnected
-            pass
-        try:
-            column.btn_shutdown.clicked.disconnect()
-        except (TypeError, RuntimeError):
-            # not connected or already disconnected
-            pass
-        try:
-            column.btn_resend.clicked.disconnect()
-        except (TypeError, RuntimeError):
-            # not connected or already disconnected
-            pass
-
-        column.setting_button.clicked.connect(lambda checked=False, s=state: self.open_config_dialog(s))
-        column.btn_reboot.clicked.connect(lambda checked=False, s=state: self.send_power_command(s, "reboot"))
-        column.btn_shutdown.clicked.connect(lambda checked=False, s=state: self.send_power_command(s, "shutdown"))
-        column.btn_resend.clicked.connect(lambda checked=False, s=state: self.resend_active(s))
 
         inactive = (not state.exists) or (not state.enabled)
         column.manage_label.setText("非アクティブ" if inactive else "アクティブ")
@@ -801,6 +835,40 @@ class ControllerWindow(QtWidgets.QMainWindow):
             4: "渋滞（LV4）",
         }
         return mapping.get(level, str(level))
+
+    def update_ai_badge(self) -> None:
+        if not self.ai_level_badge:
+            return
+        level = int(self.ai_status.get("congestion_level", 1))
+        if level <= 1:
+            self.ai_level_badge.setText("LEVEL1")
+            self.ai_level_badge.setStyleSheet(
+                "background:#7fd0ff; color:#000; border-radius:8px; font-weight:900; font-size:16px;"
+            )
+        elif level == 2:
+            self.ai_level_badge.setText("LEVEL2")
+            self.ai_level_badge.setStyleSheet(
+                "background:#ffb347; color:#000; border-radius:8px; font-weight:900; font-size:16px;"
+            )
+        elif level == 3:
+            self.ai_level_badge.setText("LEVEL3")
+            self.ai_level_badge.setStyleSheet(
+                "background:#e53935; color:#fff; border-radius:8px; font-weight:900; font-size:16px;"
+            )
+        else:
+            self.ai_level_badge.setText("LEVEL4")
+            self.ai_level_badge.setStyleSheet(
+                "background:#000; color:#fff; border-radius:8px; font-weight:900; font-size:16px;"
+            )
+
+    def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
+        root = build_unc_path(state.ip, state.share_name, "")
+        try:
+            if Path(root).exists():
+                return True, ""
+            return False, f"共有に到達できません: {root}"
+        except Exception as exc:
+            return False, str(exc)
 
     def toggle_preview(self) -> None:
         self._preview_enabled = not self._preview_enabled
@@ -886,6 +954,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
     def recompute_all(self) -> None:
         with self._update_lock:
             self.ai_status = load_json(AI_STATUS_PATH, self.ai_status)
+            self.update_ai_badge()
             now = datetime.now()
             updated_any = False
             for state in self.sign_states.values():
@@ -933,9 +1002,13 @@ class ControllerWindow(QtWidgets.QMainWindow):
         active = read_active(CONFIG_DIR / state.name)
         if not active.get("active_channel"):
             return False, "active_channel missing"
+        ok, msg = self.is_share_reachable(state)
+        if not ok:
+            logging.warning("Share unreachable for %s: %s", state.name, msg)
+            return False, msg
         remote_path = build_unc_path(state.ip, state.share_name, "app\\config\\active.json")
         try:
-            write_json_atomic(Path(remote_path), active)
+            write_json_atomic_remote(Path(remote_path), active)
             logging.info("Distributed active.json to %s", state.name)
             return True, ""
         except Exception as exc:
@@ -976,6 +1049,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
 
     def sync_sign_content(self, state: SignState) -> Tuple[bool, str]:
+        ok, msg = self.is_share_reachable(state)
+        if not ok:
+            return False, msg
         staging_base = self.settings.get("sync_staging_subdir", "staging\\sync_tmp")
         for channel in CHANNELS:
             local_dir = CONTENT_DIR / channel
@@ -983,8 +1059,10 @@ class ControllerWindow(QtWidgets.QMainWindow):
                 continue
             remote_staging = build_unc_path(state.ip, state.share_name, f"{staging_base}\\{channel}")
             remote_content = build_unc_path(state.ip, state.share_name, f"content\\{channel}")
-            ensure_dir(Path(remote_staging))
-            ensure_dir(Path(remote_content))
+            if not Path(remote_content).exists():
+                return False, f"remote content missing: {remote_content}"
+            if not Path(remote_staging).exists():
+                return False, f"remote staging missing: {remote_staging}"
             for entry in local_dir.iterdir():
                 if entry.is_dir():
                     continue
@@ -1021,6 +1099,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
 
     def fetch_logs_for_sign(self, state: SignState) -> Tuple[bool, str]:
+        ok, msg = self.is_share_reachable(state)
+        if not ok:
+            return False, msg
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_root = Path(self.settings.get("log_backup_dir", str(ROOT_DIR.parent / "backup" / "logs")))
         dest = backup_root / state.name / timestamp
@@ -1049,13 +1130,19 @@ class ControllerWindow(QtWidgets.QMainWindow):
             self.recompute_all()
 
     def send_power_command(self, state: SignState, command: str) -> None:
+        cmd_label = "再起動" if command == "reboot" else "シャットダウン"
         confirm = QtWidgets.QMessageBox.question(
             self,
             "確認",
-            f"{state.name} を {command} しますか？",
+            f"{state.name} を {cmd_label} しますか？",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if confirm != QtWidgets.QMessageBox.Yes:
+            return
+        ok, msg = self.is_share_reachable(state)
+        if not ok:
+            state.last_error = msg
+            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
             return
         command_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{state.name}"
         payload = {
@@ -1065,11 +1152,34 @@ class ControllerWindow(QtWidgets.QMainWindow):
         }
         remote_path = build_unc_path(state.ip, state.share_name, "app\\config\\command.json")
         try:
-            write_json_atomic(Path(remote_path), payload)
+            write_json_atomic_remote(Path(remote_path), payload)
             logging.info("Power command %s sent to %s", command, state.name)
         except Exception as exc:
             state.last_error = str(exc)
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+
+    def _get_state_by_sign_name(self, sign_name: str) -> Optional[SignState]:
+        return self.sign_states.get(sign_name)
+
+    def _on_column_config(self, sign_name: str) -> None:
+        state = self._get_state_by_sign_name(sign_name)
+        if state:
+            self.open_config_dialog(state)
+
+    def _on_column_reboot(self, sign_name: str) -> None:
+        state = self._get_state_by_sign_name(sign_name)
+        if state:
+            self.send_power_command(state, "reboot")
+
+    def _on_column_shutdown(self, sign_name: str) -> None:
+        state = self._get_state_by_sign_name(sign_name)
+        if state:
+            self.send_power_command(state, "shutdown")
+
+    def _on_column_resend(self, sign_name: str) -> None:
+        state = self._get_state_by_sign_name(sign_name)
+        if state:
+            self.resend_active(state)
 
     def check_timer_transition(self) -> None:
         self.recompute_all()
