@@ -65,8 +65,9 @@ TIMER_CHANNEL_COLORS = {
     "ch19": QtGui.QColor(75, 0, 130),
     "ch20": QtGui.QColor(255, 105, 180),
 }
-ROW_LABEL_WIDTH = 180
-COLUMN_WIDTH = 140
+LEFT_COL_WIDTH = 170
+GAP_PX = 6
+OUTER_MARGIN = 12
 
 
 @dataclass
@@ -426,7 +427,6 @@ class LogHandler(logging.Handler):
 class TimerLegendWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(ROW_LABEL_WIDTH)
         self.setMinimumHeight(220)
 
     def paintEvent(self, event):
@@ -513,7 +513,6 @@ class SignageColumnWidget(QtWidgets.QWidget):
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
         self.name = name
-        self.setFixedWidth(COLUMN_WIDTH)
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setContentsMargins(4, 2, 4, 2)
         self.layout.setSpacing(2)
@@ -665,11 +664,15 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._ai_status_mtime: Optional[float] = None
         self._log_stream = None
         self._log_handler = None
-        self._header_labels: Dict[str, QtWidgets.QLabel] = {}
+        self._header_labels: Dict[str, QtWidgets.QPushButton] = {}
         self._column_widgets: Dict[str, SignageColumnWidget] = {}
         self.ai_level_badge: Optional[QtWidgets.QLabel] = None
+        self.left_panel: Optional[QtWidgets.QWidget] = None
+        self.header_buttons: List[QtWidgets.QPushButton] = []
+        self.columns: List[SignageColumnWidget] = []
 
         self._init_ui()
+        QtCore.QTimer.singleShot(0, self.apply_dynamic_column_widths)
         self._setup_log_stream()
         self._load_sign_states()
         self.refresh_summary()
@@ -683,6 +686,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
     def _init_ui(self) -> None:
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
+        layout.setContentsMargins(OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN)
 
         header_layout = QtWidgets.QHBoxLayout()
         title_label = QtWidgets.QLabel("津山駅 SuperAI Signage System Controller")
@@ -722,7 +726,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         header_row = QtWidgets.QHBoxLayout()
         left_header = QtWidgets.QLabel("")
-        left_header.setFixedWidth(ROW_LABEL_WIDTH)
+        left_header.setFixedWidth(LEFT_COL_WIDTH)
         header_row.addWidget(left_header)
 
         self.header_scroll = QtWidgets.QScrollArea()
@@ -732,16 +736,17 @@ class ControllerWindow(QtWidgets.QMainWindow):
         header_container = QtWidgets.QWidget()
         header_container_layout = QtWidgets.QHBoxLayout(header_container)
         header_container_layout.setContentsMargins(0, 0, 0, 0)
-        header_container_layout.setSpacing(2)
+        header_container_layout.setSpacing(GAP_PX)
 
+        self.header_buttons = []
         for idx in range(1, 21):
             name = f"Signage {idx:02d}"
-            label = QtWidgets.QLabel(name)
-            label.setAlignment(QtCore.Qt.AlignCenter)
-            label.setFixedWidth(COLUMN_WIDTH)
-            label.setStyleSheet("border: 1px solid #999;")
-            header_container_layout.addWidget(label)
-            self._header_labels[name.replace("Signage ", "Signage")] = label
+            button = QtWidgets.QPushButton(name)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            button.setStyleSheet("border: 1px solid #999;")
+            header_container_layout.addWidget(button)
+            self.header_buttons.append(button)
+            self._header_labels[name.replace("Signage ", "Signage")] = button
 
         header_container_layout.addStretch()
         self.header_scroll.setWidget(header_container)
@@ -749,9 +754,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
         layout.addLayout(header_row)
 
         body_layout = QtWidgets.QHBoxLayout()
-        left_column = QtWidgets.QWidget()
-        left_column.setFixedWidth(ROW_LABEL_WIDTH)
-        left_layout = QtWidgets.QVBoxLayout(left_column)
+        self.left_panel = QtWidgets.QWidget()
+        self.left_panel.setFixedWidth(LEFT_COL_WIDTH)
+        left_layout = QtWidgets.QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(2, 2, 2, 2)
         left_layout.setSpacing(2)
 
@@ -770,18 +775,22 @@ class ControllerWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 44))
         left_layout.addStretch()
 
-        body_layout.addWidget(left_column)
+        body_layout.addWidget(self.left_panel)
 
         self.body_scroll = QtWidgets.QScrollArea()
         self.body_scroll.setWidgetResizable(True)
         body_container = QtWidgets.QWidget()
         body_container_layout = QtWidgets.QHBoxLayout(body_container)
         body_container_layout.setContentsMargins(0, 0, 0, 0)
-        body_container_layout.setSpacing(2)
+        body_container_layout.setSpacing(GAP_PX)
 
+        self.columns = []
         for idx in range(1, 21):
             name = f"Signage{idx:02d}"
             column = SignageColumnWidget(name)
+            column.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+            column.setMinimumWidth(0)
+            self.columns.append(column)
             body_container_layout.addWidget(column)
             self._column_widgets[name] = column
             column.clicked_config.connect(self._on_column_config)
@@ -836,6 +845,28 @@ QPushButton:disabled {
 }
 """
         )
+
+    def apply_dynamic_column_widths(self) -> None:
+        total_w = self.centralWidget().width()
+        usable = total_w - LEFT_COL_WIDTH - OUTER_MARGIN * 2 - GAP_PX * (20 - 1)
+        col_w = max(45, int(usable / 20))
+
+        if self.left_panel:
+            self.left_panel.setFixedWidth(LEFT_COL_WIDTH)
+
+        if self.header_buttons:
+            for button in self.header_buttons:
+                button.setFixedWidth(col_w)
+
+        if self.columns:
+            for column in self.columns:
+                column.setFixedWidth(col_w)
+                column.setMinimumWidth(0)
+                column.setMaximumWidth(col_w)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QtCore.QTimer.singleShot(0, self.apply_dynamic_column_widths)
 
     def _make_row_label(self, text: str, height: int) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
