@@ -736,10 +736,26 @@ class ControllerWindow(QtWidgets.QMainWindow):
         column.normal_label.setText(config.get("normal_channel", "ch05"))
         column.timer_bar.set_rules(config.get("timer_rules", []))
 
-        column.setting_button.clicked.disconnect() if column.setting_button.receivers(column.setting_button.clicked) else None
-        column.btn_reboot.clicked.disconnect() if column.btn_reboot.receivers(column.btn_reboot.clicked) else None
-        column.btn_shutdown.clicked.disconnect() if column.btn_shutdown.receivers(column.btn_shutdown.clicked) else None
-        column.btn_resend.clicked.disconnect() if column.btn_resend.receivers(column.btn_resend.clicked) else None
+        try:
+            column.setting_button.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            # not connected or already disconnected
+            pass
+        try:
+            column.btn_reboot.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            # not connected or already disconnected
+            pass
+        try:
+            column.btn_shutdown.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            # not connected or already disconnected
+            pass
+        try:
+            column.btn_resend.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            # not connected or already disconnected
+            pass
 
         column.setting_button.clicked.connect(lambda checked=False, s=state: self.open_config_dialog(s))
         column.btn_reboot.clicked.connect(lambda checked=False, s=state: self.send_power_command(s, "reboot"))
