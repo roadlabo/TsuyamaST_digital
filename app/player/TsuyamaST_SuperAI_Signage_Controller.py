@@ -40,8 +40,8 @@ APP_NAME = "TsuyamaST SuperAI Signage Controller"
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT_DIR / "config"
-CONTENT_DIR = ROOT_DIR.parent / "content"
-LOG_DIR = ROOT_DIR / "logs"
+CONTENT_DIR = ROOT_DIR.parent / "signage"
+LOG_DIR = ROOT_DIR.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 INVENTORY_PATH = CONFIG_DIR / "inventory.json"
@@ -1568,10 +1568,10 @@ QPushButton:disabled {
             local_dir = CONTENT_DIR / channel
             if not local_dir.exists():
                 continue
-            remote_content = build_unc_path(state.ip, state.share_name, f"content\\{channel}")
+            remote_content = build_unc_path(state.ip, state.share_name, f"signage\\{channel}")
             remote_dir = Path(remote_content)
             if not remote_dir.exists():
-                return False, f"remote content missing: {remote_content}"
+                return False, f"remote signage missing: {remote_content}"
             result = sync_mirror_dir(
                 local_dir,
                 remote_dir,

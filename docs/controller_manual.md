@@ -18,8 +18,8 @@ C:\_TsuyamaSignage\
 │  │  ├─ ai_status.json
 │  │  ├─ Sign01\config.json
 │  │  └─ Sign01\active.json
-│  └─ logs\
-├─ content\
+├─ logs\
+├─ signage\
 │  └─ ch01\...
 └─ backup\logs\
 ```
@@ -46,15 +46,15 @@ C:\_TsuyamaSignage\
 - 続けて現地へ配布します。
 
 ### フォルダ内動画情報取得
-- `content/chXX` 内の `*_sample.mp4` を再スキャンします。
+- `signage/chXX` 内の `*_sample.mp4` を再スキャンします。
 - プレビューON/OFF の切替にも使用できます。
 
 ### 動画の同期開始
-- `content/chXX` を現地へ差分コピーします。
-- `staging\sync_tmp` に一度転送し、成功後に `content` へ反映します。
+- `signage/chXX` を現地へ差分コピーします。
+- `staging\sync_tmp` に一度転送し、成功後に `signage` へ反映します。
 
 ### LOGファイル取得
-- 現地 `app/logs` を `C:\_TsuyamaSignage\backup\logs\SignXX\YYYYMMDD_HHMMSS` にコピーします。
+- 現地 `logs` を `C:\_TsuyamaSignage\backup\logs\SignXX\YYYYMMDD_HHMMSS` にコピーします。
 
 ## 設定変更
 1. 各列の「設定」ボタンでダイアログを開きます。
@@ -75,7 +75,7 @@ C:\_TsuyamaSignage\
 - `inventory.json` の exists=false の列は常にグレーになります。
 
 ## ログ
-- Controller のログは `app/logs/controller_YYYYMMDD.log` に出力します。
+- Controller のログは `logs/controller_YYYYMMDD.log` に出力します。
 
 ## トラブルシュート
 - 共有名が違う場合は `inventory.json` の share_name を調整してください。

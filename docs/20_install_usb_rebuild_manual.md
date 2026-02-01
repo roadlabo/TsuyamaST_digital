@@ -19,13 +19,13 @@ _TsuyamaSignage\
   runtime\
     python\  (embeddable python一式)
     mpv\     (mpv一式, mpv.exe含む)
+  logs\
   app\
     auto_play.py
     config\
       config.json
       active.json
-    logs\
-  content\
+  signage\
     ch01\
       *.mp4
     ch02\  ...
@@ -73,10 +73,10 @@ import site
 
 ```json
 {
-  "content_root": "C:/_TsuyamaSignage/content",
+  "content_root": "C:/_TsuyamaSignage/signage",
   "channels": ["ch01","ch02","ch03","ch04","ch05","ch06","ch07","ch08","ch09","ch10"],
   "fullscreen": true,
-  "log_dir": "C:/_TsuyamaSignage/app/logs"
+  "log_dir": "C:/_TsuyamaSignage/logs"
 }
 ```
 
@@ -98,7 +98,7 @@ C:\_TsuyamaSignage\runtime\python\python.exe app\auto_play.py
 ```
 
 ### 5. コンテンツを配置
-- `content\ch01` を作成し、`.mp4` を入れる。
+- `signage\ch01` を作成し、`.mp4` を入れる。
 - 他チャンネルを使う場合は `ch02`, `ch03` を作成。
 
 ### 6. USBへコピー
@@ -111,7 +111,7 @@ C:\_TsuyamaSignage\runtime\python\python.exe app\auto_play.py
 - [ ] `app\auto_play.py` がある
 - [ ] `app\config\config.json` がある
 - [ ] `app\config\active.json` がある
-- [ ] `content\ch01` に mp4 がある
+- [ ] `signage\ch01` に mp4 がある
 - [ ] `start_signage.bat` がある
 
 ### 作成用PCでの簡易検証（可能な場合）
@@ -138,7 +138,7 @@ D:\_TsuyamaSignage\runtime\mpv\mpv.exe --version
 
 ## 変更運用（必要時）
 - チャンネル切替：`active.json` の `active_channel` を変更するだけ。
-- コンテンツ差し替え：`content\chXX` の mp4 を差し替える。
+- コンテンツ差し替え：`signage\chXX` の mp4 を差し替える。
 
 ## 注意事項
 - **USBから直接実行しない。必ず `C:\_TsuyamaSignage` にコピーして使う。**

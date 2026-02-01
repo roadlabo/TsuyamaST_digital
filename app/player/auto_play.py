@@ -10,7 +10,7 @@ from typing import List, Tuple
 
 CONFIG_PATH = Path("C:/_TsuyamaSignage/app/config/config.json")
 ACTIVE_PATH = Path("C:/_TsuyamaSignage/app/config/active.json")
-DEFAULT_LOG_DIR = Path("C:/_TsuyamaSignage/app/logs")
+DEFAULT_LOG_DIR = Path("C:/_TsuyamaSignage/logs")
 PLAYLIST_DIR = Path("C:/_TsuyamaSignage/app/config")
 
 RETRY_MISSING_SECONDS = 30
