@@ -1023,7 +1023,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         layout.addLayout(body_layout)
 
         status_label = QtWidgets.QLabel("Controller PC状態（CPU/温度）")
-        status_label.setFixedHeight(18)
+        status_label.setFixedHeight(16)
         status_label.setStyleSheet("color:#666;")
         layout.addWidget(status_label)
 
@@ -1031,7 +1031,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         sys_layout = QtWidgets.QVBoxLayout(self.sys_panel)
         sys_layout.setContentsMargins(0, 0, 0, 0)
         sys_layout.setSpacing(2)
-        self.sys_panel.setFixedHeight(60)
+        self.sys_panel.setFixedHeight(74)
 
         chips_row = QtWidgets.QWidget()
         chips_layout = QtWidgets.QHBoxLayout(chips_row)
@@ -1058,7 +1058,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         ssd_layout.setSpacing(6)
         self.lb_ssd_usage = QtWidgets.QLabel("SSD使用状況 -/-")
         self.lb_ssd_usage.setAlignment(QtCore.Qt.AlignCenter)
-        self.lb_ssd_usage.setFixedHeight(22)
+        self.lb_ssd_usage.setFixedHeight(20)
         self.lb_ssd_usage.setStyleSheet(
             "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; padding:2px 8px;"
         )
@@ -1070,7 +1070,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.sys_panel)
 
         remote_label = QtWidgets.QLabel("サイネージPC状態（CPU/温度）")
-        remote_label.setFixedHeight(18)
+        remote_label.setFixedHeight(16)
         remote_label.setStyleSheet("color:#666;")
         layout.addWidget(remote_label)
 
@@ -1078,7 +1078,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         remote_panel_layout = QtWidgets.QVBoxLayout(self.remote_status_panel)
         remote_panel_layout.setContentsMargins(0, 0, 0, 0)
         remote_panel_layout.setSpacing(2)
-        self.remote_status_panel.setFixedHeight(60)
+        self.remote_status_panel.setFixedHeight(74)
 
         remote_cpu_row = QtWidgets.QWidget()
         remote_cpu_layout = QtWidgets.QHBoxLayout(remote_cpu_row)
@@ -1086,7 +1086,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         remote_cpu_layout.setSpacing(GAP_PX)
         remote_cpu_spacer = QtWidgets.QLabel("")
         remote_cpu_spacer.setFixedWidth(LEFT_COL_WIDTH)
-        remote_cpu_spacer.setFixedHeight(30)
+        remote_cpu_spacer.setFixedHeight(26)
         remote_cpu_layout.addWidget(remote_cpu_spacer)
         self._remote_status_spacers["cpu"] = remote_cpu_spacer
 
@@ -1096,16 +1096,16 @@ class ControllerWindow(QtWidgets.QMainWindow):
         remote_ssd_layout.setSpacing(GAP_PX)
         remote_ssd_spacer = QtWidgets.QLabel("")
         remote_ssd_spacer.setFixedWidth(LEFT_COL_WIDTH)
-        remote_ssd_spacer.setFixedHeight(22)
+        remote_ssd_spacer.setFixedHeight(20)
         remote_ssd_layout.addWidget(remote_ssd_spacer)
         self._remote_status_spacers["ssd"] = remote_ssd_spacer
 
         for idx in range(1, 21):
             name = f"Sign{idx:02d}"
             cpu_label = self._make_status_cell()
-            cpu_label.setFixedHeight(30)
+            cpu_label.setFixedHeight(26)
             ssd_label = self._make_status_cell()
-            ssd_label.setFixedHeight(22)
+            ssd_label.setFixedHeight(20)
             remote_cpu_layout.addWidget(cpu_label)
             remote_ssd_layout.addWidget(ssd_label)
             self.remote_status_labels[name] = {"cpu": cpu_label, "ssd": ssd_label}
@@ -1203,7 +1203,7 @@ QPushButton:disabled {
         label = QtWidgets.QLabel(f"{title}: -")
         label.setProperty("title", title)
         label.setAlignment(QtCore.Qt.AlignCenter)
-        label.setFixedHeight(30)
+        label.setFixedHeight(26)
         label.setMinimumWidth(120)
         label.setStyleSheet(
             "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; font-weight:800;"
@@ -1496,6 +1496,17 @@ QPushButton:disabled {
         ssd_temp = payload.get("ssd", {}).get("temp_c")
         used_gb = payload.get("ssd", {}).get("used_gb")
         total_gb = payload.get("ssd", {}).get("total_gb")
+        missing_keys = []
+        if cpu_load is None:
+            missing_keys.append("cpu_total_percent")
+        if cpu_temp is None:
+            missing_keys.append("cpu_temp_c")
+        if gpu_temp is None:
+            missing_keys.append("gpu_temp_c")
+        if chipset_temp is None:
+            missing_keys.append("chipset_temp_c")
+        if ssd_temp is None:
+            missing_keys.append("ssd_temp_c")
 
         severities = [
             self._calc_severity(cpu_load, "load"),
@@ -1517,7 +1528,10 @@ QPushButton:disabled {
             self._set_status_label(labels["cpu"], cpu_text, max(severity_values))
 
         self._set_ssd_usage_label(labels["ssd"], used_gb, total_gb)
-        log_line = f"[OK] {state.name} pc_status取得"
+        if missing_keys:
+            log_line = f"[OK] {state.name} pc_status payload missing: {','.join(missing_keys)}"
+        else:
+            log_line = f"[OK] {state.name} pc_status payload complete"
         if self._remote_status_log_state.get(state.name) != log_line:
             logging.info("%s", log_line)
             self._remote_status_log_state[state.name] = log_line
@@ -1946,6 +1960,8 @@ QPushButton:disabled {
         command = "動画の同期開始"
         self._log_command_accept(command)
         self._log_command_run(command)
+        compare_ctime = self.settings.get("compare_ctime", True)
+        logging.info("[RUN] 同期方式: mirror (ADD/UPD/DEL), compare_ctime=%s", compare_ctime)
         timeout = self.settings.get("network_timeout_seconds", 4)
         max_workers = self.settings.get("sync_workers", 4)
         futures = {}

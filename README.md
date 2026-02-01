@@ -38,3 +38,8 @@ TsuyamaST_digital\
   - `runtime/python/python.exe`
   - `runtime/mpv/mpv.exe`
   - `runtime/hwinfo/HWiNFO64.exe`
+
+## 動画同期の方式（ミラー同期）
+- **全消去全転送ではありません**。差分のみコピーします。
+- **マスターに無いファイルは削除**します（ADD/UPD/DEL のミラー同期）。
+- **mtime/ctime/size が違う場合は差し換え**します（`compare_ctime` 設定で挙動を切替）。
