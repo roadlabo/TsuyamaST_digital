@@ -531,6 +531,8 @@ def main() -> int:
         try:
             cpu_percent = None
             ssd_usage_percent = None
+            ssd_used_gb = None
+            ssd_total_gb = None
 
             if psutil:
                 # CPU TOTAL (%)
@@ -542,6 +544,14 @@ def main() -> int:
                     ssd_usage_percent = float(du.percent)
                 except Exception:
                     ssd_usage_percent = None
+
+            try:
+                du = shutil.disk_usage(r"C:\\")
+                ssd_used_gb = round(du.used / (1024**3), 1)
+                ssd_total_gb = round(du.total / (1024**3), 1)
+            except Exception:
+                ssd_used_gb = None
+                ssd_total_gb = None
 
             # SSD温度（取れなければNoneで継続）
             ssd_temp_c, ssd_temp_sensor, ssd_temp_source = get_ssd_temp_c_via_lhm(
@@ -558,6 +568,8 @@ def main() -> int:
                     "temp_c": ssd_temp_c,
                     "temp_sensor": ssd_temp_sensor,
                     "temp_source": ssd_temp_source,
+                    "used_gb": ssd_used_gb,
+                    "total_gb": ssd_total_gb,
                 },
                 "source": {
                     "cpu_total_percent": "psutil" if psutil else None,

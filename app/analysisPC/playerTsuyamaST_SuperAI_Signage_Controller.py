@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import threading
+import time as time_module
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -871,6 +872,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.ai_level_badge: Optional[QtWidgets.QLabel] = None
         self.left_panel: Optional[QtWidgets.QWidget] = None
         self.sys_panel: Optional[QtWidgets.QWidget] = None
+        self.remote_status_panel: Optional[QtWidgets.QWidget] = None
         self.header_buttons: List[QtWidgets.QPushButton] = []
         self.columns: List[SignageColumnWidget] = []
         self.chip_cpu_load: Optional[QtWidgets.QLabel] = None
@@ -878,6 +880,12 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.chip_gpu_temp: Optional[QtWidgets.QLabel] = None
         self.chip_ssd_temp: Optional[QtWidgets.QLabel] = None
         self.chip_chipset_temp: Optional[QtWidgets.QLabel] = None
+        self.lb_ssd_usage: Optional[QtWidgets.QLabel] = None
+        self.remote_status_labels: Dict[str, Dict[str, QtWidgets.QLabel]] = {}
+        self._remote_status_spacers: Dict[str, QtWidgets.QLabel] = {}
+        self._remote_status_cache: Dict[str, dict] = {}
+        self._remote_status_pending: Dict[str, dict] = {}
+        self._remote_status_log_state: Dict[str, str] = {}
         self._telemetry_timer: Optional[QtCore.QTimer] = None
 
         self._init_ui()
@@ -895,8 +903,10 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._telemetry_timer = QtCore.QTimer(self)
         self._telemetry_timer.setInterval(2000)
         self._telemetry_timer.timeout.connect(self.refresh_local_telemetry)
+        self._telemetry_timer.timeout.connect(self.refresh_remote_telemetry)
         self._telemetry_timer.start()
         self.refresh_local_telemetry()
+        self.refresh_remote_telemetry()
 
     def _init_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -1012,16 +1022,21 @@ class ControllerWindow(QtWidgets.QMainWindow):
         body_layout.addWidget(body_container)
         layout.addLayout(body_layout)
 
-        status_label = QtWidgets.QLabel("PC状態（CPU/温度）")
+        status_label = QtWidgets.QLabel("Controller PC状態（CPU/温度）")
         status_label.setFixedHeight(18)
         status_label.setStyleSheet("color:#666;")
         layout.addWidget(status_label)
 
         self.sys_panel = QtWidgets.QWidget()
-        sys_layout = QtWidgets.QHBoxLayout(self.sys_panel)
+        sys_layout = QtWidgets.QVBoxLayout(self.sys_panel)
         sys_layout.setContentsMargins(0, 0, 0, 0)
-        sys_layout.setSpacing(6)
-        self.sys_panel.setFixedHeight(36)
+        sys_layout.setSpacing(2)
+        self.sys_panel.setFixedHeight(60)
+
+        chips_row = QtWidgets.QWidget()
+        chips_layout = QtWidgets.QHBoxLayout(chips_row)
+        chips_layout.setContentsMargins(0, 0, 0, 0)
+        chips_layout.setSpacing(6)
         self.chip_cpu_load = self._make_chip("CPU負荷")
         self.chip_cpu_temp = self._make_chip("CPU温度")
         self.chip_gpu_temp = self._make_chip("GPU温度")
@@ -1034,9 +1049,72 @@ class ControllerWindow(QtWidgets.QMainWindow):
             self.chip_ssd_temp,
             self.chip_chipset_temp,
         ]:
-            sys_layout.addWidget(chip)
-        sys_layout.addStretch()
+            chips_layout.addWidget(chip)
+        chips_layout.addStretch()
+
+        ssd_row = QtWidgets.QWidget()
+        ssd_layout = QtWidgets.QHBoxLayout(ssd_row)
+        ssd_layout.setContentsMargins(0, 0, 0, 0)
+        ssd_layout.setSpacing(6)
+        self.lb_ssd_usage = QtWidgets.QLabel("SSD使用状況 -/-")
+        self.lb_ssd_usage.setAlignment(QtCore.Qt.AlignCenter)
+        self.lb_ssd_usage.setFixedHeight(22)
+        self.lb_ssd_usage.setStyleSheet(
+            "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; padding:2px 8px;"
+        )
+        ssd_layout.addWidget(self.lb_ssd_usage)
+        ssd_layout.addStretch()
+
+        sys_layout.addWidget(chips_row)
+        sys_layout.addWidget(ssd_row)
         layout.addWidget(self.sys_panel)
+
+        remote_label = QtWidgets.QLabel("サイネージPC状態（CPU/温度）")
+        remote_label.setFixedHeight(18)
+        remote_label.setStyleSheet("color:#666;")
+        layout.addWidget(remote_label)
+
+        self.remote_status_panel = QtWidgets.QWidget()
+        remote_panel_layout = QtWidgets.QVBoxLayout(self.remote_status_panel)
+        remote_panel_layout.setContentsMargins(0, 0, 0, 0)
+        remote_panel_layout.setSpacing(2)
+        self.remote_status_panel.setFixedHeight(60)
+
+        remote_cpu_row = QtWidgets.QWidget()
+        remote_cpu_layout = QtWidgets.QHBoxLayout(remote_cpu_row)
+        remote_cpu_layout.setContentsMargins(0, 0, 0, 0)
+        remote_cpu_layout.setSpacing(GAP_PX)
+        remote_cpu_spacer = QtWidgets.QLabel("")
+        remote_cpu_spacer.setFixedWidth(LEFT_COL_WIDTH)
+        remote_cpu_spacer.setFixedHeight(30)
+        remote_cpu_layout.addWidget(remote_cpu_spacer)
+        self._remote_status_spacers["cpu"] = remote_cpu_spacer
+
+        remote_ssd_row = QtWidgets.QWidget()
+        remote_ssd_layout = QtWidgets.QHBoxLayout(remote_ssd_row)
+        remote_ssd_layout.setContentsMargins(0, 0, 0, 0)
+        remote_ssd_layout.setSpacing(GAP_PX)
+        remote_ssd_spacer = QtWidgets.QLabel("")
+        remote_ssd_spacer.setFixedWidth(LEFT_COL_WIDTH)
+        remote_ssd_spacer.setFixedHeight(22)
+        remote_ssd_layout.addWidget(remote_ssd_spacer)
+        self._remote_status_spacers["ssd"] = remote_ssd_spacer
+
+        for idx in range(1, 21):
+            name = f"Sign{idx:02d}"
+            cpu_label = self._make_status_cell()
+            cpu_label.setFixedHeight(30)
+            ssd_label = self._make_status_cell()
+            ssd_label.setFixedHeight(22)
+            remote_cpu_layout.addWidget(cpu_label)
+            remote_ssd_layout.addWidget(ssd_label)
+            self.remote_status_labels[name] = {"cpu": cpu_label, "ssd": ssd_label}
+
+        remote_cpu_layout.addStretch()
+        remote_ssd_layout.addStretch()
+        remote_panel_layout.addWidget(remote_cpu_row)
+        remote_panel_layout.addWidget(remote_ssd_row)
+        layout.addWidget(self.remote_status_panel)
 
         log_label = QtWidgets.QLabel("ログ")
         layout.addWidget(log_label)
@@ -1049,7 +1127,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.log_view.setFont(log_font)
         self.log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.log_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.log_view.setFixedHeight(100)
+        self.log_view.setFixedHeight(90)
         layout.addWidget(self.log_view)
 
         self.setCentralWidget(central)
@@ -1100,6 +1178,15 @@ QPushButton:disabled {
                 column.setMinimumWidth(0)
                 column.setMaximumWidth(col_w)
 
+        if self._remote_status_spacers:
+            for spacer in self._remote_status_spacers.values():
+                spacer.setFixedWidth(LEFT_COL_WIDTH)
+
+        if self.remote_status_labels:
+            for labels in self.remote_status_labels.values():
+                labels["cpu"].setFixedWidth(col_w)
+                labels["ssd"].setFixedWidth(col_w)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         QtCore.QTimer.singleShot(0, self.apply_dynamic_column_widths)
@@ -1120,6 +1207,18 @@ QPushButton:disabled {
         label.setMinimumWidth(120)
         label.setStyleSheet(
             "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; font-weight:800;"
+        )
+        return label
+
+    def _make_status_cell(self) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel("-")
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setWordWrap(True)
+        font = label.font()
+        font.setPointSize(8)
+        label.setFont(font)
+        label.setStyleSheet(
+            "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; padding:2px 4px;"
         )
         return label
 
@@ -1159,6 +1258,84 @@ QPushButton:disabled {
             f"background:{background}; color:{color}; border:1px solid #bbb; border-radius:8px; font-weight:800;"
         )
 
+    def _status_style(self, severity: int) -> Tuple[str, str]:
+        if severity >= 2:
+            return "#e53935", "#fff"
+        if severity == 1:
+            return "#ffd6e7", "#111"
+        return "#ffffff", "#111"
+
+    def _set_status_label(self, label: QtWidgets.QLabel, text: str, severity: int) -> None:
+        background, color = self._status_style(severity)
+        label.setText(text)
+        label.setStyleSheet(
+            f"background:{background}; color:{color}; border:1px solid #bbb; border-radius:8px; padding:2px 4px;"
+        )
+
+    def _set_status_error(self, label: QtWidgets.QLabel, text: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(
+            "background:#e53935; color:#fff; border:1px solid #bbb; border-radius:8px; padding:2px 4px;"
+        )
+
+    def _set_status_inactive(self, label: QtWidgets.QLabel, text: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(
+            "background:#c9c9c9; color:#666; border:1px solid #bbb; border-radius:8px; padding:2px 4px;"
+        )
+
+    def _calc_severity(self, value: Optional[float], kind: str) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if kind == "load":
+            warn_threshold = 70
+            danger_threshold = 90
+        else:
+            warn_threshold = 55
+            danger_threshold = 65
+        if numeric >= danger_threshold:
+            return 2
+        if numeric >= warn_threshold:
+            return 1
+        return 0
+
+    def _format_metric(self, value: Optional[float], unit: str, decimals: int = 1) -> str:
+        if value is None:
+            return "-"
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        return f"{numeric:.{decimals}f}{unit}"
+
+    def _set_ssd_usage_label(self, label: QtWidgets.QLabel, used_gb: Optional[float], total_gb: Optional[float]) -> None:
+        if used_gb is None or total_gb in (None, 0):
+            label.setText("SSD使用状況 -")
+            label.setStyleSheet(
+                "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; padding:2px 8px;"
+            )
+            return
+        try:
+            usage_percent = (float(used_gb) / float(total_gb)) * 100
+        except (TypeError, ValueError, ZeroDivisionError):
+            self._set_status_error(label, "SSD使用状況 エラー")
+            return
+        if usage_percent >= 90:
+            severity = 2
+        elif usage_percent >= 80:
+            severity = 1
+        else:
+            severity = 0
+        background, color = self._status_style(severity)
+        label.setText(f"SSD使用状況 {float(used_gb):.1f}GB/{float(total_gb):.0f}GB")
+        label.setStyleSheet(
+            f"background:{background}; color:{color}; border:1px solid #bbb; border-radius:8px; padding:2px 8px;"
+        )
+
     def _setup_log_stream(self) -> None:
         orig_err = sys.__stderr__
 
@@ -1196,6 +1373,15 @@ QPushButton:disabled {
         gpu_temp = data.get("gpu_temp")
         ssd_temp = data.get("ssd_temp")
         chipset_temp = data.get("chipset_temp")
+        ssd_used_gb = None
+        ssd_total_gb = None
+        try:
+            usage = shutil.disk_usage(r"C:\\")
+            ssd_used_gb = round(usage.used / (1024**3), 1)
+            ssd_total_gb = round(usage.total / (1024**3), 1)
+        except Exception:
+            ssd_used_gb = None
+            ssd_total_gb = None
 
         if self.chip_cpu_load:
             self._chip_set_value(self.chip_cpu_load, cpu_load, "%", "load")
@@ -1207,6 +1393,134 @@ QPushButton:disabled {
             self._chip_set_value(self.chip_ssd_temp, ssd_temp, "℃", "temp")
         if self.chip_chipset_temp:
             self._chip_set_value(self.chip_chipset_temp, chipset_temp, "℃", "temp")
+        if self.lb_ssd_usage:
+            self._set_ssd_usage_label(self.lb_ssd_usage, ssd_used_gb, ssd_total_gb)
+
+    def _remote_status_path(self, state: SignState) -> Path:
+        remote_path = build_unc_path(
+            state.ip,
+            state.share_name,
+            f"{REMOTE_LOGS_DIR}\\status\\pc_status.json",
+        )
+        return Path(remote_path)
+
+    def _read_remote_status(self, state: SignState) -> dict:
+        path = self._remote_status_path(state)
+        if not path.exists():
+            return {"ok": False, "error": "not_found"}
+        fingerprint = stat_fingerprint(path)
+        cached = self._remote_status_cache.get(state.name)
+        if cached and cached.get("fingerprint") == fingerprint:
+            return {"ok": True, "payload": cached.get("payload"), "cached": True}
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        self._remote_status_cache[state.name] = {"fingerprint": fingerprint, "payload": payload}
+        return {"ok": True, "payload": payload, "cached": False}
+
+    def refresh_remote_telemetry(self) -> None:
+        timeout_sec = 2.0
+        now = time_module.monotonic()
+        for state in self.sign_states.values():
+            labels = self.remote_status_labels.get(state.name)
+            if not labels:
+                continue
+            if not state.exists:
+                self._remote_status_pending.pop(state.name, None)
+                self._set_status_error(labels["cpu"], "通信NG")
+                self._set_status_error(labels["ssd"], "通信NG")
+                continue
+            if not state.enabled:
+                self._remote_status_pending.pop(state.name, None)
+                self._set_status_inactive(labels["cpu"], "非アクティブ")
+                self._set_status_inactive(labels["ssd"], "非アクティブ")
+                continue
+
+            pending = self._remote_status_pending.get(state.name)
+            if pending:
+                future = pending["future"]
+                started = pending["started"]
+                if future.done():
+                    self._remote_status_pending.pop(state.name, None)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {"ok": False, "error": str(exc)}
+                    self._apply_remote_status(state, result)
+                elif now - started > timeout_sec:
+                    future.cancel()
+                    self._remote_status_pending.pop(state.name, None)
+                    self._apply_remote_status(state, {"ok": False, "error": "timeout"})
+                continue
+
+            future = self._executor.submit(self._read_remote_status, state)
+            self._remote_status_pending[state.name] = {"future": future, "started": now}
+
+    def _apply_remote_status(self, state: SignState, result: dict) -> None:
+        labels = self.remote_status_labels.get(state.name)
+        if not labels:
+            return
+
+        if state.last_update and state.online is False:
+            self._set_status_error(labels["cpu"], "通信NG")
+            self._set_status_error(labels["ssd"], "通信NG")
+            return
+
+        if not result.get("ok"):
+            error = result.get("error") or "error"
+            message = "通信NG" if error in ("not_found", "timeout") else "エラー"
+            self._set_status_error(labels["cpu"], message)
+            self._set_status_error(labels["ssd"], message)
+            log_line = f"[ERR] {state.name} pc_status取得失敗 ({error})"
+            if self._remote_status_log_state.get(state.name) != log_line:
+                logging.info("%s", log_line)
+                self._remote_status_log_state[state.name] = log_line
+            return
+
+        payload = result.get("payload")
+        if not isinstance(payload, dict):
+            self._set_status_error(labels["cpu"], "エラー")
+            self._set_status_error(labels["ssd"], "エラー")
+            log_line = f"[ERR] {state.name} pc_status取得失敗 (payload)"
+            if self._remote_status_log_state.get(state.name) != log_line:
+                logging.info("%s", log_line)
+                self._remote_status_log_state[state.name] = log_line
+            return
+
+        cpu_load = payload.get("cpu_total_percent")
+        cpu_temp = payload.get("cpu_temp_c") or payload.get("cpu_temp") or payload.get("cpu_package")
+        gpu_temp = payload.get("gpu_temp_c") or payload.get("gpu_temp")
+        chipset_temp = payload.get("chipset_temp_c") or payload.get("chipset_temp")
+        ssd_temp = payload.get("ssd", {}).get("temp_c")
+        used_gb = payload.get("ssd", {}).get("used_gb")
+        total_gb = payload.get("ssd", {}).get("total_gb")
+
+        severities = [
+            self._calc_severity(cpu_load, "load"),
+            self._calc_severity(cpu_temp, "temp"),
+            self._calc_severity(gpu_temp, "temp"),
+            self._calc_severity(ssd_temp, "temp"),
+            self._calc_severity(chipset_temp, "temp"),
+        ]
+        severity_values = [s for s in severities if s is not None]
+        if not severity_values:
+            self._set_status_error(labels["cpu"], "エラー")
+        else:
+            cpu_text = (
+                f"CPU {self._format_metric(cpu_load, '%')} {self._format_metric(cpu_temp, '℃')}\n"
+                f"GPU {self._format_metric(gpu_temp, '℃')} "
+                f"SSD {self._format_metric(ssd_temp, '℃')} "
+                f"CHP {self._format_metric(chipset_temp, '℃')}"
+            )
+            self._set_status_label(labels["cpu"], cpu_text, max(severity_values))
+
+        self._set_ssd_usage_label(labels["ssd"], used_gb, total_gb)
+        log_line = f"[OK] {state.name} pc_status取得"
+        if self._remote_status_log_state.get(state.name) != log_line:
+            logging.info("%s", log_line)
+            self._remote_status_log_state[state.name] = log_line
 
     def append_log_text(self, text: str) -> None:
         if not text:
