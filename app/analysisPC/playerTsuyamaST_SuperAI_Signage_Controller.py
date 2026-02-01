@@ -43,6 +43,7 @@ CONFIG_DIR = ROOT_DIR / "config"
 CONTENT_DIR = ROOT_DIR.parent / "content"
 LOG_DIR = ROOT_DIR.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+TELEMETRY_LOCAL_PATH = Path(r"C:\_TsuyamaSignage\app\logs\telemetry_local.json")
 
 REMOTE_APP_DIR = "app"
 REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\config"
@@ -71,7 +72,7 @@ TIMER_CHANNEL_COLORS = {
     "ch20": QtGui.QColor(255, 105, 180),
 }
 LEFT_COL_WIDTH = 170
-GAP_PX = 4
+GAP_PX = 3
 OUTER_MARGIN = 6
 
 
@@ -86,7 +87,6 @@ class SignState:
     last_error: str = ""
     last_update: Optional[str] = None
     active_channel: Optional[str] = None
-    telemetry: Optional[dict] = None
 
 
 def load_json(path: Path, default):
@@ -574,11 +574,14 @@ class TimerLegendWidget(QtWidgets.QWidget):
         painter.setPen(QtGui.QPen(QtGui.QColor(80, 80, 80)))
         height = self.height()
         width = self.width()
+        right_pad = 40
+        tick_x2 = width - 2
+        tick_x1 = width - 22
         for hour in [0, 6, 12, 18, 23]:
             y = int(height * (hour * 60) / (24 * 60))
-            painter.drawLine(width - 22, y, width - 2, y)
+            painter.drawLine(tick_x1, y, tick_x2, y)
             painter.drawText(
-                QtCore.QRect(0, y - 8, width - 6, 16),
+                QtCore.QRect(0, y - 8, width - right_pad, 16),
                 QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
                 f"{hour:02d}:00",
             )
@@ -658,7 +661,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
 
         self.display_label = self._make_label("-")
         self.preview_widget = QtWidgets.QWidget()
-        self.preview_widget.setFixedHeight(110)
+        self.preview_widget.setFixedHeight(105)
         preview_layout = QtWidgets.QStackedLayout(self.preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         self.preview_label = QtWidgets.QLabel("サンプルなし")
@@ -685,14 +688,11 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.normal_label = self._make_label("-")
         self.timer_bar = TimerBarWidget()
         self.timer_bar.setFixedHeight(220)
-        self.cpu_usage_label = self._make_label("-")
-        self.ssd_temp_label = self._make_label("-")
-        self.cpu_temp_label = self._make_label("-")
 
         self.power_widget = QtWidgets.QWidget()
         power_layout = QtWidgets.QVBoxLayout(self.power_widget)
         power_layout.setContentsMargins(0, 0, 0, 0)
-        power_layout.setSpacing(2)
+        power_layout.setSpacing(0)
         self.btn_reboot = QtWidgets.QPushButton("再起動")
         self.btn_shutdown = QtWidgets.QPushButton("シャットダウン")
         self.btn_reboot.setFixedHeight(26)
@@ -703,31 +703,28 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.manage_widget = QtWidgets.QWidget()
         manage_layout = QtWidgets.QVBoxLayout(self.manage_widget)
         manage_layout.setContentsMargins(0, 0, 0, 0)
-        manage_layout.setSpacing(2)
+        manage_layout.setSpacing(0)
         self.btn_active = QtWidgets.QPushButton("アクティブ")
         self.btn_active.setCheckable(True)
         self.btn_active.setFixedHeight(26)
         self.comm_label = QtWidgets.QLabel("通信--")
         self.comm_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.comm_label.setFixedHeight(30)
+        self.comm_label.setFixedHeight(26)
         manage_layout.addWidget(self.btn_active)
         manage_layout.addWidget(self.comm_label)
 
         for widget, height in [
             (self.display_label, 28),
-            (self.preview_widget, 110),
-            (self.setting_button, 28),
+            (self.preview_widget, 105),
+            (self.setting_button, 26),
             (self.sleep_label, 20),
             (self.ai_lv2_label, 20),
             (self.ai_lv3_label, 20),
             (self.ai_lv4_label, 20),
             (self.normal_label, 20),
-            (self.cpu_usage_label, 20),
-            (self.ssd_temp_label, 20),
-            (self.cpu_temp_label, 20),
             (self.timer_bar, 220),
-            (self.power_widget, 56),
-            (self.manage_widget, 62),
+            (self.power_widget, 52),
+            (self.manage_widget, 52),
         ]:
             widget.setFixedHeight(height)
             self.layout.addWidget(widget)
@@ -748,6 +745,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.btn_active.toggled.connect(
             lambda checked: self.toggled_active.emit(self.name.replace("Signage", "Sign"), checked)
         )
+        self.set_comm_status(True, None)
 
     def _make_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
@@ -826,6 +824,26 @@ class SignageColumnWidget(QtWidgets.QWidget):
             self.setStyleSheet("")
         self.timer_bar.set_column_enabled(not inactive)
 
+    def set_comm_status(self, enabled: bool, online: Optional[bool]) -> None:
+        if not enabled:
+            self.comm_label.setText("非アクティブ")
+            self.comm_label.setStyleSheet("background:#c9c9c9; color:#333; border-radius:6px;")
+            return
+        if online is None:
+            self.comm_label.setText("通信--")
+            self.comm_label.setStyleSheet("background:#eeeeee; color:#333; border-radius:6px;")
+            return
+        if online:
+            self.comm_label.setText("通信OK")
+            self.comm_label.setStyleSheet(
+                "background:#2d7ff9; color:#fff; border-radius:6px; font-weight:800;"
+            )
+        else:
+            self.comm_label.setText("通信NG")
+            self.comm_label.setStyleSheet(
+                "background:#e53935; color:#fff; border-radius:6px; font-weight:800;"
+            )
+
 
 class ControllerWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -852,8 +870,15 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._column_widgets: Dict[str, SignageColumnWidget] = {}
         self.ai_level_badge: Optional[QtWidgets.QLabel] = None
         self.left_panel: Optional[QtWidgets.QWidget] = None
+        self.sys_panel: Optional[QtWidgets.QWidget] = None
         self.header_buttons: List[QtWidgets.QPushButton] = []
         self.columns: List[SignageColumnWidget] = []
+        self.chip_cpu_load: Optional[QtWidgets.QLabel] = None
+        self.chip_cpu_temp: Optional[QtWidgets.QLabel] = None
+        self.chip_gpu_temp: Optional[QtWidgets.QLabel] = None
+        self.chip_ssd_temp: Optional[QtWidgets.QLabel] = None
+        self.chip_chipset_temp: Optional[QtWidgets.QLabel] = None
+        self._telemetry_timer: Optional[QtCore.QTimer] = None
 
         self._init_ui()
         QtCore.QTimer.singleShot(0, self.apply_dynamic_column_widths)
@@ -867,11 +892,17 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.timer_poll.timeout.connect(self.check_timer_transition)
         self.timer_poll.start()
 
+        self._telemetry_timer = QtCore.QTimer(self)
+        self._telemetry_timer.setInterval(2000)
+        self._telemetry_timer.timeout.connect(self.refresh_local_telemetry)
+        self._telemetry_timer.start()
+        self.refresh_local_telemetry()
+
     def _init_ui(self) -> None:
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN)
-        layout.setSpacing(4)
+        layout.setSpacing(3)
 
         header_layout = QtWidgets.QHBoxLayout()
         title_label = QtWidgets.QLabel("津山駅 SuperAI Signage System Controller")
@@ -942,22 +973,19 @@ class ControllerWindow(QtWidgets.QMainWindow):
         left_layout.setSpacing(2)
 
         left_layout.addWidget(self._make_row_label("表示中ch", 28))
-        left_layout.addWidget(self._make_row_label("表示中映像", 110))
-        left_layout.addWidget(self._make_row_label("設定", 28))
+        left_layout.addWidget(self._make_row_label("表示中映像", 105))
+        left_layout.addWidget(self._make_row_label("設定", 26))
         left_layout.addWidget(self._make_row_label("休眠時", 20))
         left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 20))
         left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 20))
         left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 20))
         left_layout.addWidget(self._make_row_label("通常時", 20))
-        left_layout.addWidget(self._make_row_label("CPU(%)", 20))
-        left_layout.addWidget(self._make_row_label("SSD(℃)", 20))
-        left_layout.addWidget(self._make_row_label("CPU(℃)", 20))
-        left_layout.addWidget(self._make_row_label("タイマー設定", 24))
+        left_layout.addWidget(self._make_row_label("タイマー設定", 20))
         timer_label = TimerLegendWidget()
         timer_label.setFixedHeight(220)
         left_layout.addWidget(timer_label)
-        left_layout.addWidget(self._make_row_label("サイネージPC\n電源管理", 56))
-        left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 62))
+        left_layout.addWidget(self._make_row_label("サイネージPC\n電源管理", 52))
+        left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 52))
 
         body_layout.addWidget(self.left_panel)
 
@@ -983,6 +1011,32 @@ class ControllerWindow(QtWidgets.QMainWindow):
         body_container_layout.addStretch()
         body_layout.addWidget(body_container)
         layout.addLayout(body_layout)
+
+        status_label = QtWidgets.QLabel("PC状態（CPU/温度）")
+        status_label.setFixedHeight(18)
+        status_label.setStyleSheet("color:#666;")
+        layout.addWidget(status_label)
+
+        self.sys_panel = QtWidgets.QWidget()
+        sys_layout = QtWidgets.QHBoxLayout(self.sys_panel)
+        sys_layout.setContentsMargins(0, 0, 0, 0)
+        sys_layout.setSpacing(6)
+        self.sys_panel.setFixedHeight(36)
+        self.chip_cpu_load = self._make_chip("CPU負荷")
+        self.chip_cpu_temp = self._make_chip("CPU温度")
+        self.chip_gpu_temp = self._make_chip("GPU温度")
+        self.chip_ssd_temp = self._make_chip("SSD温度")
+        self.chip_chipset_temp = self._make_chip("チップセット")
+        for chip in [
+            self.chip_cpu_load,
+            self.chip_cpu_temp,
+            self.chip_gpu_temp,
+            self.chip_ssd_temp,
+            self.chip_chipset_temp,
+        ]:
+            sys_layout.addWidget(chip)
+        sys_layout.addStretch()
+        layout.addWidget(self.sys_panel)
 
         log_label = QtWidgets.QLabel("ログ")
         layout.addWidget(log_label)
@@ -1058,6 +1112,53 @@ QPushButton:disabled {
         label.setWordWrap(True)
         return label
 
+    def _make_chip(self, title: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel(f"{title}: -")
+        label.setProperty("title", title)
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setFixedHeight(30)
+        label.setMinimumWidth(120)
+        label.setStyleSheet(
+            "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; font-weight:800;"
+        )
+        return label
+
+    def _chip_set_value(self, label: QtWidgets.QLabel, value: Optional[float], unit: str, kind: str) -> None:
+        title = label.property("title") or ""
+        if value is None:
+            label.setText(f"{title}: -")
+            label.setStyleSheet(
+                "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; font-weight:800;"
+            )
+            return
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            label.setText(f"{title}: -")
+            label.setStyleSheet(
+                "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; font-weight:800;"
+            )
+            return
+        if kind == "load":
+            warn_threshold = 70
+            danger_threshold = 90
+        else:
+            warn_threshold = 55
+            danger_threshold = 65
+        if numeric >= danger_threshold:
+            background = "#e53935"
+            color = "#fff"
+        elif numeric >= warn_threshold:
+            background = "#ffd6e7"
+            color = "#111"
+        else:
+            background = "#ffffff"
+            color = "#111"
+        label.setText(f"{title}: {numeric:.1f}{unit}")
+        label.setStyleSheet(
+            f"background:{background}; color:{color}; border:1px solid #bbb; border-radius:8px; font-weight:800;"
+        )
+
     def _setup_log_stream(self) -> None:
         orig_err = sys.__stderr__
 
@@ -1077,6 +1178,35 @@ QPushButton:disabled {
             self._log_stream.write(formatted)
 
         sys.excepthook = excepthook
+
+    def refresh_local_telemetry(self) -> None:
+        data: dict = {}
+        try:
+            if TELEMETRY_LOCAL_PATH.exists():
+                with TELEMETRY_LOCAL_PATH.open("r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+        except Exception as exc:
+            logging.warning("telemetry_local read failed: %s", exc)
+            data = {}
+
+        cpu_load = data.get("cpu_total")
+        cpu_temp = data.get("cpu_temp")
+        if cpu_temp is None:
+            cpu_temp = data.get("cpu_package")
+        gpu_temp = data.get("gpu_temp")
+        ssd_temp = data.get("ssd_temp")
+        chipset_temp = data.get("chipset_temp")
+
+        if self.chip_cpu_load:
+            self._chip_set_value(self.chip_cpu_load, cpu_load, "%", "load")
+        if self.chip_cpu_temp:
+            self._chip_set_value(self.chip_cpu_temp, cpu_temp, "℃", "temp")
+        if self.chip_gpu_temp:
+            self._chip_set_value(self.chip_gpu_temp, gpu_temp, "℃", "temp")
+        if self.chip_ssd_temp:
+            self._chip_set_value(self.chip_ssd_temp, ssd_temp, "℃", "temp")
+        if self.chip_chipset_temp:
+            self._chip_set_value(self.chip_chipset_temp, chipset_temp, "℃", "temp")
 
     def append_log_text(self, text: str) -> None:
         if not text:
@@ -1180,20 +1310,10 @@ QPushButton:disabled {
         column.btn_active.setEnabled(state.exists)
 
         if inactive:
-            column.comm_label.setText("非アクティブ")
-            column.comm_label.setStyleSheet("background:#c9c9c9; color:#555;")
+            column.set_comm_status(False, None)
         else:
-            if state.last_update is None:
-                column.comm_label.setText("通信--")
-                column.comm_label.setStyleSheet("background:#e0e0e0; color:#555;")
-            elif state.online:
-                column.comm_label.setText("通信OK")
-                column.comm_label.setStyleSheet("background:#2d7ff9; color:#fff; font-weight:700;")
-            else:
-                column.comm_label.setText("通信NG")
-                column.comm_label.setStyleSheet("background:#e53935; color:#fff; font-weight:700;")
-
-        self._update_telemetry_labels(state, column)
+            online = state.online if state.last_update else None
+            column.set_comm_status(True, online)
 
         header_label = self._header_labels.get(state.name.replace("Sign", "Signage"))
         if header_label:
@@ -1253,38 +1373,6 @@ QPushButton:disabled {
             return AI_CHOICES[0]
         return value or "-"
 
-    def _set_telemetry_label(
-        self,
-        label: QtWidgets.QLabel,
-        value: Optional[float],
-        unit: str,
-        warn_threshold: float,
-        danger_threshold: float,
-    ) -> None:
-        if value is None:
-            label.setText("-")
-            label.setStyleSheet("border: 1px solid #999; background:#ffffff;")
-            return
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            label.setText("-")
-            label.setStyleSheet("border: 1px solid #999; background:#ffffff;")
-            return
-        if numeric >= danger_threshold:
-            color = "#ff6b6b"
-        elif numeric >= warn_threshold:
-            color = "#ffd6e7"
-        else:
-            color = "#ffffff"
-        label.setText(f"{numeric:.1f}{unit}")
-        label.setStyleSheet(f"border: 1px solid #999; background:{color};")
-
-    def _update_telemetry_labels(self, state: SignState, column: SignageColumnWidget) -> None:
-        telemetry = state.telemetry or {}
-        self._set_telemetry_label(column.cpu_usage_label, telemetry.get("cpu_total"), "%", 70, 90)
-        self._set_telemetry_label(column.ssd_temp_label, telemetry.get("ssd_temp"), "℃", 55, 65)
-        self._set_telemetry_label(column.cpu_temp_label, telemetry.get("cpu_temp"), "℃", 80, 90)
 
     def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
         root = build_unc_path(state.ip, state.share_name, "")
@@ -1423,10 +1511,6 @@ QPushButton:disabled {
                 state.last_error = error or ""
                 state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if online:
-                    state.telemetry = self.fetch_telemetry(state)
-                else:
-                    state.telemetry = None
-                if online:
                     ok_count += 1
                     self._log_sign_ok(state, "オンライン")
                 else:
@@ -1446,18 +1530,6 @@ QPushButton:disabled {
             return Path(remote_path).exists(), ""
         except Exception as exc:
             return False, str(exc)
-
-    def fetch_telemetry(self, state: SignState) -> Optional[dict]:
-        remote_path = build_unc_path(state.ip, state.share_name, f"{REMOTE_LOGS_DIR}\\telemetry.json")
-        try:
-            path = Path(remote_path)
-            if not path.exists():
-                return None
-            with path.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
-        except Exception as exc:
-            logging.debug("telemetry read failed for %s: %s", state.name, exc)
-            return None
 
     def recompute_all(self) -> None:
         with self._update_lock:
