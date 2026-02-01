@@ -2,7 +2,7 @@
 
 ## 目的
 - インストール用USBが紛失した場合に、別PC（ネット接続あり）から **1から作り直す**。
-- 作業者が手順に迷わず、`C:\_TsuyamaSignage` を再構成できるUSBを作成する。
+- 作業者が手順に迷わず、`_TsuyamaSignage` を再構成できるUSBを作成する。
 
 ## 必要物
 - ネット接続のある作成用PC（Windows 11 / 10）
@@ -11,25 +11,30 @@
 
 ## 事前準備
 - 作成用PCに新規フォルダを作る（例：`D:\_TsuyamaSignage`）。
-- **注意：USBから直接実行しない。** 完成後は現地PCの `C:\_TsuyamaSignage` にコピーして使う。
+- **注意：USBから直接実行しない。** 完成後は現地PCの `_TsuyamaSignage` にコピーして使う。
 
 ## 最終的なフォルダ構成（完成形）
 ```
 _TsuyamaSignage\
+  app\
+    config\
+      Sign01\
+        config.json
+        active.json
+      Sign02\ ...
+    signagePC\
+      auto_play.py
+      pc_agent.py
+      run_controller.bat
+      start_pc_agent.bat
+      requirements_controller.txt
+  content\
+  docs\
+  logs\
   runtime\
     python\  (embeddable python一式)
     mpv\     (mpv一式, mpv.exe含む)
-  logs\
-  app\
-    auto_play.py
-    config\
-      config.json
-      active.json
-  signage\
-    ch01\
-      *.mp4
-    ch02\  ...
-  start_signage.bat
+    hwinfo\  (HWiNFO64.exe含む)
 ```
 
 ## 手順
@@ -62,44 +67,46 @@ import site
 ### 3. mpv を入手・配置
 1) **SourceForge の mpv-player-windows** から最新版を取得
 2) 展開して `runtime\mpv` に配置
-- `C:\_TsuyamaSignage\runtime\mpv\mpv.exe` となるように配置する
+- `runtime\mpv\mpv.exe` があることを確認する
 
 ### 4. アプリファイルを配置
-- `app\auto_play.py` を配置する（このリポジトリから取得）
-- `app\config` フォルダを作成する
+- `app\signagePC\auto_play.py` を配置する（このリポジトリから取得）
+- `app\config\SignXX` フォルダに `config.json` と `active.json` を配置する
 
 #### config.json テンプレート
-`app\config\config.json`:
+`app\config\SignXX\config.json`:
 
 ```json
 {
-  "content_root": "C:/_TsuyamaSignage/signage",
+  "content_root": "content",
   "channels": ["ch01","ch02","ch03","ch04","ch05","ch06","ch07","ch08","ch09","ch10"],
-  "fullscreen": true,
-  "log_dir": "C:/_TsuyamaSignage/logs"
+  "fullscreen": true
 }
 ```
 
 #### active.json テンプレート
-`app\config\active.json`:
+`app\config\SignXX\active.json`:
 
 ```json
 { "active_channel": "ch01" }
 ```
 
-#### start_signage.bat（C:固定版）
-`start_signage.bat` を以下の内容で作成：
+#### run_controller.bat
+`app\signagePC\run_controller.bat` をそのまま利用：
 
 ```bat
 @echo off
-cd /d C:\_TsuyamaSignage
-set PATH=C:\_TsuyamaSignage\runtime\python;C:\_TsuyamaSignage\runtime\mpv;%PATH%
-C:\_TsuyamaSignage\runtime\python\python.exe app\auto_play.py
+set HERE=%~dp0
+cd /d "%HERE%"
+set ROOT=%HERE%..\..
+set PY=%ROOT%\runtime\python\python.exe
+
+"%PY%" "%ROOT%\app\signagePC\auto_play.py"
 ```
 
 ### 5. コンテンツを配置
-- `signage\ch01` を作成し、`.mp4` を入れる。
-- 他チャンネルを使う場合は `ch02`, `ch03` を作成。
+- `content\ch01` を作成し、`.mp4` を入れる。
+- 他チャンネルを使う場合は `content\ch02`, `content\ch03` を作成。
 
 ### 6. USBへコピー
 - 完成した `_TsuyamaSignage` フォルダをUSBのルートにコピーする。
@@ -108,11 +115,12 @@ C:\_TsuyamaSignage\runtime\python\python.exe app\auto_play.py
 ### USB内チェックリスト
 - [ ] `runtime\python` に embeddable python 一式がある
 - [ ] `runtime\mpv` に mpv 一式がある
-- [ ] `app\auto_play.py` がある
-- [ ] `app\config\config.json` がある
-- [ ] `app\config\active.json` がある
-- [ ] `signage\ch01` に mp4 がある
-- [ ] `start_signage.bat` がある
+- [ ] `runtime\hwinfo` に HWiNFO64.exe がある
+- [ ] `app\signagePC\auto_play.py` がある
+- [ ] `app\config\SignXX\config.json` がある
+- [ ] `app\config\SignXX\active.json` がある
+- [ ] `content\ch01` に mp4 がある
+- [ ] `app\signagePC\run_controller.bat` がある
 
 ### 作成用PCでの簡易検証（可能な場合）
 PowerShell で以下を実行：
@@ -122,7 +130,7 @@ D:\_TsuyamaSignage\runtime\python\python.exe -V
 D:\_TsuyamaSignage\runtime\mpv\mpv.exe --version
 ```
 
-- **注意：USBから直接実行しない。本番は `C:\_TsuyamaSignage` にコピーして動作させる。**
+- **注意：USBから直接実行しない。本番は `_TsuyamaSignage` にコピーして動作させる。**
 
 ## トラブルシュート
 - **python.exe が動かない**
@@ -133,12 +141,12 @@ D:\_TsuyamaSignage\runtime\mpv\mpv.exe --version
   - `runtime\mpv\mpv.exe` の位置を確認
 
 - **config/active が読み込まれない**
-  - `app\config` 配下にあるか確認
+  - `app\config\SignXX` 配下にあるか確認
   - JSONの形式が崩れていないか確認
 
 ## 変更運用（必要時）
 - チャンネル切替：`active.json` の `active_channel` を変更するだけ。
-- コンテンツ差し替え：`signage\chXX` の mp4 を差し替える。
+- コンテンツ差し替え：`content\chXX` の mp4 を差し替える。
 
 ## 注意事項
-- **USBから直接実行しない。必ず `C:\_TsuyamaSignage` にコピーして使う。**
+- **USBから直接実行しない。必ず `_TsuyamaSignage` にコピーして使う。**

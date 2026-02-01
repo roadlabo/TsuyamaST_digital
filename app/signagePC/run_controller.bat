@@ -1,5 +1,7 @@
 @echo off
-setlocal
-cd /d %~dp0
-python TsuyamaST_SuperAI_Signage_Controller.py
-endlocal
+set HERE=%~dp0
+cd /d "%HERE%"
+set ROOT=%HERE%..\..
+set PY=%ROOT%\runtime\python\python.exe
+
+"%PY%" "%ROOT%\app\signagePC\auto_play.py"

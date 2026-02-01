@@ -1,19 +1,7 @@
 @echo off
-setlocal
+set HERE=%~dp0
+cd /d "%HERE%"
+set ROOT=%HERE%..\..
+set PY=%ROOT%\runtime\python\python.exe
 
-REM === Base folder ===
-set BASE=C:\_TsuyamaSignage
-
-REM === Embedded Python ===
-set PY=%BASE%\runtime\python\python.exe
-
-REM === Script ===
-set SCRIPT=%BASE%\app\pc_agent.py
-
-REM === Optional: LHM path (for CPU temp via WMI) ===
-set LHM=%BASE%\bin\LibreHardwareMonitor\LibreHardwareMonitor.exe
-
-REM === Run ===
-"%PY%" "%SCRIPT%" --base "%BASE%" --interval 5 --lhm "%LHM%"
-
-endlocal
+"%PY%" "%ROOT%\app\signagePC\pc_agent.py"

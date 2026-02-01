@@ -7,26 +7,26 @@
 Controller は以下の構成を想定しています。
 
 ```
-C:\_TsuyamaSignage\
+TsuyamaST_digital\
 ├─ app\
-│  ├─ player\
-│  │  ├─ TsuyamaST_SuperAI_Signage_Controller.py
-│  │  └─ run_controller.bat
+│  ├─ analysisPC\
+│  │  └─ playerTsuyamaST_SuperAI_Signage_Controller.py
 │  ├─ config\
 │  │  ├─ inventory.json
 │  │  ├─ controller_settings.json
 │  │  ├─ ai_status.json
 │  │  ├─ Sign01\config.json
 │  │  └─ Sign01\active.json
-├─ logs\
-├─ signage\
+├─ content\
 │  └─ ch01\...
+├─ logs\
+├─ runtime\
 └─ backup\logs\
 ```
 
 ## 起動方法
-1. `run_controller.bat` をダブルクリックします。
-2. 初回は PySide6 が必要です。`app/player/requirements_controller.txt` に依存ライブラリがあります。
+1. `runtime\python\python.exe app\analysisPC\playerTsuyamaST_SuperAI_Signage_Controller.py` を実行します。
+2. 初回は PySide6 が必要です。`app/signagePC/requirements_controller.txt` に依存ライブラリがあります。
 
 ## 画面の見方
 - 上部ボタンで一斉操作を実行できます。
@@ -46,15 +46,15 @@ C:\_TsuyamaSignage\
 - 続けて現地へ配布します。
 
 ### フォルダ内動画情報取得
-- `signage/chXX` 内の `*_sample.mp4` を再スキャンします。
+- `content/chXX` 内の `*_sample.mp4` を再スキャンします。
 - プレビューON/OFF の切替にも使用できます。
 
 ### 動画の同期開始
-- `signage/chXX` を現地へ差分コピーします。
-- `staging\sync_tmp` に一度転送し、成功後に `signage` へ反映します。
+- `content/chXX` を現地へ差分コピーします。
+- `staging\sync_tmp` に一度転送し、成功後に `content` へ反映します。
 
 ### LOGファイル取得
-- 現地 `logs` を `C:\_TsuyamaSignage\backup\logs\SignXX\YYYYMMDD_HHMMSS` にコピーします。
+- 現地 `logs` を `backup\logs\SignXX\YYYYMMDD_HHMMSS` にコピーします。
 
 ## 設定変更
 1. 各列の「設定」ボタンでダイアログを開きます。
