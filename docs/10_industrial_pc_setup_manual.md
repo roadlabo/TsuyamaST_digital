@@ -658,7 +658,7 @@ DefaultPassword
 
 - `_TsuyamaSignage` フォルダ構成
 - Python / mpv の実行方式
-- `app\signagePC\run_controller.bat` の内容
+- `app\signagePC\start_auto_play.bat` の内容
 - `auto_play.py` のロジック
 - タスクスケジューラ設定内容
 
@@ -669,7 +669,7 @@ DefaultPassword
 
 ### 方法① スタートアップフォルダにショートカットを入れる方法
 **やり方**
-- スタートアップ フォルダに `app\signagePC\run_controller.bat` のショートカットを置く
+- スタートアップ フォルダに `app\signagePC\start_auto_play.bat` のショートカットを置く
 
 **特徴**
 - **ログイン後に実行** される
@@ -685,7 +685,7 @@ DefaultPassword
 
 ### 方法② タスクスケジューラを使う方法（今回採用）
 **やり方**
-- **ログオン時に** 直接 python.exe を実行
+- **ログオン時に** `app\signagePC\start_auto_play.bat` を実行
 
 **特徴**
 - **ログイン前でも動く**
