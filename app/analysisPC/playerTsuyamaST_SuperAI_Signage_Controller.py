@@ -1736,8 +1736,11 @@ QPushButton:disabled {
         command_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{state.name}"
         payload = {
             "command_id": command_id,
-            "command": command,
+            "action": command,
+            "force": True,
             "issued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "command": command,
+            "by": "controller",
         }
         remote_path = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONFIG_DIR}\\command.json")
         try:
