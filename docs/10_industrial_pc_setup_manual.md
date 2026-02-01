@@ -13,7 +13,7 @@
 1. USBを挿してフォルダをコピーする
 2. 画面が勝手に消えないように設定する
 3. ネットワーク制限（Windowsファイアーウォール）を解除する
-4. フォルダ共有を設定する（app/config・logs・signage）
+4. フォルダ共有を設定する（app/config・logs・content）
 5. 電源ONで自動起動するように設定する
 6. ディスプレイの向きを確認・調整する
 7. 壁紙にサイネージ番号を表示する
@@ -29,24 +29,27 @@
 **フォルダ構成は GitHub と USB で同一** です。
 
 ### Python は 2 本のみ
-- 再生: `auto_play.py`
-- PC管理: `pc_agent.py`
+- 再生: `app/signagePC/auto_play.py`
+- PC管理: `app/signagePC/pc_agent.py`
   - 再起動／シャットダウン
   - 温度ログ
   - truncate
   - 容量監視
 
-### power_agent は存在しない
-**power_agent は廃棄済みで、今後使いません。**
-
 ### 正しいフォルダ構成（C:\_TsuyamaSignage）
 ```
 C:\_TsuyamaSignage\
   app\
-  runtime\
-  logs\
-  signage\
+    analysisPC\
+    config\
+    signagePC\
+  content\
   docs\
+  logs\
+  runtime\
+    python\
+    mpv\
+    hwinfo\
 ```
 
 ## ① USBからフォルダをコピーする（最重要）
@@ -137,7 +140,7 @@ C:\_TsuyamaSignage
 
 ---
 
-## ④ フォルダ共有の設定（app/config・logs・signage）
+## ④ フォルダ共有の設定（app/config・logs・content）
 
 ### ④-1 共有対象フォルダを開く
 1. **エクスプローラー** を開く
@@ -147,7 +150,7 @@ C:\_TsuyamaSignage
 C:\_TsuyamaSignage\
 ```
 
-3. `app\config`、`logs`、`signage` の3フォルダが存在することを確認する
+3. `app\config`、`logs`、`content` の3フォルダが存在することを確認する
 
 ### ④-2 config を共有する
 1. `app\config` を右クリックする
@@ -169,19 +172,19 @@ C:\_TsuyamaSignage\
 7. **「共有」** ボタンをクリックする
 8. 表示されたネットワークパスを控える（例：`\\<PC名>\logs`）
 
-### ④-4 signage を共有する
-1. `signage` を右クリックする
+### ④-4 content を共有する
+1. `content` を右クリックする
 2. **「その他のオプションを確認」** をクリックする
 3. **「アクセスを許可する」** をクリックする
 4. **「特定のユーザー」** をクリックする
 5. プルダウンから **「Everyone」** を選び **「追加」** をクリックする
 6. アクセス許可のレベルを **「読み取り/書き込み」** に変更する
 7. **「共有」** ボタンをクリックする
-8. 表示されたネットワークパスを控える（例：`\\<PC名>\signage`）
+8. 表示されたネットワークパスを控える（例：`\\<PC名>\content`）
 
 ### ④-5 共有状態の最終確認を行う
 1. エクスプローラーのアドレスバーに `\\localhost\config` を入力し、開けることを確認する
-2. 同様に `\\localhost\logs`、`\\localhost\signage` が開けることを確認する
+2. 同様に `\\localhost\logs`、`\\localhost\content` が開けることを確認する
 
 ---
 
@@ -214,7 +217,7 @@ HWiNFO が止まっていると pc_agent も意味がありません。
 初心者の方は、まず **エクスプローラーで場所を確認** してください。
 
 例（既存構成の場合）：  
-- `C:\_TsuyamaSignage\app\pc_agent.py`
+- `C:\_TsuyamaSignage\app\signagePC\pc_agent.py`
 
 **補足：**  
 場所が違う場合は、**後のタスク設定でその場所を指定** してください。
@@ -224,7 +227,7 @@ HWiNFO が止まっていると pc_agent も意味がありません。
 
 **手順：**
 1. エクスプローラーを開く
-2. `C:\_TsuyamaSignage\app\` を開く
+2. `C:\_TsuyamaSignage\app\signagePC\` を開く
 3. **pc_agent.py をダブルクリック** または  
    **「右クリック → 開く」**
 4. 何も起きない／黒い画面が一瞬出て消えてもOK
@@ -273,10 +276,10 @@ Python を直接指定する方法（初心者向けで安定）
 既存の **「Python環境構築」** の章を参照する。
 
 **引数の追加：**  
-`C:\_TsuyamaSignage\app\pc_agent.py`
+`C:\_TsuyamaSignage\app\signagePC\pc_agent.py`
 
 **開始（オプション）：**  
-`C:\_TsuyamaSignage\app`
+`C:\_TsuyamaSignage\app\signagePC`
 
 #### (E) ［条件］タブ
 - **「AC電源の場合のみ開始する」**：チェックを外す（ある場合）
@@ -338,14 +341,26 @@ Python を直接指定する方法（初心者向けで安定）
 2. **プログラム/スクリプト：** に次を入力
 
 ```
-C:\_TsuyamaSignage\start_signage.bat
+C:\_TsuyamaSignage\runtime\python\python.exe
+```
+
+3. **引数の追加（オプション）：** に次を入力
+
+```
+C:\_TsuyamaSignage\app\signagePC\auto_play.py
+```
+
+4. **開始（オプション）：** に次を入力
+
+```
+C:\_TsuyamaSignage\app\signagePC
 ```
 
 3. **OK** をクリック
 
 ### ⑤-7 運用するPythonは2本だけ（重要）
-- **再生：** `auto_play.py`（サイネージ再生）
-- **管理：** `pc_agent.py`（温度ログ・容量・保守）
+- **再生：** `app/signagePC/auto_play.py`（サイネージ再生）
+- **管理：** `app/signagePC/pc_agent.py`（温度ログ・容量・保守）
 - **温度ログ機能は `pc_agent.py` に内蔵**（別ファイル不要）
 
 ### ⑤-8 タスクスケジューラは3つに分ける
@@ -643,7 +658,7 @@ DefaultPassword
 
 - `_TsuyamaSignage` フォルダ構成
 - Python / mpv の実行方式
-- `start_signage.bat` の内容
+- `app\signagePC\run_controller.bat` の内容
 - `auto_play.py` のロジック
 - タスクスケジューラ設定内容
 
@@ -654,7 +669,7 @@ DefaultPassword
 
 ### 方法① スタートアップフォルダにショートカットを入れる方法
 **やり方**
-- スタートアップ フォルダに `start_signage.bat` のショートカットを置く
+- スタートアップ フォルダに `app\signagePC\run_controller.bat` のショートカットを置く
 
 **特徴**
 - **ログイン後に実行** される
@@ -670,7 +685,7 @@ DefaultPassword
 
 ### 方法② タスクスケジューラを使う方法（今回採用）
 **やり方**
-- **ログオン時に** 直接バッチを実行
+- **ログオン時に** 直接 python.exe を実行
 
 **特徴**
 - **ログイン前でも動く**
@@ -689,5 +704,5 @@ DefaultPassword
 
 ## 困ったときはこれだけ覚える
 - 動かない → **`C:\_TsuyamaSignage` をコピーし直す**
-- 触っていいのは → **`signage` フォルダだけ**
+- 触っていいのは → **`content` フォルダだけ**
 - それ以外は → **触らない**

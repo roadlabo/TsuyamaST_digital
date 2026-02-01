@@ -6,5 +6,5 @@
   "preview_enabled": true,
   "sleep_windows": [],
   "sync_staging_subdir": "staging\\sync_tmp",
-  "log_backup_dir": "C:/_TsuyamaSignage/backup/logs"
+  "log_backup_dir": "backup/logs"
 }

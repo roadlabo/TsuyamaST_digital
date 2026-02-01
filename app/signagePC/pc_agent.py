@@ -17,13 +17,28 @@ except ImportError:
     psutil = None
 
 JST = timezone(timedelta(hours=9))
+ROOT = Path(__file__).resolve().parents[2]
+APP_DIR = ROOT / "app"
+CONFIG_DIR = APP_DIR / "config"
+CONTENT_DIR = ROOT / "content"
+LOGS_DIR = ROOT / "logs"
+RUNTIME_DIR = ROOT / "runtime"
+
+PYTHON_EXE = RUNTIME_DIR / "python" / "python.exe"
+MPV_EXE = RUNTIME_DIR / "mpv" / "mpv.exe"
+HWINFO_EXE = RUNTIME_DIR / "hwinfo" / "HWiNFO64.exe"
+
+HWINFO_LOG_DIR = LOGS_DIR / "hwinfo"
+HWINFO_CSV = HWINFO_LOG_DIR / "hwinfo_sensors.csv"
+HWINFO_YEARLY_DIR = HWINFO_LOG_DIR / "yearly"
+HWINFO_STATE_JSON = HWINFO_YEARLY_DIR / "state.json"
 
 
 def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 
-def ensure_dir(path: str) -> None:
+def ensure_dir(path: str | Path) -> None:
     os.makedirs(path, exist_ok=True)
 
 
@@ -259,7 +274,6 @@ def truncate_if_needed(
 
 
 def run_hwinfo_yearly_logger(
-    base_dir: str,
     logger: Optional[Callable[[str], None]] = None,
     poll_interval_sec: float = 2.0,
 ) -> None:
@@ -270,10 +284,13 @@ def run_hwinfo_yearly_logger(
     if sample_minutes <= 0:
         sample_minutes = 30
 
-    logs_dir = os.path.join(base_dir, "logs", "hwinfo")
-    input_csv = os.path.join(logs_dir, "hwinfo_sensors.csv")
-    yearly_dir = os.path.join(logs_dir, "yearly")
-    state_path = os.path.join(yearly_dir, "state.json")
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    HWINFO_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    HWINFO_YEARLY_DIR.mkdir(parents=True, exist_ok=True)
+
+    input_csv = str(HWINFO_CSV)
+    yearly_dir = str(HWINFO_YEARLY_DIR)
+    state_path = str(HWINFO_STATE_JSON)
 
     if logger:
         logger(
@@ -442,35 +459,6 @@ def get_cpu_temp_c():
     return None, None, None
 
 
-def start_lhm_if_exists(lhm_exe_path: str, log_path: str) -> None:
-    if not lhm_exe_path:
-        return
-    if not os.path.isfile(lhm_exe_path):
-        return
-
-    try:
-        task = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq LibreHardwareMonitor.exe"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if "LibreHardwareMonitor.exe" in task.stdout:
-            return
-    except Exception:
-        pass
-
-    try:
-        subprocess.Popen(
-            [lhm_exe_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        log_line(log_path, f"Started LibreHardwareMonitor: {lhm_exe_path}")
-    except Exception as e:
-        log_line(log_path, f"Failed to start LibreHardwareMonitor: {e}")
-
-
 def write_status(status_path: str, payload: dict) -> None:
     tmp = status_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -502,35 +490,29 @@ def exec_shutdown(action: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default=r"C:\_TsuyamaSignage")
     ap.add_argument("--interval", type=int, default=5)
-    ap.add_argument(
-        "--lhm",
-        default=r"C:\_TsuyamaSignage\bin\LibreHardwareMonitor\LibreHardwareMonitor.exe",
-    )
     args = ap.parse_args()
 
-    base = args.base
-    status_dir = os.path.join(base, "status")
-    config_dir = os.path.join(base, "config")
-    logs_dir = os.path.join(base, "logs")
+    status_dir = LOGS_DIR / "status"
+    config_dir = CONFIG_DIR
+    logs_dir = LOGS_DIR
 
     ensure_dir(status_dir)
     ensure_dir(config_dir)
     ensure_dir(logs_dir)
+    ensure_dir(HWINFO_LOG_DIR)
+    ensure_dir(HWINFO_YEARLY_DIR)
 
-    status_path = os.path.join(status_dir, "pc_status.json")
-    cmd_path = os.path.join(config_dir, "command.json")
-    cmd_result_path = os.path.join(status_dir, "command_result.json")
-    log_path = os.path.join(logs_dir, "pc_agent.log")
+    status_path = str(status_dir / "pc_status.json")
+    cmd_path = str(config_dir / "command.json")
+    cmd_result_path = str(status_dir / "command_result.json")
+    log_path = str(logs_dir / "pc_agent.log")
 
     if psutil is None:
         log_line(log_path, "WARN: psutil is not installed. CPU/mem/disk metrics may be missing.")
 
-    start_lhm_if_exists(args.lhm, log_path)
     threading.Thread(
         target=run_hwinfo_yearly_logger,
-        args=(base,),
         kwargs={"logger": lambda msg: log_line(log_path, msg)},
         daemon=True,
     ).start()
