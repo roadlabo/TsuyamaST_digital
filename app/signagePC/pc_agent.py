@@ -570,7 +570,7 @@ def main() -> int:
             if os.path.isfile(cmd_path):
                 try:
                     cmd = read_json(cmd_path)
-                    action = (cmd.get("action") or "").lower().strip()
+                    action = (cmd.get("action") or cmd.get("command") or "").lower().strip()
                     force = bool(cmd.get("force", False))
 
                     if action in ("shutdown", "reboot") and force:

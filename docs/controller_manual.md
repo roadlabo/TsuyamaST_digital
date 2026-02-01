@@ -56,6 +56,27 @@ TsuyamaST_digital\
 ### LOGファイル取得
 - 現地 `logs` を `backup\logs\SignXX\YYYYMMDD_HHMMSS` にコピーします。
 
+## command.json 仕様
+Controller がサイネージPCへ電源操作を依頼する場合は、`app/config/command.json` に以下の形式で書き込みます。
+
+```
+{
+  "command_id": "YYYYMMDD_HHMMSS_Sign01",
+  "action": "shutdown | reboot",
+  "force": true,
+  "issued_at": "YYYY-MM-DD HH:MM:SS",
+  "by": "controller"
+}
+```
+
+### 実行条件
+- `action` が `shutdown` または `reboot`
+- `force` が `true`
+
+### 実行後の処理
+- `pc_agent` は `command.json` を `command.done.<epoch>.json` にリネームします。
+- 実行結果を `logs/status/command_result.json` に書き込みます。
+
 ## 設定変更
 1. 各列の「設定」ボタンでダイアログを開きます。
 2. enabled, sleep_channel, normal_channel, ai_channels, timer_rules を編集します。
