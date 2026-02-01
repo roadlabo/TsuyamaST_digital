@@ -4,7 +4,7 @@ import os
 import socket
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     import psutil
@@ -12,8 +12,11 @@ except ImportError:
     psutil = None
 
 
+JST = timezone(timedelta(hours=9))
+
+
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(JST).isoformat()
 
 
 def ensure_dir(path: str) -> None:
@@ -76,7 +79,10 @@ def get_cpu_temp_c_via_lhm():
     data = run_powershell_json(ps, timeout=5)
     if not data or not data.get("ok"):
         return None, None
-    return float(data["temp_c"]), str(data.get("name") or "CPU")
+    temp = float(data["temp_c"])
+    if temp < -20.0 or temp > 120.0:
+        return None, None
+    return temp, str(data.get("name") or "CPU")
 
 
 def get_cpu_temp_c_via_acpi():
@@ -90,7 +96,11 @@ def get_cpu_temp_c_via_acpi():
     data = run_powershell_json(ps, timeout=5)
     if not data or not data.get("ok"):
         return None, None
-    return float(data["temp_c"]), str(data.get("name") or "ThermalZone")
+    temp = float(data["temp_c"])
+    # 現実的なCPU/筐体温度範囲外は無効値として捨てる
+    if temp < -20.0 or temp > 120.0:
+        return None, None
+    return temp, str(data.get("name") or "ThermalZone")
 
 
 def get_cpu_temp_c():
@@ -247,7 +257,7 @@ def main() -> int:
 
                 try:
                     bt = psutil.boot_time()
-                    boot_time = datetime.fromtimestamp(bt, tz=timezone.utc).isoformat()
+                    boot_time = datetime.fromtimestamp(bt, tz=JST).isoformat()
                     uptime_sec = int(time.time() - bt)
                 except Exception:
                     boot_time = None
