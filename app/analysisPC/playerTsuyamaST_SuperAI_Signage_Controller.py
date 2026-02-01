@@ -44,6 +44,11 @@ CONTENT_DIR = ROOT_DIR.parent / "content"
 LOG_DIR = ROOT_DIR.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+REMOTE_APP_DIR = "app"
+REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\config"
+REMOTE_LOGS_DIR = f"{REMOTE_APP_DIR}\\logs"
+REMOTE_CONTENT_DIR = "content"
+
 INVENTORY_PATH = CONFIG_DIR / "inventory.json"
 AI_STATUS_PATH = CONFIG_DIR / "ai_status.json"
 SETTINGS_PATH = CONFIG_DIR / "controller_settings.json"
@@ -81,7 +86,7 @@ class SignState:
     last_error: str = ""
     last_update: Optional[str] = None
     active_channel: Optional[str] = None
-    last_distribute_ok: bool = True
+    telemetry: Optional[dict] = None
 
 
 def load_json(path: Path, default):
@@ -571,7 +576,7 @@ class TimerLegendWidget(QtWidgets.QWidget):
         width = self.width()
         for hour in [0, 6, 12, 18, 23]:
             y = int(height * (hour * 60) / (24 * 60))
-            painter.drawLine(0, y, 20, y)
+            painter.drawLine(width - 22, y, width - 2, y)
             painter.drawText(
                 QtCore.QRect(0, y - 8, width - 6, 16),
                 QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
@@ -581,7 +586,7 @@ class TimerLegendWidget(QtWidgets.QWidget):
         legend_item_height = 16
         legend_height = len(TIMER_CHANNEL_COLORS) * legend_item_height
         legend_top = max(8, height - legend_height - 20)
-        x = 10
+        x = 6
         y = legend_top
         for channel, color in TIMER_CHANNEL_COLORS.items():
             painter.fillRect(x, y, 12, 12, color)
@@ -642,7 +647,6 @@ class SignageColumnWidget(QtWidgets.QWidget):
     clicked_config = QtCore.Signal(str)
     clicked_reboot = QtCore.Signal(str)
     clicked_shutdown = QtCore.Signal(str)
-    clicked_resend = QtCore.Signal(str)
     toggled_active = QtCore.Signal(str, bool)
 
     def __init__(self, name: str, parent=None):
@@ -654,7 +658,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
 
         self.display_label = self._make_label("-")
         self.preview_widget = QtWidgets.QWidget()
-        self.preview_widget.setFixedHeight(120)
+        self.preview_widget.setFixedHeight(110)
         preview_layout = QtWidgets.QStackedLayout(self.preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         self.preview_label = QtWidgets.QLabel("サンプルなし")
@@ -680,7 +684,10 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.ai_lv4_label = self._make_label("-")
         self.normal_label = self._make_label("-")
         self.timer_bar = TimerBarWidget()
-        self.timer_bar.setFixedHeight(250)
+        self.timer_bar.setFixedHeight(220)
+        self.cpu_usage_label = self._make_label("-")
+        self.ssd_temp_label = self._make_label("-")
+        self.cpu_temp_label = self._make_label("-")
 
         self.power_widget = QtWidgets.QWidget()
         power_layout = QtWidgets.QVBoxLayout(self.power_widget)
@@ -688,8 +695,8 @@ class SignageColumnWidget(QtWidgets.QWidget):
         power_layout.setSpacing(2)
         self.btn_reboot = QtWidgets.QPushButton("再起動")
         self.btn_shutdown = QtWidgets.QPushButton("シャットダウン")
-        self.btn_reboot.setFixedHeight(30)
-        self.btn_shutdown.setFixedHeight(30)
+        self.btn_reboot.setFixedHeight(26)
+        self.btn_shutdown.setFixedHeight(26)
         power_layout.addWidget(self.btn_reboot)
         power_layout.addWidget(self.btn_shutdown)
 
@@ -699,25 +706,28 @@ class SignageColumnWidget(QtWidgets.QWidget):
         manage_layout.setSpacing(2)
         self.btn_active = QtWidgets.QPushButton("アクティブ")
         self.btn_active.setCheckable(True)
-        self.btn_resend = QtWidgets.QPushButton("再送")
-        self.btn_resend.setObjectName("resend_button")
-        self.btn_active.setFixedHeight(30)
-        self.btn_resend.setFixedHeight(30)
+        self.btn_active.setFixedHeight(26)
+        self.comm_label = QtWidgets.QLabel("通信--")
+        self.comm_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.comm_label.setFixedHeight(30)
         manage_layout.addWidget(self.btn_active)
-        manage_layout.addWidget(self.btn_resend)
+        manage_layout.addWidget(self.comm_label)
 
         for widget, height in [
-            (self.display_label, 34),
-            (self.preview_widget, 120),
-            (self.setting_button, 32),
-            (self.sleep_label, 24),
-            (self.ai_lv2_label, 24),
-            (self.ai_lv3_label, 24),
-            (self.ai_lv4_label, 24),
-            (self.normal_label, 24),
-            (self.timer_bar, 250),
-            (self.power_widget, 60),
-            (self.manage_widget, 60),
+            (self.display_label, 28),
+            (self.preview_widget, 110),
+            (self.setting_button, 28),
+            (self.sleep_label, 20),
+            (self.ai_lv2_label, 20),
+            (self.ai_lv3_label, 20),
+            (self.ai_lv4_label, 20),
+            (self.normal_label, 20),
+            (self.cpu_usage_label, 20),
+            (self.ssd_temp_label, 20),
+            (self.cpu_temp_label, 20),
+            (self.timer_bar, 220),
+            (self.power_widget, 56),
+            (self.manage_widget, 62),
         ]:
             widget.setFixedHeight(height)
             self.layout.addWidget(widget)
@@ -734,9 +744,6 @@ class SignageColumnWidget(QtWidgets.QWidget):
         )
         self.btn_shutdown.clicked.connect(
             lambda: self.clicked_shutdown.emit(self.name.replace("Signage", "Sign"))
-        )
-        self.btn_resend.clicked.connect(
-            lambda: self.clicked_resend.emit(self.name.replace("Signage", "Sign"))
         )
         self.btn_active.toggled.connect(
             lambda checked: self.toggled_active.emit(self.name.replace("Signage", "Sign"), checked)
@@ -807,6 +814,10 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.btn_active.setText(label)
         self.btn_active.setChecked(active)
         del blocker
+        if active:
+            self.btn_active.setStyleSheet("background:#e8ffe8; border:2px solid #2e7d32; font-weight:800;")
+        else:
+            self.btn_active.setStyleSheet("background:#c9c9c9; border:2px solid #7a7a7a; font-weight:700;")
 
     def set_inactive_style(self, inactive: bool) -> None:
         if inactive:
@@ -930,19 +941,23 @@ class ControllerWindow(QtWidgets.QMainWindow):
         left_layout.setContentsMargins(2, 2, 2, 2)
         left_layout.setSpacing(2)
 
-        left_layout.addWidget(self._make_row_label("表示中ch", 34))
-        left_layout.addWidget(self._make_row_label("表示中映像", 120))
-        left_layout.addWidget(self._make_row_label("設定", 32))
-        left_layout.addWidget(self._make_row_label("休眠時", 24))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 24))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 24))
-        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 24))
-        left_layout.addWidget(self._make_row_label("通常時", 24))
+        left_layout.addWidget(self._make_row_label("表示中ch", 28))
+        left_layout.addWidget(self._make_row_label("表示中映像", 110))
+        left_layout.addWidget(self._make_row_label("設定", 28))
+        left_layout.addWidget(self._make_row_label("休眠時", 20))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 20))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 20))
+        left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 20))
+        left_layout.addWidget(self._make_row_label("通常時", 20))
+        left_layout.addWidget(self._make_row_label("CPU(%)", 20))
+        left_layout.addWidget(self._make_row_label("SSD(℃)", 20))
+        left_layout.addWidget(self._make_row_label("CPU(℃)", 20))
+        left_layout.addWidget(self._make_row_label("タイマー設定", 24))
         timer_label = TimerLegendWidget()
-        timer_label.setFixedHeight(250)
+        timer_label.setFixedHeight(220)
         left_layout.addWidget(timer_label)
-        left_layout.addWidget(self._make_row_label("サイネージPC\n電源管理", 60))
-        left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 60))
+        left_layout.addWidget(self._make_row_label("サイネージPC\n電源管理", 56))
+        left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 62))
 
         body_layout.addWidget(self.left_panel)
 
@@ -963,7 +978,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
             column.clicked_config.connect(self._on_column_config)
             column.clicked_reboot.connect(self._on_column_reboot)
             column.clicked_shutdown.connect(self._on_column_shutdown)
-            column.clicked_resend.connect(self._on_column_resend)
             column.toggled_active.connect(self._on_column_active_toggle)
 
         body_container_layout.addStretch()
@@ -1011,6 +1025,8 @@ QPushButton:disabled {
 }
 """
         )
+
+        QtCore.QTimer.singleShot(800, self.check_connectivity)
 
     def apply_dynamic_column_widths(self) -> None:
         total_w = self.centralWidget().width()
@@ -1159,8 +1175,25 @@ QPushButton:disabled {
         inactive = (not state.exists) or (not state.enabled)
         column.set_active_state(state.enabled)
         column.set_inactive_style(inactive)
-        for btn in [column.setting_button, column.btn_reboot, column.btn_shutdown, column.btn_resend]:
+        for btn in [column.setting_button, column.btn_reboot, column.btn_shutdown]:
             btn.setEnabled(state.exists and state.enabled)
+        column.btn_active.setEnabled(state.exists)
+
+        if inactive:
+            column.comm_label.setText("非アクティブ")
+            column.comm_label.setStyleSheet("background:#c9c9c9; color:#555;")
+        else:
+            if state.last_update is None:
+                column.comm_label.setText("通信--")
+                column.comm_label.setStyleSheet("background:#e0e0e0; color:#555;")
+            elif state.online:
+                column.comm_label.setText("通信OK")
+                column.comm_label.setStyleSheet("background:#2d7ff9; color:#fff; font-weight:700;")
+            else:
+                column.comm_label.setText("通信NG")
+                column.comm_label.setStyleSheet("background:#e53935; color:#fff; font-weight:700;")
+
+        self._update_telemetry_labels(state, column)
 
         header_label = self._header_labels.get(state.name.replace("Sign", "Signage"))
         if header_label:
@@ -1170,12 +1203,6 @@ QPushButton:disabled {
                 header_label.setStyleSheet("border: 1px solid #999;")
 
         self.update_preview_cell(state, column)
-        self.update_resend_button(state)
-
-    def update_resend_button(self, state: SignState) -> None:
-        column = self._column_widgets.get(state.name.replace("Sign", "Signage"))
-        if column:
-            column.btn_resend.setEnabled(state.exists and state.enabled and not state.last_distribute_ok)
 
     def build_status_text(self, state: SignState) -> str:
         return (
@@ -1225,6 +1252,39 @@ QPushButton:disabled {
         if value == "same_as_normal":
             return AI_CHOICES[0]
         return value or "-"
+
+    def _set_telemetry_label(
+        self,
+        label: QtWidgets.QLabel,
+        value: Optional[float],
+        unit: str,
+        warn_threshold: float,
+        danger_threshold: float,
+    ) -> None:
+        if value is None:
+            label.setText("-")
+            label.setStyleSheet("border: 1px solid #999; background:#ffffff;")
+            return
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            label.setText("-")
+            label.setStyleSheet("border: 1px solid #999; background:#ffffff;")
+            return
+        if numeric >= danger_threshold:
+            color = "#ff6b6b"
+        elif numeric >= warn_threshold:
+            color = "#ffd6e7"
+        else:
+            color = "#ffffff"
+        label.setText(f"{numeric:.1f}{unit}")
+        label.setStyleSheet(f"border: 1px solid #999; background:{color};")
+
+    def _update_telemetry_labels(self, state: SignState, column: SignageColumnWidget) -> None:
+        telemetry = state.telemetry or {}
+        self._set_telemetry_label(column.cpu_usage_label, telemetry.get("cpu_total"), "%", 70, 90)
+        self._set_telemetry_label(column.ssd_temp_label, telemetry.get("ssd_temp"), "℃", 55, 65)
+        self._set_telemetry_label(column.cpu_temp_label, telemetry.get("cpu_temp"), "℃", 80, 90)
 
     def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
         root = build_unc_path(state.ip, state.share_name, "")
@@ -1363,6 +1423,10 @@ QPushButton:disabled {
                 state.last_error = error or ""
                 state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if online:
+                    state.telemetry = self.fetch_telemetry(state)
+                else:
+                    state.telemetry = None
+                if online:
                     ok_count += 1
                     self._log_sign_ok(state, "オンライン")
                 else:
@@ -1377,11 +1441,23 @@ QPushButton:disabled {
         self._log_command_done(command, ok_count, skip_count, err_count)
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str]:
-        remote_path = build_unc_path(state.ip, state.share_name, "config")
+        remote_path = build_unc_path(state.ip, state.share_name, REMOTE_CONFIG_DIR)
         try:
             return Path(remote_path).exists(), ""
         except Exception as exc:
             return False, str(exc)
+
+    def fetch_telemetry(self, state: SignState) -> Optional[dict]:
+        remote_path = build_unc_path(state.ip, state.share_name, f"{REMOTE_LOGS_DIR}\\telemetry.json")
+        try:
+            path = Path(remote_path)
+            if not path.exists():
+                return None
+            with path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception as exc:
+            logging.debug("telemetry read failed for %s: %s", state.name, exc)
+            return None
 
     def recompute_all(self) -> None:
         with self._update_lock:
@@ -1434,7 +1510,6 @@ QPushButton:disabled {
         for future, state in futures.items():
             try:
                 ok, message = future.result(timeout=timeout)
-                state.last_distribute_ok = ok
                 state.last_error = message if not ok else ""
                 state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if ok:
@@ -1451,12 +1526,10 @@ QPushButton:disabled {
                         if log_label:
                             self._log_sign_error(state, message)
             except Exception as exc:
-                state.last_distribute_ok = False
                 state.last_error = str(exc)
                 err_count += 1
                 if log_label:
                     self._log_sign_error(state, str(exc))
-            self.update_resend_button(state)
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
         return ok_count, skip_count, err_count
 
@@ -1468,44 +1541,20 @@ QPushButton:disabled {
         if not ok:
             logging.warning("到達不可 %s (%s)", state.name, msg)
             return False, msg
-        remote_path = build_unc_path(state.ip, state.share_name, "config\\active.json")
+        remote_path = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONFIG_DIR}\\active.json")
         try:
+            logging.info("[RUN] %s active.json 書込 -> %s", state.name, remote_path)
             write_json_atomic_remote(Path(remote_path), active)
             logging.info("Distributed active.json to %s", state.name)
             return True, ""
         except Exception as exc:
-            logging.exception("Failed to distribute to %s", state.name)
-            return False, str(exc)
-
-    def resend_active(self, state: SignState) -> None:
-        self._log_command_run(f"{state.name} 再送")
-        future = self._executor.submit(self.distribute_active, state)
-
-        def _complete(fut):
-            try:
-                ok, message = fut.result()
-                state.last_distribute_ok = ok
-                state.last_error = message if not ok else ""
-                if ok:
-                    self._log_sign_ok(state, "再送完了")
-                    self._log_command_done(f"{state.name} 再送", 1, 0, 0)
-                else:
-                    if "共有" in message or "到達" in message:
-                        self._log_sign_skip(state, f"到達不可 ({message})")
-                        self._log_command_done(f"{state.name} 再送", 0, 1, 0)
-                    else:
-                        self._log_sign_error(state, message)
-                        self._log_command_done(f"{state.name} 再送", 0, 0, 1)
-            except Exception as exc:
-                state.last_distribute_ok = False
-                state.last_error = str(exc)
-                self._log_sign_error(state, str(exc))
-                self._log_command_done(f"{state.name} 再送", 0, 0, 1)
-            state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.update_resend_button(state)
-            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-
-        future.add_done_callback(lambda fut: QtCore.QTimer.singleShot(0, lambda: _complete(fut)))
+            logging.error(
+                "Failed to distribute to %s (%s: %s)",
+                state.name,
+                exc.__class__.__name__,
+                exc,
+            )
+            return False, f"{exc.__class__.__name__}: {exc}"
 
     def start_sync(self) -> None:
         command = "動画の同期開始"
@@ -1568,7 +1617,7 @@ QPushButton:disabled {
             local_dir = CONTENT_DIR / channel
             if not local_dir.exists():
                 continue
-            remote_content = build_unc_path(state.ip, state.share_name, f"content\\{channel}")
+            remote_content = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONTENT_DIR}\\{channel}")
             remote_dir = Path(remote_content)
             if not remote_dir.exists():
                 return False, f"remote content missing: {remote_content}"
@@ -1644,7 +1693,7 @@ QPushButton:disabled {
         backup_root = Path(self.settings.get("log_backup_dir", str(ROOT_DIR.parent / "backup" / "logs")))
         dest = backup_root / state.name / timestamp
         ensure_dir(dest)
-        remote_logs = build_unc_path(state.ip, state.share_name, "logs")
+        remote_logs = build_unc_path(state.ip, state.share_name, REMOTE_LOGS_DIR)
         try:
             if not Path(remote_logs).exists():
                 return False, "remote logs missing"
@@ -1690,7 +1739,7 @@ QPushButton:disabled {
             "command": command,
             "issued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        remote_path = build_unc_path(state.ip, state.share_name, "config\\command.json")
+        remote_path = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONFIG_DIR}\\command.json")
         try:
             write_json_atomic_remote(Path(remote_path), payload)
             logging.info("Power command %s sent to %s", command, state.name)
@@ -1728,12 +1777,6 @@ QPushButton:disabled {
             after_label = "アクティブ" if active else "非アクティブ"
             logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
         self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-
-    def _on_column_resend(self, sign_name: str) -> None:
-        state = self._get_state_by_sign_name(sign_name)
-        if state:
-            self._log_command_accept(f"{state.name} 再送")
-            self.resend_active(state)
 
     def check_timer_transition(self) -> None:
         self.recompute_all()
