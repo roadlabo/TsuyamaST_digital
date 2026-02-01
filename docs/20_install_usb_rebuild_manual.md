@@ -25,7 +25,7 @@ _TsuyamaSignage\
     signagePC\
       auto_play.py
       pc_agent.py
-      run_controller.bat
+      start_auto_play.bat
       start_pc_agent.bat
       requirements_controller.txt
   content\
@@ -91,17 +91,12 @@ import site
 { "active_channel": "ch01" }
 ```
 
-#### run_controller.bat
-`app\signagePC\run_controller.bat` をそのまま利用：
+#### start_auto_play.bat
+`app\signagePC\start_auto_play.bat` をそのまま利用：
 
 ```bat
 @echo off
-set HERE=%~dp0
-cd /d "%HERE%"
-set ROOT=%HERE%..\..
-set PY=%ROOT%\runtime\python\python.exe
-
-"%PY%" "%ROOT%\app\signagePC\auto_play.py"
+"C:\_TsuyamaSignage\runtime\python\python.exe" "C:\_TsuyamaSignage\app\signagePC\auto_play.py"
 ```
 
 ### 5. コンテンツを配置
@@ -120,7 +115,7 @@ set PY=%ROOT%\runtime\python\python.exe
 - [ ] `app\config\SignXX\config.json` がある
 - [ ] `app\config\SignXX\active.json` がある
 - [ ] `content\ch01` に mp4 がある
-- [ ] `app\signagePC\run_controller.bat` がある
+- [ ] `app\signagePC\start_auto_play.bat` がある
 
 ### 作成用PCでの簡易検証（可能な場合）
 PowerShell で以下を実行：
