@@ -51,6 +51,57 @@ def run_powershell_json(ps_script: str, timeout: int = 5):
     return json.loads(out)
 
 
+def get_ssd_temp_c_via_lhm(hardware_hint: str = ""):
+    """
+    LibreHardwareMonitor の WMI から SSD温度を取得する。
+    - hardware_hint があれば、その文字列を含む Hardware/Name を優先
+    - 見つからなければ (None, None, None) を返す
+    """
+    # PowerShell側で「SSDっぽい温度」を優先して1件返す
+    ps = r"""
+    $ErrorActionPreference = "SilentlyContinue"
+    $ns = "root\LibreHardwareMonitor"
+    $hint = "%HINT%"
+    $sensors = Get-CimInstance -Namespace $ns -ClassName Sensor
+    if (-not $sensors) { "" | Out-String; exit 0 }
+
+    $temps = $sensors | Where-Object { $_.SensorType -eq "Temperature" }
+
+    # まず hint（例: SSSTC）があれば最優先
+    if ($hint -and $hint.Trim().Length -gt 0) {
+      $cand = $temps | Where-Object { ($_.Name -match $hint) -or ($_.Hardware -match $hint) } | Select-Object -First 1
+      if ($cand) {
+        @{ ok=$true; source="lhm"; name=$cand.Name; temp_c=[double]$cand.Value } | ConvertTo-Json -Compress
+        exit 0
+      }
+    }
+
+    # 次に SSD/NVMe/Drive っぽい名前を優先
+    $cand2 = $temps | Where-Object { $_.Name -match "SSD|NVMe|Drive" -or $_.Hardware -match "SSD|NVMe|Drive" } | Select-Object -First 1
+    if ($cand2) {
+      @{ ok=$true; source="lhm"; name=$cand2.Name; temp_c=[double]$cand2.Value } | ConvertTo-Json -Compress
+      exit 0
+    }
+
+    "" | Out-String
+    """
+    ps = ps.replace("%HINT%", (hardware_hint or "").replace('"', ""))
+    data = run_powershell_json(ps, timeout=5)
+    if not data or not data.get("ok"):
+        return None, None, None
+
+    try:
+        temp = float(data["temp_c"])
+    except Exception:
+        return None, None, None
+
+    # 現実的でない温度は無効扱い
+    if temp < -20.0 or temp > 120.0:
+        return None, None, None
+
+    return temp, str(data.get("name") or "SSD"), "lhm"
+
+
 def get_cpu_temp_c_via_lhm():
     ps = r"""
     $ErrorActionPreference = "SilentlyContinue"
@@ -219,66 +270,40 @@ def main() -> int:
     while True:
         try:
             cpu_percent = None
-            cpu_freq_mhz = None
-            mem = {}
-            disk = {}
-            boot_time = None
-            uptime_sec = None
+            ssd_usage_percent = None
 
             if psutil:
+                # CPU TOTAL (%)
                 cpu_percent = psutil.cpu_percent(interval=0.2)
 
+                # SSD使用率は C:\ 固定（曖昧さ排除）
                 try:
-                    f = psutil.cpu_freq()
-                    cpu_freq_mhz = float(f.current) if f else None
+                    du = psutil.disk_usage(r"C:\\")
+                    ssd_usage_percent = float(du.percent)
                 except Exception:
-                    cpu_freq_mhz = None
+                    ssd_usage_percent = None
 
-                try:
-                    vm = psutil.virtual_memory()
-                    mem = {
-                        "total_gb": round(vm.total / (1024**3), 2),
-                        "used_gb": round(vm.used / (1024**3), 2),
-                        "percent": vm.percent,
-                    }
-                except Exception:
-                    mem = {}
-
-                try:
-                    drive_root = base.split("\\")[0] + "\\"
-                    du = psutil.disk_usage(drive_root)
-                    disk = {
-                        "total_gb": round(du.total / (1024**3), 2),
-                        "used_gb": round(du.used / (1024**3), 2),
-                        "percent": du.percent,
-                    }
-                except Exception:
-                    disk = {}
-
-                try:
-                    bt = psutil.boot_time()
-                    boot_time = datetime.fromtimestamp(bt, tz=JST).isoformat()
-                    uptime_sec = int(time.time() - bt)
-                except Exception:
-                    boot_time = None
-                    uptime_sec = None
-
-            temp_c, temp_name, temp_source = get_cpu_temp_c()
+            # SSD温度（取れなければNoneで継続）
+            ssd_temp_c, ssd_temp_sensor, ssd_temp_source = get_ssd_temp_c_via_lhm(
+                hardware_hint="SSSTC"
+            )
 
             payload = {
                 "timestamp": now_iso(),
                 "host": hostname,
-                "cpu": {
-                    "percent": cpu_percent,
-                    "freq_mhz": cpu_freq_mhz,
-                    "temp_c": temp_c,
-                    "temp_sensor": temp_name,
-                    "temp_source": temp_source,
+                "cpu_total_percent": cpu_percent,
+                "ssd": {
+                    "drive": r"C:\\",
+                    "usage_percent": ssd_usage_percent,
+                    "temp_c": ssd_temp_c,
+                    "temp_sensor": ssd_temp_sensor,
+                    "temp_source": ssd_temp_source,
                 },
-                "memory": mem,
-                "disk": disk,
-                "boot_time": boot_time,
-                "uptime_sec": uptime_sec,
+                "source": {
+                    "cpu_total_percent": "psutil" if psutil else None,
+                    "ssd_usage_percent": "psutil" if psutil else None,
+                    "ssd_temp_c": "lhm" if ssd_temp_source == "lhm" else None,
+                },
             }
             write_status(status_path, payload)
 
