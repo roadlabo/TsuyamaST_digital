@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -10,6 +11,8 @@ try:
     import psutil
 except ImportError:
     psutil = None
+
+from hwinfo.hwinfo_yearly_logger import run_hwinfo_yearly_logger
 
 
 JST = timezone(timedelta(hours=9))
@@ -256,6 +259,12 @@ def main() -> int:
         log_line(log_path, "WARN: psutil is not installed. CPU/mem/disk metrics may be missing.")
 
     start_lhm_if_exists(args.lhm, log_path)
+    threading.Thread(
+        target=run_hwinfo_yearly_logger,
+        args=(base,),
+        kwargs={"logger": lambda msg: log_line(log_path, msg)},
+        daemon=True,
+    ).start()
 
     hostname = socket.gethostname()
 
