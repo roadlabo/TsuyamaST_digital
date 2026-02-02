@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
@@ -33,10 +34,11 @@ WATCH_POLL_SECONDS = 2.0
 
 # active.json / config.json の変更検知は mtime で行う（Windowsでも軽い）
 logger = logging.getLogger("auto_play")
+JST = timezone(timedelta(hours=9))
 
 
 def now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
+    return datetime.now(JST).isoformat()
 
 
 def write_json_atomic(path: Path, payload: dict) -> None:
@@ -334,6 +336,16 @@ def run_player_with_watch(
         stop_player(proc)
 
 
+def sleep_with_heartbeat(duration: float, heartbeat: HeartbeatState, *, error: str | None) -> None:
+    end_at = time.monotonic() + duration
+    while True:
+        write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error=error, mpv_pid=None))
+        remaining = end_at - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(HEARTBEAT_INTERVAL_SEC, max(0.1, remaining)))
+
+
 def resolve_content_root(config: dict) -> Path:
     raw = config.get("content_root")
     if raw:
@@ -354,6 +366,7 @@ def main() -> None:
     global _blackout_proc
     configure_logging(DEFAULT_LOG_DIR)
     logger.info("auto_play.py starting")
+    STATUS_DIR.mkdir(parents=True, exist_ok=True)
     config_path = CONFIG_DIR / "config.json"
     active_path = CONFIG_DIR / "active.json"
     playlist_dir = CONFIG_DIR
@@ -404,18 +417,14 @@ def main() -> None:
                 HEARTBEAT_PATH,
                 heartbeat.to_payload(error=f"player stopped ({exit_code})", mpv_pid=None),
             )
-            time.sleep(RETRY_PLAYER_SECONDS)
+            sleep_with_heartbeat(RETRY_PLAYER_SECONDS, heartbeat, error=f"player stopped ({exit_code})")
 
         except Exception as exc:
             logger.exception("Unhandled error. Retrying in %s seconds.", RETRY_MISSING_SECONDS)
             if _blackout_proc and _blackout_proc.poll() is None:
                 stop_player(_blackout_proc)
                 _blackout_proc = None
-            write_json_atomic(
-                HEARTBEAT_PATH,
-                heartbeat.to_payload(error=str(exc)[:200], mpv_pid=None),
-            )
-            time.sleep(RETRY_MISSING_SECONDS)
+            sleep_with_heartbeat(RETRY_MISSING_SECONDS, heartbeat, error=str(exc)[:200])
 
 
 if __name__ == "__main__":
