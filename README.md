@@ -40,3 +40,13 @@ TsuyamaST_digital\
 - **全消去全転送ではありません**。差分のみコピーします。
 - **マスターに無いファイルは削除**します（ADD/UPD/DEL のミラー同期）。
 - **mtime/ctime/size が違う場合は差し換え**します（`compare_ctime` 設定で挙動を切替）。
+
+## Controller 起動（タスクスケジューラ）
+
+タスクスケジューラの「操作」は プログラムの開始
+
+プログラム/スクリプト に C:\_TsuyamaSignage\start_controller.bat
+
+「最上位の特権で実行する」を ON
+
+ログは C:\_TsuyamaSignage\logs\controller_start_YYYYMMDD_hhmmss.log に出る
