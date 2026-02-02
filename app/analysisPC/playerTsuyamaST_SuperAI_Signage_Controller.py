@@ -1263,16 +1263,16 @@ QPushButton:disabled {
 
     def _format_metric(self, value: Optional[float], unit: str, decimals: int = 1) -> str:
         if value is None:
-            return "-"
+            return "不明"
         try:
             numeric = float(value)
         except (TypeError, ValueError):
-            return "-"
+            return "不明"
         return f"{numeric:.{decimals}f}{unit}"
 
     def _set_ssd_usage_label(self, label: QtWidgets.QLabel, used_gb: Optional[float], total_gb: Optional[float]) -> None:
         if used_gb is None or total_gb in (None, 0):
-            label.setText("SSD使用状況 -")
+            label.setText("SSD使用状況 不明")
             label.setStyleSheet(
                 "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; padding:2px 8px;"
             )
@@ -1296,24 +1296,24 @@ QPushButton:disabled {
 
     def _format_pc_value(self, value: Optional[float], decimals: int = 1) -> str:
         if value is None:
-            return "-"
+            return "不明"
         try:
             numeric = float(value)
         except (TypeError, ValueError):
-            return "-"
+            return "不明"
         return f"{numeric:.{decimals}f}"
 
     def _format_pc_timestamp(self, value: Optional[str]) -> str:
         if not value:
-            return "-"
+            return "不明"
         try:
             parsed = datetime.fromisoformat(value)
         except Exception:
-            return "-"
+            return "不明"
         return parsed.strftime("%m/%d %H:%M:%S")
 
     def _build_pc_status_values(self, payload: Optional[dict]) -> Dict[str, str]:
-        values = {key: "-" for key, _ in PC_STATUS_ITEMS}
+        values = {key: "不明" for key, _ in PC_STATUS_ITEMS}
         if not isinstance(payload, dict):
             return values
 
@@ -1331,7 +1331,7 @@ QPushButton:disabled {
         elif running is False:
             playback_state = "停止"
         else:
-            playback_state = "-"
+            playback_state = "不明"
 
         values["last_update"] = self._format_pc_timestamp(payload.get("timestamp"))
         values["playback_state"] = playback_state
@@ -1341,7 +1341,7 @@ QPushButton:disabled {
             try:
                 values["c_drive"] = f"{float(used_gb):.1f}/{float(total_gb):.0f}"
             except (TypeError, ValueError):
-                values["c_drive"] = "-"
+                values["c_drive"] = "不明"
         return values
 
     def _set_pc_status_values(self, state: SignState, payload: Optional[dict]) -> None:

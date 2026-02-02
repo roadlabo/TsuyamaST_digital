@@ -62,6 +62,18 @@ def read_json_safe(path: Path) -> Optional[dict]:
         return None
 
 
+def read_json_with_error(path: Path) -> tuple[Optional[dict], Optional[str]]:
+    if not path.is_file():
+        return None, "missing"
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f), None
+    except json.JSONDecodeError:
+        return None, "parse_error"
+    except Exception:
+        return None, "parse_error"
+
+
 def parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -110,14 +122,26 @@ def find_auto_play_process() -> dict:
 
 
 def read_player_heartbeat(path: Path, now_dt: datetime, stale_sec: int = 60) -> dict:
-    heartbeat = read_json_safe(path)
+    heartbeat, error = read_json_with_error(path)
+    base = {
+        "alive": False,
+        "reason": error or "missing",
+        "timestamp": None,
+        "current_file": None,
+        "loop_count": None,
+        "last_change_at": None,
+        "mpv_pid": None,
+        "error": None,
+    }
     if not heartbeat:
-        return {"alive": False, "reason": "missing"}
+        return base
 
     ts_raw = heartbeat.get("timestamp")
     ts = parse_iso_timestamp(ts_raw)
     if ts is None:
-        return {"alive": False, "reason": "invalid", "timestamp": ts_raw}
+        base["reason"] = "parse_error"
+        base["timestamp"] = ts_raw
+        return base
 
     age_sec = (now_dt - ts).total_seconds()
     alive = age_sec <= stale_sec
@@ -127,6 +151,8 @@ def read_player_heartbeat(path: Path, now_dt: datetime, stale_sec: int = 60) -> 
         "current_file": heartbeat.get("current_file"),
         "loop_count": heartbeat.get("loop_count"),
         "last_change_at": heartbeat.get("last_change_at"),
+        "mpv_pid": heartbeat.get("mpv_pid"),
+        "error": heartbeat.get("error"),
     }
     if not alive:
         result["reason"] = "stale"
