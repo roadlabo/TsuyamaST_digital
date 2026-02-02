@@ -81,10 +81,8 @@ PC_STATUS_ITEMS = [
     ("cpu_usage", "CPU使用率[%]"),
     ("c_drive", "Cドライブ使用状況[GB]"),
     ("cpu_temp", "CPU温度[℃]"),
-    ("chipset_temp", "チップセット温度[℃]"),
-    ("gpu_temp", "CPU内GPU温度[℃]"),
-    ("ssd_temp", "SSD温度[℃]"),
     ("memory_temp", "メモリ温度[℃]"),
+    ("ssd_temp", "SSD温度[℃]"),
 ]
 
 
@@ -162,6 +160,7 @@ def copy_file_atomic(src: Path, dst: Path) -> None:
 
 
 SYNC_EXTS = {".mp4", ".mov", ".jpg", ".jpeg", ".png", ".webp"}
+SYNC_SAMPLE_SUFFIX = "_sample.mp4"
 
 
 def sync_mirror_dir(
@@ -177,12 +176,16 @@ def sync_mirror_dir(
     master_files: Dict[str, Path] = {}
     for entry in master_dir.rglob("*"):
         if entry.is_file() and entry.suffix.lower() in SYNC_EXTS:
+            if entry.name.lower().endswith(SYNC_SAMPLE_SUFFIX):
+                continue
             rel = entry.relative_to(master_dir).as_posix()
             master_files[rel] = entry
 
     remote_files: Dict[str, Path] = {}
     for entry in remote_dir.rglob("*"):
         if entry.is_file() and entry.suffix.lower() in SYNC_EXTS:
+            if entry.name.lower().endswith(SYNC_SAMPLE_SUFFIX):
+                continue
             rel = entry.relative_to(remote_dir).as_posix()
             remote_files[rel] = entry
 
@@ -594,7 +597,8 @@ class TimerLegendWidget(QtWidgets.QWidget):
         painter.setFont(font)
         metrics = QtGui.QFontMetrics(font)
         text_width = metrics.horizontalAdvance(label_text)
-        text_x = width - right_pad - 14
+        shift_left = metrics.horizontalAdvance("あ")
+        text_x = width - right_pad - 14 - shift_left
         text_y = int(height / 2 + text_width / 2)
         painter.translate(text_x, text_y)
         painter.rotate(-90)
@@ -677,9 +681,10 @@ class SignageColumnWidget(QtWidgets.QWidget):
     clicked_shutdown = QtCore.Signal(str)
     toggled_active = QtCore.Signal(str, bool)
 
-    def __init__(self, name: str, parent=None):
+    def __init__(self, name: str, sign_id: str, parent=None):
         super().__init__(parent)
         self.name = name
+        self.sign_id = sign_id
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setContentsMargins(4, 2, 4, 2)
         self.layout.setSpacing(2)
@@ -767,16 +772,16 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.btn_shutdown.setStyleSheet("background:#ffecec;")
 
         self.setting_button.clicked.connect(
-            lambda: self.clicked_config.emit(self.name.replace("Signage", "Sign"))
+            lambda: self.clicked_config.emit(self.sign_id)
         )
         self.btn_reboot.clicked.connect(
-            lambda: self.clicked_reboot.emit(self.name.replace("Signage", "Sign"))
+            lambda: self.clicked_reboot.emit(self.sign_id)
         )
         self.btn_shutdown.clicked.connect(
-            lambda: self.clicked_shutdown.emit(self.name.replace("Signage", "Sign"))
+            lambda: self.clicked_shutdown.emit(self.sign_id)
         )
         self.btn_active.toggled.connect(
-            lambda checked: self.toggled_active.emit(self.name.replace("Signage", "Sign"), checked)
+            lambda checked: self.toggled_active.emit(self.sign_id, checked)
         )
         self.set_comm_status(True, None)
 
@@ -875,7 +880,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
 
     def set_comm_status(self, enabled: bool, online: Optional[bool]) -> None:
         if not enabled:
-            self.comm_label.setText("非アクティブ")
+            self.comm_label.setText("-")
             self.comm_label.setStyleSheet("background:#c9c9c9; color:#333; border-radius:6px;")
             return
         if online is None:
@@ -985,7 +990,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         header_layout.addStretch()
         header_layout.addLayout(button_layout)
-        self.ai_level_badge = QtWidgets.QLabel("LEVEL1")
+        self.ai_level_badge = QtWidgets.QLabel("渋滞LEVEL1")
         self.ai_level_badge.setAlignment(QtCore.Qt.AlignCenter)
         self.ai_level_badge.setFixedSize(160, 44)
         self.ai_level_badge.setStyleSheet("border-radius:8px; font-weight:900; font-size:16px;")
@@ -1050,7 +1055,8 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.columns = []
         for idx in range(1, 21):
             name = f"Signage{idx:02d}"
-            column = SignageColumnWidget(name)
+            sign_id = f"Sign{idx:02d}"
+            column = SignageColumnWidget(name, sign_id)
             column.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             column.setMinimumWidth(0)
             self.columns.append(column)
@@ -1304,11 +1310,10 @@ QPushButton:disabled {
 
         cpu_load = payload.get("cpu_total_percent")
         cpu_temp = payload.get("cpu_temp_c") or payload.get("cpu_temp") or payload.get("cpu_package")
-        chipset_temp = payload.get("chipset_temp_c") or payload.get("chipset_temp")
-        gpu_temp = payload.get("gpu_temp_c") or payload.get("gpu_temp")
-        ssd_temp = payload.get("ssd", {}).get("temp_c")
+        ssd_temp = payload.get("ssd_temp_c") or payload.get("ssd", {}).get("temp_c")
         memory_temp = (
-            payload.get("memory_temp_c")
+            payload.get("mem_temp_c")
+            or payload.get("memory_temp_c")
             or payload.get("memory_temp")
             or payload.get("mem_temp_c")
             or payload.get("mem_temp")
@@ -1318,10 +1323,8 @@ QPushButton:disabled {
 
         values["cpu_usage"] = self._format_pc_value(cpu_load)
         values["cpu_temp"] = self._format_pc_value(cpu_temp)
-        values["chipset_temp"] = self._format_pc_value(chipset_temp)
-        values["gpu_temp"] = self._format_pc_value(gpu_temp)
-        values["ssd_temp"] = self._format_pc_value(ssd_temp)
         values["memory_temp"] = self._format_pc_value(memory_temp)
+        values["ssd_temp"] = self._format_pc_value(ssd_temp)
         if used_gb is not None and total_gb not in (None, 0):
             try:
                 values["c_drive"] = f"{float(used_gb):.1f}/{float(total_gb):.0f}"
@@ -1578,22 +1581,22 @@ QPushButton:disabled {
             return
         level = int(self.ai_status.get("congestion_level", 1))
         if level <= 1:
-            self.ai_level_badge.setText("LEVEL1")
+            self.ai_level_badge.setText("渋滞LEVEL1")
             self.ai_level_badge.setStyleSheet(
                 "background:#7fd0ff; color:#000; border-radius:8px; font-weight:900; font-size:16px;"
             )
         elif level == 2:
-            self.ai_level_badge.setText("LEVEL2")
+            self.ai_level_badge.setText("渋滞LEVEL2")
             self.ai_level_badge.setStyleSheet(
                 "background:#ffb347; color:#000; border-radius:8px; font-weight:900; font-size:16px;"
             )
         elif level == 3:
-            self.ai_level_badge.setText("LEVEL3")
+            self.ai_level_badge.setText("渋滞LEVEL3")
             self.ai_level_badge.setStyleSheet(
                 "background:#e53935; color:#fff; border-radius:8px; font-weight:900; font-size:16px;"
             )
         else:
-            self.ai_level_badge.setText("LEVEL4")
+            self.ai_level_badge.setText("渋滞LEVEL4")
             self.ai_level_badge.setStyleSheet(
                 "background:#000; color:#fff; border-radius:8px; font-weight:900; font-size:16px;"
             )

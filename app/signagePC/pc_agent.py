@@ -56,16 +56,14 @@ INPUT_COLUMNS = {
     "date": 0,
     "time": 1,
     "cpu_usage": 118,
-    "cpu_temp": 156,
-    "pch_temp": 337,
-    "memory_temp": 338,
-    "ssd_temp": 358,
-    "gpu_temp": 373,
+    "cpu_temp_primary": 206,
+    "cpu_temp_fallback": 156,
+    "memory_temp": 339,
+    "ssd_temp": 359,
 }
 
 YEARLY_HEADER = (
-    "日時,CPU使用率[%],CPU温度[℃],チップセット温度[℃],CPU内GPU温度[℃],"
-    "SSD温度[℃],メモリ温度[℃],Cドライブ総容量[GB],Cドライブ空き容量[GB]"
+    "日時,CPU使用率[%],CPU温度[℃],SSD温度[℃],メモリ温度[℃],Cドライブ総容量[GB],Cドライブ空き容量[GB]"
 )
 
 ENCODINGS = ("utf-8-sig", "cp932", "utf-8")
@@ -156,25 +154,38 @@ def parse_float(value: str) -> Optional[float]:
         return None
 
 
+def _read_row_value(row: list[str], idx: Optional[int]) -> Optional[float]:
+    if idx is None or idx >= len(row):
+        return None
+    return parse_float(row[idx])
+
+
 def read_hwinfo_latest_metrics(csv_path: str) -> dict:
     row = read_latest_row(csv_path)
     metrics = {
         "cpu_usage": None,
-        "cpu_temp": None,
-        "pch_temp": None,
-        "gpu_temp": None,
-        "ssd_temp": None,
-        "memory_temp": None,
+        "cpu_temp_c": None,
+        "cpu_temp_source": "none",
+        "mem_temp_c": None,
+        "ssd_temp_c": None,
     }
     if not row:
         return metrics
 
-    for key in metrics:
-        idx = INPUT_COLUMNS.get(key)
-        if idx is None or idx >= len(row):
-            metrics[key] = None
-        else:
-            metrics[key] = parse_float(row[idx])
+    metrics["cpu_usage"] = _read_row_value(row, INPUT_COLUMNS.get("cpu_usage"))
+
+    cpu_primary = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_primary"))
+    if cpu_primary is not None:
+        metrics["cpu_temp_c"] = cpu_primary
+        metrics["cpu_temp_source"] = "hwinfo_primary"
+    else:
+        cpu_fallback = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_fallback"))
+        if cpu_fallback is not None:
+            metrics["cpu_temp_c"] = cpu_fallback
+            metrics["cpu_temp_source"] = "hwinfo_fallback"
+
+    metrics["mem_temp_c"] = _read_row_value(row, INPUT_COLUMNS.get("memory_temp"))
+    metrics["ssd_temp_c"] = _read_row_value(row, INPUT_COLUMNS.get("ssd_temp"))
     return metrics
 
 
@@ -202,9 +213,6 @@ def sample_and_append(
         INPUT_COLUMNS["date"],
         INPUT_COLUMNS["time"],
         INPUT_COLUMNS["cpu_usage"],
-        INPUT_COLUMNS["cpu_temp"],
-        INPUT_COLUMNS["pch_temp"],
-        INPUT_COLUMNS["gpu_temp"],
         INPUT_COLUMNS["ssd_temp"],
         INPUT_COLUMNS["memory_temp"],
     ]
@@ -224,13 +232,13 @@ def sample_and_append(
         return False, "same_ts", ts_slot
 
     cpu_usage = parse_float(row[INPUT_COLUMNS["cpu_usage"]])
-    cpu_temp = parse_float(row[INPUT_COLUMNS["cpu_temp"]])
-    pch_temp = parse_float(row[INPUT_COLUMNS["pch_temp"]])
-    gpu_temp = parse_float(row[INPUT_COLUMNS["gpu_temp"]])
+    cpu_temp_primary = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_primary"))
+    cpu_temp_fallback = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_fallback"))
+    cpu_temp = cpu_temp_primary if cpu_temp_primary is not None else cpu_temp_fallback
     ssd_temp = parse_float(row[INPUT_COLUMNS["ssd_temp"]])
     memory_temp = parse_float(row[INPUT_COLUMNS["memory_temp"]])
 
-    if None in (cpu_usage, cpu_temp, pch_temp, gpu_temp, ssd_temp, memory_temp):
+    if None in (cpu_usage, cpu_temp, ssd_temp, memory_temp):
         return False, "missing_values", ts_slot
 
     try:
@@ -253,8 +261,6 @@ def sample_and_append(
                 ts_slot,
                 cpu_usage,
                 cpu_temp,
-                pch_temp,
-                gpu_temp,
                 ssd_temp,
                 memory_temp,
                 total_gb,
@@ -344,143 +350,6 @@ def run_hwinfo_yearly_logger(
         time.sleep(poll_interval_sec)
 
 
-def run_powershell_json(ps_script: str, timeout: int = 5):
-    cmd = [
-        "powershell",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ps_script,
-    ]
-    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if cp.returncode != 0:
-        raise RuntimeError((cp.stderr or cp.stdout).strip())
-    out = cp.stdout.strip()
-    if not out:
-        return None
-    return json.loads(out)
-
-
-def get_ssd_temp_c_via_lhm(hardware_hint: str = ""):
-    """
-    LibreHardwareMonitor の WMI から SSD温度を取得する。
-    - hardware_hint があれば、その文字列を含む Hardware/Name を優先
-    - 見つからなければ (None, None, None) を返す
-    """
-    # PowerShell側で「SSDっぽい温度」を優先して1件返す
-    ps = r"""
-    $ErrorActionPreference = "SilentlyContinue"
-    $ns = "root\LibreHardwareMonitor"
-    $hint = "%HINT%"
-    $sensors = Get-CimInstance -Namespace $ns -ClassName Sensor
-    if (-not $sensors) { "" | Out-String; exit 0 }
-
-    $temps = $sensors | Where-Object { $_.SensorType -eq "Temperature" }
-
-    # まず hint（例: SSSTC）があれば最優先
-    if ($hint -and $hint.Trim().Length -gt 0) {
-      $cand = $temps | Where-Object { ($_.Name -match $hint) -or ($_.Hardware -match $hint) } | Select-Object -First 1
-      if ($cand) {
-        @{ ok=$true; source="lhm"; name=$cand.Name; temp_c=[double]$cand.Value } | ConvertTo-Json -Compress
-        exit 0
-      }
-    }
-
-    # 次に SSD/NVMe/Drive っぽい名前を優先
-    $cand2 = $temps | Where-Object { $_.Name -match "SSD|NVMe|Drive" -or $_.Hardware -match "SSD|NVMe|Drive" } | Select-Object -First 1
-    if ($cand2) {
-      @{ ok=$true; source="lhm"; name=$cand2.Name; temp_c=[double]$cand2.Value } | ConvertTo-Json -Compress
-      exit 0
-    }
-
-    "" | Out-String
-    """
-    ps = ps.replace("%HINT%", (hardware_hint or "").replace('"', ""))
-    data = run_powershell_json(ps, timeout=5)
-    if not data or not data.get("ok"):
-        return None, None, None
-
-    try:
-        temp = float(data["temp_c"])
-    except Exception:
-        return None, None, None
-
-    # 現実的でない温度は無効扱い
-    if temp < -20.0 or temp > 120.0:
-        return None, None, None
-
-    return temp, str(data.get("name") or "SSD"), "lhm"
-
-
-def get_cpu_temp_c_via_lhm():
-    ps = r"""
-    $ErrorActionPreference = "SilentlyContinue"
-    $ns = "root\LibreHardwareMonitor"
-    $sensors = Get-CimInstance -Namespace $ns -ClassName Sensor
-    if (-not $sensors) { "" | Out-String; exit 0 }
-
-    $temps = $sensors | Where-Object { $_.SensorType -eq "Temperature" }
-
-    $pkg = $temps | Where-Object { $_.Name -match "CPU Package" } | Select-Object -First 1
-    if ($pkg) {
-      @{ ok=$true; source="lhm"; name=$pkg.Name; temp_c=[double]$pkg.Value } | ConvertTo-Json -Compress
-      exit 0
-    }
-
-    $cpuTemps = $temps | Where-Object { $_.Name -match "CPU" }
-    if ($cpuTemps) {
-      $max = ($cpuTemps | Measure-Object -Property Value -Maximum).Maximum
-      $one = $cpuTemps | Sort-Object Value -Descending | Select-Object -First 1
-      @{ ok=$true; source="lhm"; name=$one.Name; temp_c=[double]$max } | ConvertTo-Json -Compress
-      exit 0
-    }
-
-    "" | Out-String
-    """
-    data = run_powershell_json(ps, timeout=5)
-    if not data or not data.get("ok"):
-        return None, None
-    temp = float(data["temp_c"])
-    if temp < -20.0 or temp > 120.0:
-        return None, None
-    return temp, str(data.get("name") or "CPU")
-
-
-def get_cpu_temp_c_via_acpi():
-    ps = r"""
-    $ErrorActionPreference = "SilentlyContinue"
-    $t = Get-CimInstance -Namespace root\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -First 1
-    if (-not $t) { "" | Out-String; exit 0 }
-    $c = ($t.CurrentTemperature / 10) - 273.15
-    @{ ok=$true; source="acpi"; name="ThermalZone"; temp_c=[double]$c } | ConvertTo-Json -Compress
-    """
-    data = run_powershell_json(ps, timeout=5)
-    if not data or not data.get("ok"):
-        return None, None
-    temp = float(data["temp_c"])
-    # 現実的なCPU/筐体温度範囲外は無効値として捨てる
-    if temp < -20.0 or temp > 120.0:
-        return None, None
-    return temp, str(data.get("name") or "ThermalZone")
-
-
-def get_cpu_temp_c():
-    try:
-        t, name = get_cpu_temp_c_via_lhm()
-        if t is not None:
-            return t, name, "lhm"
-    except Exception:
-        pass
-    try:
-        t, name = get_cpu_temp_c_via_acpi()
-        if t is not None:
-            return t, name, "acpi"
-    except Exception:
-        pass
-    return None, None, None
-
-
 def write_status(status_path: str, payload: dict) -> None:
     tmp = status_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -555,23 +424,17 @@ def main() -> int:
             cpu_percent_source = "none"
             cpu_temp_c = None
             cpu_temp_source = "none"
-            gpu_temp_c = None
-            gpu_temp_source = "none"
-            chipset_temp_c = None
-            chipset_temp_source = "none"
             ssd_usage_percent = None
             ssd_used_gb = None
             ssd_total_gb = None
             ssd_usage_source = "none"
-            ssd_temp_source = "none"
 
             hwinfo_metrics = read_hwinfo_latest_metrics(str(HWINFO_CSV))
             hwinfo_cpu_usage = hwinfo_metrics.get("cpu_usage")
-            hwinfo_cpu_temp = hwinfo_metrics.get("cpu_temp")
-            hwinfo_pch_temp = hwinfo_metrics.get("pch_temp")
-            hwinfo_gpu_temp = hwinfo_metrics.get("gpu_temp")
-            hwinfo_ssd_temp = hwinfo_metrics.get("ssd_temp")
-            hwinfo_memory_temp = hwinfo_metrics.get("memory_temp")
+            hwinfo_cpu_temp = hwinfo_metrics.get("cpu_temp_c")
+            hwinfo_cpu_temp_source = hwinfo_metrics.get("cpu_temp_source", "none")
+            hwinfo_ssd_temp = hwinfo_metrics.get("ssd_temp_c")
+            hwinfo_memory_temp = hwinfo_metrics.get("mem_temp_c")
 
             if psutil:
                 # CPU TOTAL (%)
@@ -600,19 +463,7 @@ def main() -> int:
 
             if hwinfo_cpu_temp is not None:
                 cpu_temp_c = hwinfo_cpu_temp
-                cpu_temp_source = "hwinfo"
-            else:
-                cpu_temp_c, _, temp_source = get_cpu_temp_c()
-                if temp_source:
-                    cpu_temp_source = temp_source
-
-            if hwinfo_gpu_temp is not None:
-                gpu_temp_c = hwinfo_gpu_temp
-                gpu_temp_source = "hwinfo"
-
-            if hwinfo_pch_temp is not None:
-                chipset_temp_c = hwinfo_pch_temp
-                chipset_temp_source = "hwinfo"
+                cpu_temp_source = hwinfo_cpu_temp_source or "hwinfo"
 
             memory_temp_c = None
             memory_temp_source = "none"
@@ -620,51 +471,35 @@ def main() -> int:
                 memory_temp_c = hwinfo_memory_temp
                 memory_temp_source = "hwinfo"
 
-            ssd_temp_sensor = None
+            ssd_temp_c = None
+            ssd_temp_source = "none"
             if hwinfo_ssd_temp is not None:
                 ssd_temp_c = hwinfo_ssd_temp
                 ssd_temp_source = "hwinfo"
-                ssd_temp_sensor = "HWiNFO"
-            else:
-                ssd_temp_c, ssd_temp_sensor, ssd_temp_source = get_ssd_temp_c_via_lhm(
-                    hardware_hint="SSSTC"
-                )
-                if not ssd_temp_source:
-                    ssd_temp_source = "none"
 
             if cpu_percent is None:
                 cpu_percent_source = "none"
             if cpu_temp_c is None:
                 cpu_temp_source = "none"
-            if gpu_temp_c is None:
-                gpu_temp_source = "none"
-            if chipset_temp_c is None:
-                chipset_temp_source = "none"
 
             payload = {
                 "timestamp": now_iso(),
                 "host": hostname,
                 "cpu_total_percent": cpu_percent,
                 "cpu_temp_c": cpu_temp_c,
-                "gpu_temp_c": gpu_temp_c,
-                "chipset_temp_c": chipset_temp_c,
-                "memory_temp_c": memory_temp_c,
+                "mem_temp_c": memory_temp_c,
+                "ssd_temp_c": ssd_temp_c,
                 "ssd": {
                     "drive": r"C:\\",
                     "usage_percent": ssd_usage_percent,
-                    "temp_c": ssd_temp_c,
-                    "temp_sensor": ssd_temp_sensor,
-                    "temp_source": ssd_temp_source,
                     "used_gb": ssd_used_gb,
                     "total_gb": ssd_total_gb,
                 },
                 "source": {
                     "cpu_total_percent": cpu_percent_source,
                     "cpu_temp_c": cpu_temp_source,
-                    "gpu_temp_c": gpu_temp_source,
-                    "chipset_temp_c": chipset_temp_source,
-                    "memory_temp_c": memory_temp_source,
-                    "ssd_temp_c": ssd_temp_source or "none",
+                    "mem_temp_c": memory_temp_source,
+                    "ssd_temp_c": ssd_temp_source,
                     "ssd_usage_percent": ssd_usage_source,
                     "ssd_used_gb": "shutil" if ssd_used_gb is not None else "none",
                     "ssd_total_gb": "shutil" if ssd_total_gb is not None else "none",
