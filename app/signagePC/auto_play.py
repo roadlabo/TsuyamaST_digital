@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -215,46 +214,6 @@ def run_player_with_watch(
         stop_player(proc)
 
 
-def normalize_sign_name(value: str | None) -> str | None:
-    if not value:
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if text.lower().startswith("sign"):
-        return text[:4].capitalize() + text[4:]
-    if text.isdigit():
-        return f"Sign{text.zfill(2)}"
-    return text
-
-
-def resolve_sign_name() -> str:
-    env_name = normalize_sign_name(os.getenv("SIGN_NAME") or os.getenv("SIGN_ID"))
-    if env_name and (CONFIG_DIR / env_name).is_dir():
-        return env_name
-
-    host_name = normalize_sign_name(os.getenv("COMPUTERNAME") or socket.gethostname())
-    if host_name and (CONFIG_DIR / host_name).is_dir():
-        return host_name
-
-    inventory_path = CONFIG_DIR / "inventory.json"
-    inventory = load_json(inventory_path, {})
-    if inventory:
-        try:
-            _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
-        except Exception:
-            ip_list = []
-        for sign_name, info in inventory.items():
-            if info.get("ip") in ip_list and (CONFIG_DIR / sign_name).is_dir():
-                return sign_name
-
-    sign_dirs = sorted(p.name for p in CONFIG_DIR.iterdir() if p.is_dir() and p.name.startswith("Sign"))
-    if sign_dirs:
-        logger.warning("SIGN_NAME not set. Falling back to %s.", sign_dirs[0])
-        return sign_dirs[0]
-    raise RuntimeError("No SignXX directory found under app/config.")
-
-
 def resolve_content_root(config: dict) -> Path:
     raw = config.get("content_root")
     if raw:
@@ -274,11 +233,11 @@ def resolve_content_root(config: dict) -> Path:
 def main() -> None:
     configure_logging(DEFAULT_LOG_DIR)
     logger.info("auto_play.py starting")
-    sign_name = resolve_sign_name()
-    sign_dir = CONFIG_DIR / sign_name
-    config_path = sign_dir / "config.json"
-    active_path = sign_dir / "active.json"
-    playlist_dir = sign_dir
+    config_path = CONFIG_DIR / "config.json"
+    active_path = CONFIG_DIR / "active.json"
+    playlist_dir = CONFIG_DIR
+    logger.info("Config path: %s", config_path)
+    logger.info("Active path: %s", active_path)
 
     while True:
         try:
@@ -292,8 +251,8 @@ def main() -> None:
 
             active = load_json(active_path, {})
             active_channel = active.get("active_channel")
-            if not active_channel:
-                raise ValueError("active_channel is missing or empty.")
+            if not active_path.is_file() or not active_channel:
+                raise ValueError(f"active.json not found or active_channel missing: {active_path}")
 
             content_root = resolve_content_root(config)
             fullscreen = bool(config.get("fullscreen", True))
