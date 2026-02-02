@@ -6,5 +6,9 @@
   "preview_enabled": true,
   "sleep_windows": [],
   "sync_staging_subdir": "staging\\sync_tmp",
-  "log_backup_dir": "backup/logs"
+  "log_backup_dir": "backup/logs",
+  "telemetry_batch_size": 5,
+  "telemetry_min_interval_ok": 10.0,
+  "telemetry_min_interval_ng": 30.0,
+  "telemetry_max_interval_ng": 120.0
 }
