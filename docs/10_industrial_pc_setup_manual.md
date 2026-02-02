@@ -279,10 +279,9 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
 タスクスケジューラが起動するのは **.bat と .exe のみ。**  
 Python のことは気にしなくてよい。
 
-### 9-1 作成するタスクは3つだけ
+### 9-1 作成するタスクは2つだけ
 | タスク名 | 起動するもの | トリガー | 遅延 |
 |---|---|---|---|
-| Tsuyama HWiNFO Auto Start | HWiNFO64.exe | 起動時 | 30秒 |
 | Tsuyama PC Agent Auto Start | start_pc_agent.bat | 起動時 | 2分 |
 | Tsuyama Auto Play Start | start_auto_play.bat | ログオン時（SystemAV） | 30秒 |
 
@@ -293,15 +292,7 @@ Python のことは気にしなくてよい。
 
 ### 9-3 各タスクの指定内容
 
-#### A. Tsuyama HWiNFO Auto Start
-- **プログラム/スクリプト：**
-  `C:\_TsuyamaSignage\runtime\hwinfo\HWiNFO64.exe`
-- **開始（オプション）：**
-  `C:\_TsuyamaSignage\runtime\hwinfo`
-- **トリガー：** 起動時
-- **遅延：** 30秒
-
-#### B. Tsuyama PC Agent Auto Start
+#### A. Tsuyama PC Agent Auto Start
 - **プログラム/スクリプト：**
   `C:\_TsuyamaSignage\app\signagePC\start_pc_agent.bat`
 - **開始（オプション）：**
@@ -309,7 +300,7 @@ Python のことは気にしなくてよい。
 - **トリガー：** 起動時
 - **遅延：** 2分
 
-#### C. Tsuyama Auto Play Start
+#### B. Tsuyama Auto Play Start
 - **プログラム/スクリプト：**
   `C:\_TsuyamaSignage\app\signagePC\start_auto_play.bat`
 - **開始（オプション）：**
@@ -322,7 +313,7 @@ Python のことは気にしなくてよい。
 - `start_pc_agent.bat`
 
 **確認方法**
-- タスクスケジューラの一覧に上記3つのタスク名が表示されることを確認する。
+- タスクスケジューラの一覧に上記2つのタスク名が表示されることを確認する。
 - 各タスクの「操作」タブに、指定したプログラム/スクリプトのパスが表示されていることを確認する。
 
 ---
@@ -373,6 +364,56 @@ HP製PCに標準搭載されている HP Wolf Security は、
 
 **確認方法**
 - 自動で再生が始まることを確認する。
+
+---
+
+## 11. 遠隔監視で見る項目（温度なし）
+### 正常判定（最低ライン）
+- `logs/status/pc_status.json` の `timestamp` が **更新され続ける**。
+- 再生状態が「再生中」になっている。
+
+### 異常判定（目安）
+- 最終更新が **30秒以上止まる** → `pc_agent` 停止/フリーズ疑い
+- 再生状態が「停止」 → `auto_play` 未起動
+- 再生状態が「固まり疑い」 → `auto_play` は居るが再生が進んでいない
+- Cドライブ使用率が高い（例：**90%超**） → 要対応
+
+### pc_status.json の例（温度キー無し版）
+```json
+{
+  "timestamp": "2025-01-01T12:34:56+09:00",
+  "host": "SIGN-PC-01",
+  "cpu_total_percent": 12.3,
+  "mem_used_percent": 45.6,
+  "agent_uptime_sec": 3600,
+  "os_uptime_sec": 86400,
+  "ssd": {
+    "drive": "C:\\\\",
+    "usage_percent": 55.0,
+    "used_gb": 120.5,
+    "total_gb": 240.0
+  },
+  "auto_play": {
+    "running": true,
+    "pid": 4321,
+    "started_at": "2025-01-01T10:00:00+09:00"
+  },
+  "player": {
+    "alive": true,
+    "timestamp": "2025-01-01T12:34:55+09:00",
+    "current_file": "sample.mp4",
+    "loop_count": 12,
+    "last_change_at": "2025-01-01T12:30:00+09:00"
+  },
+  "source": {
+    "cpu_total_percent": "psutil",
+    "mem_used_percent": "psutil",
+    "ssd_usage_percent": "psutil",
+    "ssd_used_gb": "shutil",
+    "ssd_total_gb": "shutil"
+  }
+}
+```
 
 ---
 

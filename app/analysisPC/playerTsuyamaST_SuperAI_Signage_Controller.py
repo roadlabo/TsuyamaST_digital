@@ -78,11 +78,11 @@ OUTER_MARGIN = 6
 PC_STATUS_ROW_HEIGHT = 18
 PC_STATUS_FONT_SIZE = 8
 PC_STATUS_ITEMS = [
+    ("last_update", "最終更新"),
+    ("playback_state", "再生状態"),
     ("cpu_usage", "CPU使用率[%]"),
-    ("c_drive", "Cドライブ使用状況[GB]"),
-    ("cpu_temp", "CPU温度[℃]"),
-    ("memory_temp", "メモリ温度[℃]"),
-    ("ssd_temp", "SSD温度[℃]"),
+    ("mem_usage", "メモリ使用率[%]"),
+    ("c_drive", "Cドライブ[GB]"),
 ]
 
 
@@ -1303,28 +1303,40 @@ QPushButton:disabled {
             return "-"
         return f"{numeric:.{decimals}f}"
 
+    def _format_pc_timestamp(self, value: Optional[str]) -> str:
+        if not value:
+            return "-"
+        try:
+            parsed = datetime.fromisoformat(value)
+        except Exception:
+            return "-"
+        return parsed.strftime("%m/%d %H:%M:%S")
+
     def _build_pc_status_values(self, payload: Optional[dict]) -> Dict[str, str]:
         values = {key: "-" for key, _ in PC_STATUS_ITEMS}
         if not isinstance(payload, dict):
             return values
 
         cpu_load = payload.get("cpu_total_percent")
-        cpu_temp = payload.get("cpu_temp_c") or payload.get("cpu_temp") or payload.get("cpu_package")
-        ssd_temp = payload.get("ssd_temp_c") or payload.get("ssd", {}).get("temp_c")
-        memory_temp = (
-            payload.get("mem_temp_c")
-            or payload.get("memory_temp_c")
-            or payload.get("memory_temp")
-            or payload.get("mem_temp_c")
-            or payload.get("mem_temp")
-        )
+        mem_used = payload.get("mem_used_percent")
         used_gb = payload.get("ssd", {}).get("used_gb")
         total_gb = payload.get("ssd", {}).get("total_gb")
 
+        auto_play = payload.get("auto_play", {}) if isinstance(payload.get("auto_play"), dict) else {}
+        player = payload.get("player", {}) if isinstance(payload.get("player"), dict) else {}
+        running = auto_play.get("running")
+        alive = player.get("alive")
+        if running is True:
+            playback_state = "再生中" if alive is True else "固まり疑い"
+        elif running is False:
+            playback_state = "停止"
+        else:
+            playback_state = "-"
+
+        values["last_update"] = self._format_pc_timestamp(payload.get("timestamp"))
+        values["playback_state"] = playback_state
         values["cpu_usage"] = self._format_pc_value(cpu_load)
-        values["cpu_temp"] = self._format_pc_value(cpu_temp)
-        values["memory_temp"] = self._format_pc_value(memory_temp)
-        values["ssd_temp"] = self._format_pc_value(ssd_temp)
+        values["mem_usage"] = self._format_pc_value(mem_used)
         if used_gb is not None and total_gb not in (None, 0):
             try:
                 values["c_drive"] = f"{float(used_gb):.1f}/{float(total_gb):.0f}"

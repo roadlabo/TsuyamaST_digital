@@ -13,12 +13,14 @@ CONFIG_DIR = APP_DIR / "config"
 CONTENT_DIR = ROOT / "content"
 LOGS_DIR = ROOT / "logs"
 RUNTIME_DIR = ROOT / "runtime"
+STATUS_DIR = LOGS_DIR / "status"
 
 PYTHON_EXE = RUNTIME_DIR / "python" / "python.exe"
 MPV_EXE = RUNTIME_DIR / "mpv" / "mpv.exe"
-HWINFO_EXE = RUNTIME_DIR / "hwinfo" / "HWiNFO64.exe"
 
 DEFAULT_LOG_DIR = LOGS_DIR
+HEARTBEAT_PATH = STATUS_DIR / "auto_play_heartbeat.json"
+HEARTBEAT_INTERVAL_SEC = 5.0
 
 RETRY_MISSING_SECONDS = 30
 RETRY_PLAYER_SECONDS = 10
@@ -31,6 +33,50 @@ WATCH_POLL_SECONDS = 2.0
 
 # active.json / config.json の変更検知は mtime で行う（Windowsでも軽い）
 logger = logging.getLogger("auto_play")
+
+
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
+
+
+def write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    tmp.replace(path)
+
+
+@dataclass
+class HeartbeatState:
+    playlist_dir: str = ""
+    current_file: str | None = None
+    index: int | None = None
+    loop_count: int = 0
+    last_change_at: str | None = None
+
+    def set_current(self, filename: str | None, index: int | None) -> None:
+        if filename is None:
+            return
+        if filename != self.current_file:
+            self.last_change_at = now_iso()
+            if self.index is not None and index is not None and index < self.index:
+                self.loop_count += 1
+            self.current_file = filename
+            self.index = index
+
+    def to_payload(self, *, error: str | None, mpv_pid: int | None) -> dict:
+        return {
+            "timestamp": now_iso(),
+            "pid": os.getpid(),
+            "playlist_dir": self.playlist_dir,
+            "current_file": self.current_file,
+            "index": self.index,
+            "loop_count": self.loop_count,
+            "last_change_at": self.last_change_at,
+            "mpv_pid": mpv_pid,
+            "error": error,
+        }
 
 
 def configure_logging(log_dir: Path) -> None:
@@ -184,6 +230,7 @@ def run_player_with_watch(
     playlist_dir: Path,
     active_path: Path,
     config_path: Path,
+    heartbeat: HeartbeatState,
 ) -> int:
     """
     再生プロセスを起動し、以下を監視して変更があれば終了（=上位ループで再起動）:
@@ -201,6 +248,9 @@ def run_player_with_watch(
         logger.error("No mp4 files found in %s", channel_folder)
         return 4
 
+    heartbeat.playlist_dir = str(channel_folder)
+    heartbeat.set_current(files[0].name, 0)
+
     # 初期プレイリスト
     playlist_path = build_playlist(playlist_dir, active_channel, files)
     logger.info("Active channel: %s", active_channel)
@@ -217,16 +267,27 @@ def run_player_with_watch(
         stop_player(_blackout_proc)
         _blackout_proc = None
     last_folder_state = FolderState.from_folder(channel_folder)
+    last_heartbeat = time.monotonic()
+    write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error=None, mpv_pid=proc.pid))
 
     try:
         while True:
             # プロセスが落ちたら終了コードで戻す（上位で再起動）
             exit_code = proc.poll()
             if exit_code is not None:
+                write_json_atomic(
+                    HEARTBEAT_PATH,
+                    heartbeat.to_payload(error=f"mpv exited ({exit_code})", mpv_pid=None),
+                )
                 return int(exit_code)
 
             # 監視
             time.sleep(WATCH_POLL_SECONDS)
+
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
+                write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error=None, mpv_pid=proc.pid))
+                last_heartbeat = now_monotonic
 
             # active.json が変わったらチャンネル切替の可能性 → 再起動
             active_mtime_now = safe_mtime(active_path)
@@ -299,6 +360,9 @@ def main() -> None:
     logger.info("Config path: %s", config_path)
     logger.info("Active path: %s", active_path)
 
+    heartbeat = HeartbeatState()
+    write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error="starting", mpv_pid=None))
+
     while True:
         try:
             config_mtime = safe_mtime(config_path)
@@ -327,6 +391,7 @@ def main() -> None:
                 playlist_dir=playlist_dir,
                 active_path=active_path,
                 config_path=config_path,
+                heartbeat=heartbeat,
             )
 
             # プレイヤーが自然終了した場合も再起動
@@ -335,13 +400,21 @@ def main() -> None:
                 exit_code,
                 RETRY_PLAYER_SECONDS,
             )
+            write_json_atomic(
+                HEARTBEAT_PATH,
+                heartbeat.to_payload(error=f"player stopped ({exit_code})", mpv_pid=None),
+            )
             time.sleep(RETRY_PLAYER_SECONDS)
 
-        except Exception:
+        except Exception as exc:
             logger.exception("Unhandled error. Retrying in %s seconds.", RETRY_MISSING_SECONDS)
             if _blackout_proc and _blackout_proc.poll() is None:
                 stop_player(_blackout_proc)
                 _blackout_proc = None
+            write_json_atomic(
+                HEARTBEAT_PATH,
+                heartbeat.to_payload(error=str(exc)[:200], mpv_pid=None),
+            )
             time.sleep(RETRY_MISSING_SECONDS)
 
 

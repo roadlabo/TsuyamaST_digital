@@ -34,7 +34,6 @@ _TsuyamaSignage\
   runtime\
     python\  (embeddable python一式)
     mpv\     (mpv一式, mpv.exe含む)
-    hwinfo\  (HWiNFO64.exe含む)
 ```
 
 ## 手順
@@ -110,7 +109,6 @@ import site
 ### USB内チェックリスト
 - [ ] `runtime\python` に embeddable python 一式がある
 - [ ] `runtime\mpv` に mpv 一式がある
-- [ ] `runtime\hwinfo` に HWiNFO64.exe がある
 - [ ] `app\signagePC\auto_play.py` がある
 - [ ] `app\config\SignXX\config.json` がある
 - [ ] `app\config\SignXX\active.json` がある
