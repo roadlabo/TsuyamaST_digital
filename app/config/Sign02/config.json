@@ -1,29 +1,29 @@
 {
-  "enabled": true
+  "enabled": false,
   "sleep_channel": "ch01",
   "normal_channel": "ch05",
   "ai_channels": { "level2": "ch02", "level3": "ch03", "level4": "ch04" },
   "timer_rules": [
-    { "start": "04:32", "end": "04:47", "channel": "ch11" }
-    { "start": "05:22", "end": "05:37", "channel": "ch11" }
-    { "start": "05:49", "end": "06:04", "channel": "ch11" }
-    { "start": "06:30", "end": "06:45", "channel": "ch12" }
-    { "start": "06:46", "end": "07:01", "channel": "ch11" }
-    { "start": "07:45", "end": "08:00", "channel": "ch12" }
-    { "start": "08:45", "end": "09:00", "channel": "ch11" }
-    { "start": "09:43", "end": "09:58", "channel": "ch12" }
-    { "start": "10:19", "end": "10:34", "channel": "ch11" }
-    { "start": "11:26", "end": "11:41", "channel": "ch12" }
-    { "start": "12:13", "end": "12:28", "channel": "ch11" }
-    { "start": "13:38", "end": "13:53", "channel": "ch12" }
-    { "start": "14:20", "end": "14:35", "channel": "ch11" }
-    { "start": "14:46", "end": "15:01", "channel": "ch11" }
-    { "start": "15:37", "end": "15:52", "channel": "ch12" }
-    { "start": "16:22", "end": "16:37", "channel": "ch11" }
-    { "start": "17:13", "end": "17:28", "channel": "ch11" }
-    { "start": "18:07", "end": "18:22", "channel": "ch12" }
-    { "start": "18:56", "end": "19:11", "channel": "ch11" }
-    { "start": "19:49", "end": "20:04", "channel": "ch12" }
+    { "start": "04:32", "end": "04:47", "channel": "ch11" },
+    { "start": "05:22", "end": "05:37", "channel": "ch11" },
+    { "start": "05:49", "end": "06:04", "channel": "ch11" },
+    { "start": "06:30", "end": "06:45", "channel": "ch12" },
+    { "start": "06:46", "end": "07:01", "channel": "ch11" },
+    { "start": "07:45", "end": "08:00", "channel": "ch12" },
+    { "start": "08:45", "end": "09:00", "channel": "ch11" },
+    { "start": "09:43", "end": "09:58", "channel": "ch12" },
+    { "start": "10:19", "end": "10:34", "channel": "ch11" },
+    { "start": "11:26", "end": "11:41", "channel": "ch12" },
+    { "start": "12:13", "end": "12:28", "channel": "ch11" },
+    { "start": "13:38", "end": "13:53", "channel": "ch12" },
+    { "start": "14:20", "end": "14:35", "channel": "ch11" },
+    { "start": "14:46", "end": "15:01", "channel": "ch11" },
+    { "start": "15:37", "end": "15:52", "channel": "ch12" },
+    { "start": "16:22", "end": "16:37", "channel": "ch11" },
+    { "start": "17:13", "end": "17:28", "channel": "ch11" },
+    { "start": "18:07", "end": "18:22", "channel": "ch12" },
+    { "start": "18:56", "end": "19:11", "channel": "ch11" },
+    { "start": "19:49", "end": "20:04", "channel": "ch12" },
     { "start": "21:25", "end": "21:40", "channel": "ch11" }
   ]
 }
