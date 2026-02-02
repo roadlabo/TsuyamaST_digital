@@ -1,5 +1,5 @@
 {
-  "enabled": False
+  "enabled": true
   "sleep_channel": "ch01",
   "normal_channel": "ch05",
   "ai_channels": { "level2": "ch02", "level3": "ch03", "level4": "ch04" },
