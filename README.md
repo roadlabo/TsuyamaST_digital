@@ -43,10 +43,8 @@ TsuyamaST_digital\
 
 ## Controller 起動（タスクスケジューラ）
 
-タスクスケジューラの「操作」は プログラムの開始
+起動は C:\_TsuyamaSignage\start_controller.bat
 
-プログラム/スクリプト に C:\_TsuyamaSignage\start_controller.bat
+venv固定：C:\_TsuyamaSignage\runtime\venv\Scripts\python(w).exe
 
-「最上位の特権で実行する」を ON
-
-ログは C:\_TsuyamaSignage\logs\controller_start_YYYYMMDD_hhmmss.log に出る
+ログ：C:\_TsuyamaSignage\logs\controller_start_*.log
