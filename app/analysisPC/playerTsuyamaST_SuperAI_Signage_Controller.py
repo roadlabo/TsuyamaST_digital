@@ -55,7 +55,9 @@ INVENTORY_PATH = CONFIG_DIR / "inventory.json"
 AI_STATUS_PATH = CONFIG_DIR / "ai_status.json"
 SETTINGS_PATH = CONFIG_DIR / "controller_settings.json"
 
-CHANNELS = [f"ch{idx:02d}" for idx in range(1, 21)]
+BASE_COL = 1
+N_SIGNAGE = 20
+CHANNELS = [f"ch{idx:02d}" for idx in range(1, N_SIGNAGE + 1)]
 NORMAL_CHOICES = [f"ch{n:02d}" for n in range(5, 11)]
 TIMER_CHOICES = [f"ch{n:02d}" for n in range(11, 21)]
 AI_CHOICES = ["通常時と同じ", "ch02", "ch03", "ch04"]
@@ -1060,32 +1062,27 @@ class ControllerWindow(QtWidgets.QMainWindow):
         header_layout.addWidget(self.ai_level_badge)
         layout.addLayout(header_layout)
 
-        header_row = QtWidgets.QHBoxLayout()
+        signage_grid_container = QtWidgets.QWidget()
+        signage_grid = QtWidgets.QGridLayout(signage_grid_container)
+        signage_grid.setContentsMargins(0, 0, 0, 0)
+        signage_grid.setHorizontalSpacing(GAP_PX)
+        signage_grid.setVerticalSpacing(3)
+
         left_header = QtWidgets.QLabel("")
         left_header.setFixedSize(LEFT_COL_WIDTH, 42)
-        header_row.addWidget(left_header)
-
-        header_container = QtWidgets.QWidget()
-        header_container_layout = QtWidgets.QHBoxLayout(header_container)
-        header_container_layout.setContentsMargins(0, 0, 0, 0)
-        header_container_layout.setSpacing(GAP_PX)
+        signage_grid.addWidget(left_header, 0, 0)
 
         self.header_buttons = []
-        for idx in range(1, 21):
-            name = f"Signage {idx:02d}"
+        for idx in range(N_SIGNAGE):
+            name = f"Signage {idx + 1:02d}"
             button = QtWidgets.QPushButton(name)
             button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             button.setFixedHeight(42)
             button.setStyleSheet("border: 1px solid #999;")
-            header_container_layout.addWidget(button)
+            signage_grid.addWidget(button, 0, BASE_COL + idx)
             self.header_buttons.append(button)
             self._header_labels[name.replace("Signage ", "Signage")] = button
 
-        header_container_layout.addStretch()
-        header_row.addWidget(header_container)
-        layout.addLayout(header_row)
-
-        body_layout = QtWidgets.QHBoxLayout()
         self.left_panel = QtWidgets.QWidget()
         self.left_panel.setFixedWidth(LEFT_COL_WIDTH)
         left_layout = QtWidgets.QVBoxLayout(self.left_panel)
@@ -1110,31 +1107,30 @@ class ControllerWindow(QtWidgets.QMainWindow):
         for _, label_text in PC_STATUS_ITEMS:
             left_layout.addWidget(self._make_pc_status_row_label(label_text))
 
-        body_layout.addWidget(self.left_panel)
-
-        body_container = QtWidgets.QWidget()
-        body_container_layout = QtWidgets.QHBoxLayout(body_container)
-        body_container_layout.setContentsMargins(0, 0, 0, 0)
-        body_container_layout.setSpacing(GAP_PX)
+        signage_grid.addWidget(self.left_panel, 1, 0)
 
         self.columns = []
-        for idx in range(1, 21):
-            name = f"Signage{idx:02d}"
-            sign_id = f"Sign{idx:02d}"
+        for idx in range(N_SIGNAGE):
+            name = f"Signage{idx + 1:02d}"
+            sign_id = f"Sign{idx + 1:02d}"
             column = SignageColumnWidget(name, sign_id)
             column.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             column.setMinimumWidth(0)
             self.columns.append(column)
-            body_container_layout.addWidget(column)
+            signage_grid.addWidget(column, 1, BASE_COL + idx)
             self._column_widgets[name] = column
             column.clicked_config.connect(self._on_column_config)
             column.clicked_reboot.connect(self._on_column_reboot)
             column.clicked_shutdown.connect(self._on_column_shutdown)
-            column.toggled_active.connect(self._on_column_active_toggle)
+            column.toggled_active.connect(
+                lambda _sign_id, checked, i=idx: self._on_column_active_toggle(i, checked)
+            )
 
-        body_container_layout.addStretch()
-        body_layout.addWidget(body_container)
-        layout.addLayout(body_layout)
+        signage_grid.setColumnMinimumWidth(0, LEFT_COL_WIDTH)
+        for idx in range(N_SIGNAGE):
+            signage_grid.setColumnStretch(BASE_COL + idx, 1)
+
+        layout.addWidget(signage_grid_container)
 
         log_label = QtWidgets.QLabel("ログ")
         layout.addWidget(log_label)
@@ -1163,8 +1159,8 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
     def apply_dynamic_column_widths(self) -> None:
         total_w = self.centralWidget().width()
-        usable = total_w - LEFT_COL_WIDTH - OUTER_MARGIN * 2 - GAP_PX * (20 - 1)
-        col_w = max(45, int(usable / 20))
+        usable = total_w - LEFT_COL_WIDTH - OUTER_MARGIN * 2 - GAP_PX * N_SIGNAGE
+        col_w = max(45, int(usable / N_SIGNAGE))
 
         if self.left_panel:
             self.left_panel.setFixedWidth(LEFT_COL_WIDTH)
@@ -1598,7 +1594,7 @@ QPushButton:disabled {
         write_json_atomic(INVENTORY_PATH, self.inventory)
 
     def _load_sign_states(self) -> None:
-        for idx in range(1, 21):
+        for idx in range(1, N_SIGNAGE + 1):
             name = f"Sign{idx:02d}"
             info = self.inventory.get(name, {})
             state = SignState(
@@ -2199,18 +2195,28 @@ QPushButton:disabled {
         if state:
             self.send_power_command(state, "shutdown")
 
-    def _on_column_active_toggle(self, sign_name: str, active: bool) -> None:
-        state = self._get_state_by_sign_name(sign_name)
-        if not state:
-            return
-        previous = state.enabled
-        state.enabled = active
-        self._save_inventory_state(state)
-        if previous != active:
-            before_label = "アクティブ" if previous else "非アクティブ"
-            after_label = "アクティブ" if active else "非アクティブ"
-            logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
-        self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+    def log(self, message: str) -> None:
+        logging.info("%s", message)
+
+    def _on_column_active_toggle(self, idx: int, active: bool) -> None:
+        pc_no = idx + 1
+        self.log(f"[UI] active clicked idx={idx} pc_no={pc_no}")
+        sign_name = f"Sign{pc_no:02d}"
+        try:
+            state = self._get_state_by_sign_name(sign_name)
+            if not state:
+                self.log(f"[ERROR] active click failed for {sign_name}: state missing")
+                return
+            previous = state.enabled
+            state.enabled = active
+            self._save_inventory_state(state)
+            if previous != active:
+                before_label = "アクティブ" if previous else "非アクティブ"
+                after_label = "アクティブ" if active else "非アクティブ"
+                logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
+            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+        except Exception as exc:
+            self.log(f"[ERROR] active click failed for {sign_name}: {exc}")
 
     def check_timer_transition(self) -> None:
         self.recompute_all()
