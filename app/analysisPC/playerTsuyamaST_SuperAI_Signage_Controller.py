@@ -75,6 +75,17 @@ TIMER_CHANNEL_COLORS = {
 LEFT_COL_WIDTH = 170
 GAP_PX = 3
 OUTER_MARGIN = 6
+PC_STATUS_ROW_HEIGHT = 18
+PC_STATUS_FONT_SIZE = 8
+PC_STATUS_ITEMS = [
+    ("cpu_usage", "CPU使用率[%]"),
+    ("cpu_temp", "CPU温度[℃]"),
+    ("chipset_temp", "チップセット温度[℃]"),
+    ("gpu_temp", "CPU内GPU温度[℃]"),
+    ("ssd_temp", "SSD温度[℃]"),
+    ("memory_temp", "メモリ温度[℃]"),
+    ("c_drive", "Cドライブ使用状況[GB]"),
+]
 
 
 @dataclass
@@ -576,6 +587,19 @@ class TimerLegendWidget(QtWidgets.QWidget):
         height = self.height()
         width = self.width()
         right_pad = 40
+        label_text = "タイマー設定"
+        painter.save()
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        metrics = QtGui.QFontMetrics(font)
+        text_width = metrics.horizontalAdvance(label_text)
+        text_x = 8
+        text_y = int(height / 2 + text_width / 2)
+        painter.translate(text_x, text_y)
+        painter.rotate(-90)
+        painter.drawText(0, 0, label_text)
+        painter.restore()
         tick_x2 = width - 2
         tick_x1 = width - 22
         for hour in [0, 6, 12, 18, 23]:
@@ -714,6 +738,11 @@ class SignageColumnWidget(QtWidgets.QWidget):
         manage_layout.addWidget(self.btn_active)
         manage_layout.addWidget(self.comm_label)
 
+        self.pc_status_labels: Dict[str, QtWidgets.QLabel] = {}
+        for key, _ in PC_STATUS_ITEMS:
+            label = self._make_pc_status_label("-")
+            self.pc_status_labels[key] = label
+
         for widget, height in [
             (self.display_label, 28),
             (self.preview_widget, 105),
@@ -729,6 +758,9 @@ class SignageColumnWidget(QtWidgets.QWidget):
         ]:
             widget.setFixedHeight(height)
             self.layout.addWidget(widget)
+
+        for key, _ in PC_STATUS_ITEMS:
+            self.layout.addWidget(self.pc_status_labels[key])
 
         self.setting_button.setStyleSheet("background:#ffffff;")
         self.btn_reboot.setStyleSheet("background:#e8f4ff;")
@@ -754,6 +786,22 @@ class SignageColumnWidget(QtWidgets.QWidget):
         label.setWordWrap(True)
         label.setStyleSheet("border: 1px solid #999;")
         return label
+
+    def _make_pc_status_label(self, text: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel(text)
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setWordWrap(True)
+        label.setFixedHeight(PC_STATUS_ROW_HEIGHT)
+        font = label.font()
+        font.setPointSize(PC_STATUS_FONT_SIZE)
+        label.setFont(font)
+        label.setContentsMargins(0, 0, 0, 0)
+        label.setStyleSheet("border: 1px solid #999;")
+        return label
+
+    def set_pc_status_values(self, values: Dict[str, str]) -> None:
+        for key, label in self.pc_status_labels.items():
+            label.setText(values.get(key, "-"))
 
     def _handle_media_status(self, status) -> None:
         if status != QtMultimedia.QMediaPlayer.MediaStatus.EndOfMedia:
@@ -990,12 +1038,13 @@ class ControllerWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 20))
         left_layout.addWidget(self._make_row_label("AI渋滞判定(LV4)時", 20))
         left_layout.addWidget(self._make_row_label("通常時", 20))
-        left_layout.addWidget(self._make_row_label("タイマー設定", 20))
         timer_label = TimerLegendWidget()
         timer_label.setFixedHeight(220)
         left_layout.addWidget(timer_label)
         left_layout.addWidget(self._make_row_label("サイネージPC\n電源管理", 52))
         left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 52))
+        for _, label_text in PC_STATUS_ITEMS:
+            left_layout.addWidget(self._make_pc_status_row_label(label_text))
 
         body_layout.addWidget(self.left_panel)
 
@@ -1199,6 +1248,18 @@ QPushButton:disabled {
         label.setWordWrap(True)
         return label
 
+    def _make_pc_status_row_label(self, text: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel(text)
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setFixedHeight(PC_STATUS_ROW_HEIGHT)
+        label.setWordWrap(True)
+        font = label.font()
+        font.setPointSize(PC_STATUS_FONT_SIZE)
+        label.setFont(font)
+        label.setContentsMargins(0, 0, 0, 0)
+        label.setStyleSheet("border: 1px solid #999;")
+        return label
+
     def _make_chip(self, title: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(f"{title}: -")
         label.setProperty("title", title)
@@ -1336,6 +1397,54 @@ QPushButton:disabled {
             f"background:{background}; color:{color}; border:1px solid #bbb; border-radius:8px; padding:2px 8px;"
         )
 
+    def _format_pc_value(self, value: Optional[float], decimals: int = 1) -> str:
+        if value is None:
+            return "-"
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        return f"{numeric:.{decimals}f}"
+
+    def _build_pc_status_values(self, payload: Optional[dict]) -> Dict[str, str]:
+        values = {key: "-" for key, _ in PC_STATUS_ITEMS}
+        if not isinstance(payload, dict):
+            return values
+
+        cpu_load = payload.get("cpu_total_percent")
+        cpu_temp = payload.get("cpu_temp_c") or payload.get("cpu_temp") or payload.get("cpu_package")
+        chipset_temp = payload.get("chipset_temp_c") or payload.get("chipset_temp")
+        gpu_temp = payload.get("gpu_temp_c") or payload.get("gpu_temp")
+        ssd_temp = payload.get("ssd", {}).get("temp_c")
+        memory_temp = (
+            payload.get("memory_temp_c")
+            or payload.get("memory_temp")
+            or payload.get("mem_temp_c")
+            or payload.get("mem_temp")
+        )
+        used_gb = payload.get("ssd", {}).get("used_gb")
+        total_gb = payload.get("ssd", {}).get("total_gb")
+
+        values["cpu_usage"] = self._format_pc_value(cpu_load)
+        values["cpu_temp"] = self._format_pc_value(cpu_temp)
+        values["chipset_temp"] = self._format_pc_value(chipset_temp)
+        values["gpu_temp"] = self._format_pc_value(gpu_temp)
+        values["ssd_temp"] = self._format_pc_value(ssd_temp)
+        values["memory_temp"] = self._format_pc_value(memory_temp)
+        if used_gb is not None and total_gb not in (None, 0):
+            try:
+                values["c_drive"] = f"{float(used_gb):.1f}/{float(total_gb):.0f}"
+            except (TypeError, ValueError):
+                values["c_drive"] = "-"
+        return values
+
+    def _set_pc_status_values(self, state: SignState, payload: Optional[dict]) -> None:
+        column = self._column_widgets.get(state.name.replace("Sign", "Signage"))
+        if not column:
+            return
+        values = self._build_pc_status_values(payload)
+        column.set_pc_status_values(values)
+
     def _setup_log_stream(self) -> None:
         orig_err = sys.__stderr__
 
@@ -1404,7 +1513,7 @@ QPushButton:disabled {
         )
         return Path(remote_path)
 
-    def _read_remote_status(self, state: SignState) -> dict:
+    def load_pc_status(self, state: SignState) -> dict:
         path = self._remote_status_path(state)
         if not path.exists():
             return {"ok": False, "error": "not_found"}
@@ -1431,11 +1540,13 @@ QPushButton:disabled {
                 self._remote_status_pending.pop(state.name, None)
                 self._set_status_error(labels["cpu"], "通信NG")
                 self._set_status_error(labels["ssd"], "通信NG")
+                self._set_pc_status_values(state, None)
                 continue
             if not state.enabled:
                 self._remote_status_pending.pop(state.name, None)
                 self._set_status_inactive(labels["cpu"], "非アクティブ")
                 self._set_status_inactive(labels["ssd"], "非アクティブ")
+                self._set_pc_status_values(state, None)
                 continue
 
             pending = self._remote_status_pending.get(state.name)
@@ -1455,7 +1566,7 @@ QPushButton:disabled {
                     self._apply_remote_status(state, {"ok": False, "error": "timeout"})
                 continue
 
-            future = self._executor.submit(self._read_remote_status, state)
+            future = self._executor.submit(self.load_pc_status, state)
             self._remote_status_pending[state.name] = {"future": future, "started": now}
 
     def _apply_remote_status(self, state: SignState, result: dict) -> None:
@@ -1466,6 +1577,7 @@ QPushButton:disabled {
         if state.last_update and state.online is False:
             self._set_status_error(labels["cpu"], "通信NG")
             self._set_status_error(labels["ssd"], "通信NG")
+            self._set_pc_status_values(state, None)
             return
 
         if not result.get("ok"):
@@ -1473,6 +1585,7 @@ QPushButton:disabled {
             message = "通信NG" if error in ("not_found", "timeout") else "エラー"
             self._set_status_error(labels["cpu"], message)
             self._set_status_error(labels["ssd"], message)
+            self._set_pc_status_values(state, None)
             log_line = f"[ERR] {state.name} pc_status取得失敗 ({error})"
             if self._remote_status_log_state.get(state.name) != log_line:
                 logging.info("%s", log_line)
@@ -1483,6 +1596,7 @@ QPushButton:disabled {
         if not isinstance(payload, dict):
             self._set_status_error(labels["cpu"], "エラー")
             self._set_status_error(labels["ssd"], "エラー")
+            self._set_pc_status_values(state, None)
             log_line = f"[ERR] {state.name} pc_status取得失敗 (payload)"
             if self._remote_status_log_state.get(state.name) != log_line:
                 logging.info("%s", log_line)
@@ -1528,6 +1642,7 @@ QPushButton:disabled {
             self._set_status_label(labels["cpu"], cpu_text, max(severity_values))
 
         self._set_ssd_usage_label(labels["ssd"], used_gb, total_gb)
+        self._set_pc_status_values(state, payload)
         if missing_keys:
             log_line = f"[OK] {state.name} pc_status payload missing: {','.join(missing_keys)}"
         else:
