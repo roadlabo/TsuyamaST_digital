@@ -82,7 +82,7 @@ PC_STATUS_ITEMS = [
     ("playback_state", "再生状態"),
     ("cpu_usage", "CPU使用率[%]"),
     ("mem_usage", "メモリ使用率[%]"),
-    ("c_drive", "Cドライブ[GB]"),
+    ("c_drive", "Cドライブ（使用/全体）"),
 ]
 
 
@@ -597,7 +597,7 @@ class TimerLegendWidget(QtWidgets.QWidget):
         painter.setFont(font)
         metrics = QtGui.QFontMetrics(font)
         text_width = metrics.horizontalAdvance(label_text)
-        shift_left = metrics.horizontalAdvance("あ")
+        shift_left = metrics.horizontalAdvance("あ") * 2
         text_x = width - right_pad - 14 - shift_left
         text_y = int(height / 2 + text_width / 2)
         painter.translate(text_x, text_y)
@@ -725,6 +725,9 @@ class SignageColumnWidget(QtWidgets.QWidget):
         power_layout.setSpacing(0)
         self.btn_reboot = QtWidgets.QPushButton("再起動")
         self.btn_shutdown = QtWidgets.QPushButton("シャットダウン")
+        font = self.btn_shutdown.font()
+        font.setPointSize(max(8, font.pointSize() - 1))
+        self.btn_shutdown.setFont(font)
         self.btn_reboot.setFixedHeight(26)
         self.btn_shutdown.setFixedHeight(26)
         power_layout.addWidget(self.btn_reboot)
@@ -971,11 +974,11 @@ class ControllerWindow(QtWidgets.QMainWindow):
         header_layout.addWidget(title_label)
 
         button_layout = QtWidgets.QHBoxLayout()
-        self.btn_check = QtWidgets.QPushButton("サイネージPC通信確認")
+        self.btn_check = QtWidgets.QPushButton("サイネージPC一斉通信確認")
         self.btn_bulk_update = QtWidgets.QPushButton("一斉Ch更新")
-        self.btn_refresh_content = QtWidgets.QPushButton("フォルダ内動画情報取得")
-        self.btn_sync = QtWidgets.QPushButton("動画の同期開始")
-        self.btn_logs = QtWidgets.QPushButton("LOGファイル取得")
+        self.btn_refresh_content = QtWidgets.QPushButton("このPCの動画情報読込み")
+        self.btn_sync = QtWidgets.QPushButton("このPCの動画情報を全サイネージPCへ（同期）")
+        self.btn_logs = QtWidgets.QPushButton("全サイネージPCのLOGファイル取得")
         self.btn_preview_toggle = QtWidgets.QPushButton("プレビューON/OFF")
 
         for btn in [
@@ -1031,7 +1034,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         left_layout.addWidget(self._make_row_label("表示中ch", 28))
         left_layout.addWidget(self._make_row_label("表示中映像", 105))
-        left_layout.addWidget(self._make_row_label("設定", 26))
+        left_layout.addWidget(self._make_row_label("CH設定→", 26))
         left_layout.addWidget(self._make_row_label("休眠時", 20))
         left_layout.addWidget(self._make_row_label("AI渋滞判定(LV2)時", 20))
         left_layout.addWidget(self._make_row_label("AI渋滞判定(LV3)時", 20))
@@ -1040,7 +1043,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
         timer_label = TimerLegendWidget()
         timer_label.setFixedHeight(220)
         left_layout.addWidget(timer_label)
-        left_layout.addWidget(self._make_row_label("サイネージPC\n電源管理", 52))
+        power_label = self._make_row_label("サイネージPC\n電源管理", 52)
+        power_label.setStyleSheet("border: 1px solid #999; color: #d32f2f; font-weight: 900;")
+        left_layout.addWidget(power_label)
         left_layout.addWidget(self._make_row_label("管理する\nサイネージ", 52))
         for _, label_text in PC_STATUS_ITEMS:
             left_layout.addWidget(self._make_pc_status_row_label(label_text))
@@ -1082,7 +1087,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.log_view.setFont(log_font)
         self.log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.log_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.log_view.setFixedHeight(90)
+        self.log_view.setFixedHeight(135)
         layout.addWidget(self.log_view)
 
         self.setCentralWidget(central)
@@ -1093,25 +1098,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.btn_sync.clicked.connect(self.start_sync)
         self.btn_logs.clicked.connect(self.collect_logs)
         self.btn_preview_toggle.clicked.connect(self.toggle_preview)
-
-        self.setStyleSheet(
-            """
-QPushButton {
-  border: 1px solid #666;
-  border-radius: 8px;
-  padding: 6px 10px;
-  background: #f6f6f6;
-  font-weight: 700;
-}
-QPushButton:hover { background: #ffffff; }
-QPushButton:pressed { background: #e6e6e6; }
-QPushButton:disabled {
-  background: #cfcfcf;
-  color: #777;
-  border: 1px solid #999;
-}
-"""
-        )
 
         QtCore.QTimer.singleShot(800, self.check_connectivity)
 
@@ -1339,9 +1325,11 @@ QPushButton:disabled {
         values["mem_usage"] = self._format_pc_value(mem_used)
         if used_gb is not None and total_gb not in (None, 0):
             try:
-                values["c_drive"] = f"{float(used_gb):.1f}/{float(total_gb):.0f}"
+                used_i = int(round(float(used_gb)))
+                total_i = int(round(float(total_gb)))
+                values["c_drive"] = f"{used_i:03d}GB/{total_i:03d}GB"
             except (TypeError, ValueError):
-                values["c_drive"] = "不明"
+                values["c_drive"] = "-"
         return values
 
     def _set_pc_status_values(self, state: SignState, payload: Optional[dict]) -> None:
