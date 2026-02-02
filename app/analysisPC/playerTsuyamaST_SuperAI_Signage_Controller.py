@@ -1424,6 +1424,14 @@ QPushButton:disabled {
             return
         values = self._build_pc_status_values(payload)
         column.set_pc_status_values(values)
+        playback_label = column.pc_status_labels.get("playback_state")
+        if playback_label:
+            if values.get("playback_state") == "停止":
+                playback_label.setStyleSheet(
+                    "background:#e53935; color:#ffffff; border:1px solid #999; font-weight:900;"
+                )
+            else:
+                playback_label.setStyleSheet("border:1px solid #999;")
 
     def _setup_log_stream(self) -> None:
         orig_err = sys.__stderr__
