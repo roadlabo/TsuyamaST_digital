@@ -1,5 +1,5 @@
 {
-  "auto_distribute_on_event": false,
+  "auto_distribute_on_event": true,
   "compare_ctime": true,
   "network_timeout_seconds": 4,
   "thread_workers": 8,

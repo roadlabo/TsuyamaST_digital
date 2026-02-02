@@ -23,6 +23,9 @@ DEFAULT_LOG_DIR = LOGS_DIR
 RETRY_MISSING_SECONDS = 30
 RETRY_PLAYER_SECONDS = 10
 
+BLACKOUT_BMP = CONFIG_DIR / "blackout.bmp"
+_blackout_proc: subprocess.Popen | None = None
+
 # 監視（ポーリング）間隔：短いほど反応は良いが負荷が少し増える
 WATCH_POLL_SECONDS = 2.0
 
@@ -75,6 +78,31 @@ def build_playlist(playlist_dir: Path, channel: str, files: List[Path]) -> Path:
     return playlist_path
 
 
+def ensure_blackout_bmp(path: Path) -> None:
+    if path.exists():
+        return
+    bmp_bytes = (
+        b"BM"
+        b"\x3a\x00\x00\x00"
+        b"\x00\x00"
+        b"\x00\x00"
+        b"\x36\x00\x00\x00"
+        b"\x28\x00\x00\x00"
+        b"\x01\x00\x00\x00"
+        b"\x01\x00\x00\x00"
+        b"\x01\x00"
+        b"\x18\x00"
+        b"\x00\x00\x00\x00"
+        b"\x04\x00\x00\x00"
+        b"\x00\x00\x00\x00"
+        b"\x00\x00\x00\x00"
+        b"\x00\x00\x00\x00"
+        b"\x00\x00\x00\x00"
+        b"\x00\x00\x00\x00"
+    )
+    path.write_bytes(bmp_bytes)
+
+
 def find_player_command(playlist_path: Path, fullscreen: bool) -> List[str]:
     if not MPV_EXE.is_file():
         raise FileNotFoundError(f"mpv.exe not found: {MPV_EXE}")
@@ -109,6 +137,22 @@ def stop_player(proc: subprocess.Popen, timeout: float = 5.0) -> None:
             proc.kill()
         except Exception:
             pass
+
+
+def start_blackout(fullscreen: bool) -> subprocess.Popen:
+    ensure_blackout_bmp(BLACKOUT_BMP)
+    cmd = [
+        str(MPV_EXE),
+        "--no-terminal",
+        "--no-osd-bar",
+        "--osd-level=0",
+        "--loop-file=inf",
+        "--image-display-duration=inf",
+    ]
+    if fullscreen:
+        cmd.append("--fullscreen")
+    cmd.append(str(BLACKOUT_BMP))
+    return start_player(cmd)
 
 
 @dataclass(frozen=True)
@@ -166,7 +210,12 @@ def run_player_with_watch(
     cmd = find_player_command(playlist_path, fullscreen)
     logger.info("Launching player: %s", " ".join(cmd))
 
+    global _blackout_proc
     proc = start_player(cmd)
+    if _blackout_proc and _blackout_proc.poll() is None:
+        time.sleep(1.0)
+        stop_player(_blackout_proc)
+        _blackout_proc = None
     last_folder_state = FolderState.from_folder(channel_folder)
 
     try:
@@ -183,6 +232,8 @@ def run_player_with_watch(
             active_mtime_now = safe_mtime(active_path)
             if active_mtime_now != active_mtime_at_start:
                 logger.info("Detected active.json change. Restarting player to apply.")
+                if not _blackout_proc or _blackout_proc.poll() is not None:
+                    _blackout_proc = start_blackout(fullscreen)
                 stop_player(proc)
                 return 0
 
@@ -190,12 +241,16 @@ def run_player_with_watch(
             config_mtime_now = safe_mtime(config_path)
             if config_mtime_now != config_mtime_at_start:
                 logger.info("Detected config.json change. Restarting player to apply.")
+                if not _blackout_proc or _blackout_proc.poll() is not None:
+                    _blackout_proc = start_blackout(fullscreen)
                 stop_player(proc)
                 return 0
 
             # チャンネルフォルダ内が変わったらプレイリストを作り直して再起動
             if not channel_folder.exists():
                 logger.info("Channel folder disappeared. Restarting.")
+                if not _blackout_proc or _blackout_proc.poll() is not None:
+                    _blackout_proc = start_blackout(fullscreen)
                 stop_player(proc)
                 return 0
 
@@ -205,9 +260,13 @@ def run_player_with_watch(
                 files_now = list_mp4_files(channel_folder)
                 if not files_now:
                     logger.error("No mp4 files after change in %s", channel_folder)
+                    if not _blackout_proc or _blackout_proc.poll() is not None:
+                        _blackout_proc = start_blackout(fullscreen)
                     stop_player(proc)
                     return 0
                 build_playlist(playlist_dir, active_channel, files_now)
+                if not _blackout_proc or _blackout_proc.poll() is not None:
+                    _blackout_proc = start_blackout(fullscreen)
                 stop_player(proc)
                 return 0
     finally:
@@ -231,6 +290,7 @@ def resolve_content_root(config: dict) -> Path:
 
 
 def main() -> None:
+    global _blackout_proc
     configure_logging(DEFAULT_LOG_DIR)
     logger.info("auto_play.py starting")
     config_path = CONFIG_DIR / "config.json"
@@ -279,6 +339,9 @@ def main() -> None:
 
         except Exception:
             logger.exception("Unhandled error. Retrying in %s seconds.", RETRY_MISSING_SECONDS)
+            if _blackout_proc and _blackout_proc.poll() is None:
+                stop_player(_blackout_proc)
+                _blackout_proc = None
             time.sleep(RETRY_MISSING_SECONDS)
 
 

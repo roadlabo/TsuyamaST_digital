@@ -48,7 +48,7 @@ TELEMETRY_LOCAL_PATH = Path(r"C:\_TsuyamaSignage\app\logs\telemetry_local.json")
 
 REMOTE_APP_DIR = "app"
 REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\config"
-REMOTE_LOGS_DIR = f"{REMOTE_APP_DIR}\\logs"
+REMOTE_LOGS_DIR = "logs"
 REMOTE_CONTENT_DIR = "content"
 
 INVENTORY_PATH = CONFIG_DIR / "inventory.json"
@@ -925,6 +925,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._remote_status_pending: Dict[str, dict] = {}
         self._remote_status_log_state: Dict[str, str] = {}
         self._telemetry_timer: Optional[QtCore.QTimer] = None
+        self._connectivity_timer: Optional[QtCore.QTimer] = None
 
         self._init_ui()
         QtCore.QTimer.singleShot(0, self.apply_dynamic_column_widths)
@@ -939,10 +940,15 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.timer_poll.start()
 
         self._telemetry_timer = QtCore.QTimer(self)
-        self._telemetry_timer.setInterval(2000)
+        self._telemetry_timer.setInterval(10000)
         self._telemetry_timer.timeout.connect(self.refresh_remote_telemetry)
         self._telemetry_timer.start()
         self.refresh_remote_telemetry()
+
+        self._connectivity_timer = QtCore.QTimer(self)
+        self._connectivity_timer.setInterval(10000)
+        self._connectivity_timer.timeout.connect(self.poll_connectivity_silent)
+        self._connectivity_timer.start()
 
     def _init_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -1747,6 +1753,35 @@ QPushButton:disabled {
                 self._log_sign_error(state, str(exc))
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
         self._log_command_done(command, ok_count, skip_count, err_count)
+
+    def poll_connectivity_silent(self) -> None:
+        timeout = self.settings.get("network_timeout_seconds", 4)
+        futures = {}
+        for state in self.sign_states.values():
+            if not state.exists or not state.enabled:
+                if state.online:
+                    state.online = False
+                    state.last_error = ""
+                    state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+                continue
+            futures[self._executor.submit(self.check_single_connectivity, state)] = state
+
+        for future, state in futures.items():
+            try:
+                online, error = future.result(timeout=timeout)
+            except Exception as exc:
+                online, error = False, str(exc)
+
+            if online != state.online:
+                state.online = online
+                state.last_error = error or ""
+                state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if online:
+                    logging.info("[POLL] %s オンライン", state.name)
+                else:
+                    logging.info("[POLL] %s オフライン (%s)", state.name, error or "offline")
+                self._update_column(int(state.name.replace("Sign", "")) - 1, state)
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str]:
         remote_path = build_unc_path(state.ip, state.share_name, REMOTE_CONFIG_DIR)
