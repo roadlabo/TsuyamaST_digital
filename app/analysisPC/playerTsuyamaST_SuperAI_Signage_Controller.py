@@ -3,6 +3,7 @@ import importlib.util
 import logging
 import os
 import shutil
+import socket
 import sys
 import threading
 import time as time_module
@@ -993,6 +994,15 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._remote_status_cache: Dict[str, dict] = {}
         self._remote_status_pending: Dict[str, dict] = {}
         self._remote_status_log_state: Dict[str, str] = {}
+        # ---- Telemetry軽量化用 ----
+        self._telemetry_rr_index = 0  # round-robin index
+        self._telemetry_batch_size = int(self.settings.get("telemetry_batch_size", 5))  # 1回に更新する台数
+        self._telemetry_min_interval_ok = float(self.settings.get("telemetry_min_interval_ok", 10.0))
+        self._telemetry_min_interval_ng = float(self.settings.get("telemetry_min_interval_ng", 30.0))
+        self._telemetry_max_interval_ng = float(self.settings.get("telemetry_max_interval_ng", 120.0))
+        # per-sign backoff state: { "next_allowed": monotonic_time, "fail_count": int }
+        self._telemetry_backoff: Dict[str, dict] = {}
+        # per-sign last log state is already self._remote_status_log_state
         self._telemetry_timer: Optional[QtCore.QTimer] = None
         self._connectivity_timer: Optional[QtCore.QTimer] = None
 
@@ -1472,18 +1482,44 @@ QPushButton:disabled {
         return {"ok": True, "payload": payload, "cached": False}
 
     def refresh_remote_telemetry(self) -> None:
-        timeout_sec = 2.0
+        """
+        10秒周期で呼ばれるが、
+        - round-robinで一部の端末だけ更新
+        - 445が落ちている端末はUNCを触らない
+        - NG端末はバックオフで更新頻度を落とす
+        """
         now = time_module.monotonic()
-        for state in self.sign_states.values():
-            if not state.exists:
+
+        # 更新対象のリスト（exists & enabled のみ）
+        targets = [s for s in self.sign_states.values() if s.exists and s.enabled]
+        if not targets:
+            # 全部無効なら全列の表示を落とす（必要なら）
+            for state in self.sign_states.values():
                 self._remote_status_pending.pop(state.name, None)
                 self._set_pc_status_values(state, None)
-                continue
-            if not state.enabled:
-                self._remote_status_pending.pop(state.name, None)
-                self._set_pc_status_values(state, None)
+            return
+
+        # round-robin 対象を決定
+        batch = max(1, self._telemetry_batch_size)
+        start = self._telemetry_rr_index % len(targets)
+        picked = []
+        for i in range(len(targets)):
+            idx = (start + i) % len(targets)
+            picked.append(targets[idx])
+            if len(picked) >= batch:
+                break
+        self._telemetry_rr_index = (start + batch) % len(targets)
+
+        # timeout（future.cancel はUNC詰まりには効かないので、触る前に落とす）
+        timeout_sec = 2.0
+
+        for state in picked:
+            # backoff判定
+            meta = self._telemetry_backoff.get(state.name)
+            if meta and now < meta.get("next_allowed", 0):
                 continue
 
+            # 既にpendingなら結果回収/タイムアウト処理だけ
             pending = self._remote_status_pending.get(state.name)
             if pending:
                 future = pending["future"]
@@ -1496,38 +1532,65 @@ QPushButton:disabled {
                         result = {"ok": False, "error": str(exc)}
                     self._apply_remote_status(state, result)
                 elif now - started > timeout_sec:
-                    future.cancel()
+                    # cancelしてもUNCが詰まっていると止まらないことがあるので、
+                    # “結果は捨てる”扱いでUIを先に進める
                     self._remote_status_pending.pop(state.name, None)
                     self._apply_remote_status(state, {"ok": False, "error": "timeout"})
                 continue
 
+            # 445チェックで落とす（ここが最重要）
+            if not self._fast_smb_reachable(state.ip, timeout_sec=0.2):
+                self._apply_remote_status(state, {"ok": False, "error": "smb_unreachable"})
+                continue
+
+            # ここまで来たらUNCを触る（ワーカーへ）
             future = self._executor.submit(self.load_pc_status, state)
             self._remote_status_pending[state.name] = {"future": future, "started": now}
 
     def _apply_remote_status(self, state: SignState, result: dict) -> None:
-        if not result.get("ok"):
-            error = result.get("error") or "error"
+        now = time_module.monotonic()
+
+        def set_backoff_fail(reason: str) -> None:
+            meta = self._telemetry_backoff.get(state.name, {"fail_count": 0, "next_allowed": 0})
+            meta["fail_count"] = int(meta.get("fail_count", 0)) + 1
+            base = float(self._telemetry_min_interval_ng)
+            maxv = float(self._telemetry_max_interval_ng)
+            interval = min(maxv, base * (2 ** max(0, meta["fail_count"] - 1)))
+            meta["next_allowed"] = now + interval
+            self._telemetry_backoff[state.name] = meta
+
+            # UI更新
             self._set_pc_status_values(state, None)
-            log_line = f"[ERR] {state.name} pc_status取得失敗 ({error})"
+
+            # ログはエラーのみ（同一内容は連打しない）
+            log_line = f"[ERR] {state.name} pc_status取得失敗 ({reason})"
             if self._remote_status_log_state.get(state.name) != log_line:
                 logging.info("%s", log_line)
                 self._remote_status_log_state[state.name] = log_line
+
+        def clear_backoff_ok() -> None:
+            self._telemetry_backoff[state.name] = {
+                "fail_count": 0,
+                "next_allowed": now + float(self._telemetry_min_interval_ok),
+            }
+
+        if not result.get("ok"):
+            error = result.get("error") or "error"
+            set_backoff_fail(error)
             return
 
         payload = result.get("payload")
         if not isinstance(payload, dict):
-            self._set_pc_status_values(state, None)
-            log_line = f"[ERR] {state.name} pc_status取得失敗 (payload)"
-            if self._remote_status_log_state.get(state.name) != log_line:
-                logging.info("%s", log_line)
-                self._remote_status_log_state[state.name] = log_line
+            set_backoff_fail("payload")
             return
 
+        # OK: UI更新
         self._set_pc_status_values(state, payload)
-        log_line = f"[OK] {state.name} pc_status更新"
-        if self._remote_status_log_state.get(state.name) != log_line:
-            logging.info("%s", log_line)
-            self._remote_status_log_state[state.name] = log_line
+        clear_backoff_ok()
+
+        # 成功ログは抑制（ログUI負荷対策）
+        # 必要なら初回だけ出すなどにしても良いが、基本は出さない
+        self._remote_status_log_state[state.name] = "[OK suppressed]"
 
     def append_log_text(self, text: str) -> None:
         if not text:
@@ -1696,6 +1759,18 @@ QPushButton:disabled {
             return AI_CHOICES[0]
         return value or "-"
 
+    def _fast_smb_reachable(self, ip: str, timeout_sec: float = 0.2) -> bool:
+        """
+        UNC(Path.exists/open)を触る前に、SMBポート(445)だけを短時間で確認する。
+        ここでNGならUNCアクセスしない（UNCは詰まりやすい）。
+        """
+        if not ip:
+            return False
+        try:
+            with socket.create_connection((ip, 445), timeout=timeout_sec):
+                return True
+        except Exception:
+            return False
 
     def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
         root = build_unc_path(state.ip, state.share_name, "")
