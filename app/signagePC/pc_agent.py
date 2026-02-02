@@ -1,15 +1,13 @@
 import argparse
-import csv
 import json
 import os
 import shutil
 import socket
 import subprocess
-import threading
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 try:
     import psutil
@@ -23,15 +21,9 @@ CONFIG_DIR = APP_DIR / "config"
 CONTENT_DIR = ROOT / "content"
 LOGS_DIR = ROOT / "logs"
 RUNTIME_DIR = ROOT / "runtime"
+STATUS_DIR = LOGS_DIR / "status"
 
 PYTHON_EXE = RUNTIME_DIR / "python" / "python.exe"
-MPV_EXE = RUNTIME_DIR / "mpv" / "mpv.exe"
-HWINFO_EXE = RUNTIME_DIR / "hwinfo" / "HWiNFO64.exe"
-
-HWINFO_LOG_DIR = LOGS_DIR / "hwinfo"
-HWINFO_CSV = HWINFO_LOG_DIR / "hwinfo_sensors.csv"
-HWINFO_YEARLY_DIR = HWINFO_LOG_DIR / "yearly"
-HWINFO_STATE_JSON = HWINFO_YEARLY_DIR / "state.json"
 
 
 def now_iso() -> str:
@@ -52,321 +44,93 @@ def log_line(log_path: str, msg: str) -> None:
         pass
 
 
-INPUT_COLUMNS = {
-    "date": 0,
-    "time": 1,
-    "cpu_usage": 118,
-    "cpu_temp_primary": 206,
-    "cpu_temp_fallback": 156,
-    "memory_temp": 339,
-    "ssd_temp": 359,
-}
-
-YEARLY_HEADER = (
-    "日時,CPU使用率[%],CPU温度[℃],SSD温度[℃],メモリ温度[℃],Cドライブ総容量[GB],Cドライブ空き容量[GB]"
-)
-
-ENCODINGS = ("utf-8-sig", "cp932", "utf-8")
-
-
-def load_state(path: str) -> dict:
-    if not os.path.isfile(path):
-        return {"last_written_ts": None}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return {"last_written_ts": None}
-        if "last_written_ts" not in data:
-            data["last_written_ts"] = None
-        return data
-    except Exception:
-        return {"last_written_ts": None}
-
-
-def save_state(path: str, state: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+def write_json_atomic(path: str | Path, payload: dict) -> None:
+    path = str(path)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
 
 
-def parse_datetime(date_value: str, time_value: str) -> Optional[datetime]:
-    date_text = str(date_value or "").strip()
-    time_text = str(time_value or "").strip()
-    if not date_text or not time_text:
+def read_json_safe(path: Path) -> Optional[dict]:
+    if not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
         return None
 
-    candidates = [f"{date_text} {time_text}"]
-    if "." in time_text:
-        candidates.append(f"{date_text} {time_text.split('.', 1)[0]}")
 
-    formats = (
-        "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-        "%Y-%m-%d %H:%M",
-    )
-    for value in candidates:
-        for fmt in formats:
-            try:
-                return datetime.strptime(value, fmt)
-            except Exception:
-                continue
-    return None
+def parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=JST)
+    return parsed
 
 
-def get_ts_slot(now_dt: datetime, minutes: int) -> str:
-    minute_slot = (now_dt.minute // minutes) * minutes
-    slot_dt = now_dt.replace(minute=minute_slot, second=0, microsecond=0)
-    return slot_dt.strftime("%Y/%m/%d %H:%M")
-
-
-def read_latest_row(csv_path: str) -> Optional[list[str]]:
-    if not os.path.isfile(csv_path):
+def get_mem_used_percent() -> Optional[float]:
+    if psutil is None:
+        return None
+    try:
+        return float(psutil.virtual_memory().percent)
+    except Exception:
         return None
 
-    for encoding in ENCODINGS:
+
+def get_os_uptime_sec() -> Optional[int]:
+    if psutil is None:
+        return None
+    try:
+        return int(time.time() - float(psutil.boot_time()))
+    except Exception:
+        return None
+
+
+def find_auto_play_process() -> dict:
+    if psutil is None:
+        return {"running": None, "pid": None, "started_at": None}
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
         try:
-            with open(csv_path, "r", encoding=encoding, errors="replace") as f:
-                reader = csv.reader(f)
-                last_row = None
-                for row in reader:
-                    if row and any(cell.strip() for cell in row):
-                        last_row = row
-                if last_row:
-                    return last_row
+            cmdline = proc.info.get("cmdline") or []
+            if any("auto_play.py" in str(part) for part in cmdline):
+                started_at = None
+                created = proc.info.get("create_time")
+                if created:
+                    started_at = datetime.fromtimestamp(float(created), JST).isoformat()
+                return {"running": True, "pid": proc.info.get("pid"), "started_at": started_at}
         except Exception:
             continue
-    return None
+    return {"running": False, "pid": None, "started_at": None}
 
 
-def parse_float(value: str) -> Optional[float]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except Exception:
-        return None
+def read_player_heartbeat(path: Path, now_dt: datetime, stale_sec: int = 60) -> dict:
+    heartbeat = read_json_safe(path)
+    if not heartbeat:
+        return {"alive": False, "reason": "missing"}
 
+    ts_raw = heartbeat.get("timestamp")
+    ts = parse_iso_timestamp(ts_raw)
+    if ts is None:
+        return {"alive": False, "reason": "invalid", "timestamp": ts_raw}
 
-def _read_row_value(row: list[str], idx: Optional[int]) -> Optional[float]:
-    if idx is None or idx >= len(row):
-        return None
-    return parse_float(row[idx])
-
-
-def read_hwinfo_latest_metrics(csv_path: str) -> dict:
-    row = read_latest_row(csv_path)
-    metrics = {
-        "cpu_usage": None,
-        "cpu_temp_c": None,
-        "cpu_temp_source": "none",
-        "mem_temp_c": None,
-        "ssd_temp_c": None,
+    age_sec = (now_dt - ts).total_seconds()
+    alive = age_sec <= stale_sec
+    result = {
+        "alive": alive,
+        "timestamp": ts_raw,
+        "current_file": heartbeat.get("current_file"),
+        "loop_count": heartbeat.get("loop_count"),
+        "last_change_at": heartbeat.get("last_change_at"),
     }
-    if not row:
-        return metrics
-
-    metrics["cpu_usage"] = _read_row_value(row, INPUT_COLUMNS.get("cpu_usage"))
-
-    cpu_primary = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_primary"))
-    if cpu_primary is not None:
-        metrics["cpu_temp_c"] = cpu_primary
-        metrics["cpu_temp_source"] = "hwinfo_primary"
-    else:
-        cpu_fallback = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_fallback"))
-        if cpu_fallback is not None:
-            metrics["cpu_temp_c"] = cpu_fallback
-            metrics["cpu_temp_source"] = "hwinfo_fallback"
-
-    metrics["mem_temp_c"] = _read_row_value(row, INPUT_COLUMNS.get("memory_temp"))
-    metrics["ssd_temp_c"] = _read_row_value(row, INPUT_COLUMNS.get("ssd_temp"))
-    return metrics
-
-
-def ensure_yearly_file(path: str) -> None:
-    yearly_path = Path(path)
-    if yearly_path.is_file():
-        return
-    yearly_path.parent.mkdir(parents=True, exist_ok=True)
-    with yearly_path.open("w", encoding="utf-8", newline="") as f:
-        f.write(YEARLY_HEADER + "\n")
-
-
-def sample_and_append(
-    csv_path: str,
-    yearly_dir: str,
-    state_path: str,
-    sample_minutes: int,
-    logger: Optional[Callable[[str], None]] = None,
-) -> tuple[bool, str, Optional[str]]:
-    row = read_latest_row(csv_path)
-    if not row:
-        return False, "input_missing", None
-
-    required_indexes = [
-        INPUT_COLUMNS["date"],
-        INPUT_COLUMNS["time"],
-        INPUT_COLUMNS["cpu_usage"],
-        INPUT_COLUMNS["ssd_temp"],
-        INPUT_COLUMNS["memory_temp"],
-    ]
-    if max(required_indexes) >= len(row):
-        return False, "row_short", None
-
-    row_dt = parse_datetime(
-        row[INPUT_COLUMNS["date"]],
-        row[INPUT_COLUMNS["time"]],
-    )
-    if row_dt is None:
-        return False, "bad_datetime", None
-
-    ts_slot = get_ts_slot(row_dt, sample_minutes)
-    state = load_state(state_path)
-    if state.get("last_written_ts") == ts_slot:
-        return False, "same_ts", ts_slot
-
-    cpu_usage = parse_float(row[INPUT_COLUMNS["cpu_usage"]])
-    cpu_temp_primary = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_primary"))
-    cpu_temp_fallback = _read_row_value(row, INPUT_COLUMNS.get("cpu_temp_fallback"))
-    cpu_temp = cpu_temp_primary if cpu_temp_primary is not None else cpu_temp_fallback
-    ssd_temp = parse_float(row[INPUT_COLUMNS["ssd_temp"]])
-    memory_temp = parse_float(row[INPUT_COLUMNS["memory_temp"]])
-
-    if None in (cpu_usage, cpu_temp, ssd_temp, memory_temp):
-        return False, "missing_values", ts_slot
-
-    try:
-        usage = shutil.disk_usage(r"C:\\")
-        total_gb = round(usage.total / (1024**3), 1)
-        free_gb = round(usage.free / (1024**3), 1)
-    except Exception:
-        total_gb = None
-        free_gb = None
-
-    if total_gb is None or free_gb is None:
-        return False, "disk_unavailable", ts_slot
-
-    yearly_path = os.path.join(yearly_dir, f"hwinfo_{row_dt.year}.csv")
-    ensure_yearly_file(yearly_path)
-    with open(yearly_path, "a", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                ts_slot,
-                cpu_usage,
-                cpu_temp,
-                ssd_temp,
-                memory_temp,
-                total_gb,
-                free_gb,
-            ]
-        )
-
-    state["last_written_ts"] = ts_slot
-    save_state(state_path, state)
-    if logger:
-        logger(f"HWINFO yearly: appended {ts_slot}")
-    return True, "appended", ts_slot
-
-
-def truncate_if_needed(
-    csv_path: str,
-    max_bytes: int = 1_048_576,
-    logger: Optional[Callable[[str], None]] = None,
-) -> bool:
-    if not os.path.isfile(csv_path):
-        return False
-    try:
-        size = os.path.getsize(csv_path)
-    except Exception:
-        return False
-    if size <= max_bytes:
-        return False
-
-    try:
-        with open(csv_path, "r+", encoding="utf-8", errors="ignore") as f:
-            f.truncate(0)
-        if logger:
-            logger(f"HWINFO yearly: truncated input CSV (size={size})")
-        return True
-    except Exception as exc:
-        if logger:
-            logger(f"HWINFO yearly: truncate failed ({exc})")
-        return False
-
-
-def run_hwinfo_yearly_logger(
-    logger: Optional[Callable[[str], None]] = None,
-    poll_interval_sec: float = 2.0,
-) -> None:
-    try:
-        sample_minutes = int(os.getenv("HWINFO_SAMPLE_MINUTES", "30"))
-    except Exception:
-        sample_minutes = 30
-    if sample_minutes <= 0:
-        sample_minutes = 30
-
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    HWINFO_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    HWINFO_YEARLY_DIR.mkdir(parents=True, exist_ok=True)
-
-    input_csv = str(HWINFO_CSV)
-    yearly_dir = str(HWINFO_YEARLY_DIR)
-    state_path = str(HWINFO_STATE_JSON)
-
-    if logger:
-        logger(
-            "HWINFO yearly: start "
-            f"input={input_csv} yearly_dir={yearly_dir} "
-            f"columns={INPUT_COLUMNS} truncate=1048576 sample_minutes={sample_minutes}"
-        )
-
-    last_log = {"ts_slot": None, "reason": None}
-
-    while True:
-        try:
-            wrote, reason, ts_slot = sample_and_append(
-                input_csv,
-                yearly_dir,
-                state_path,
-                sample_minutes,
-                logger=logger,
-            )
-            if logger and reason != "appended":
-                if last_log["ts_slot"] != ts_slot or last_log["reason"] != reason:
-                    log_ts = ts_slot or "-"
-                    logger(f"HWINFO yearly: skip ({reason}) {log_ts}")
-                    last_log = {"ts_slot": ts_slot, "reason": reason}
-            truncate_if_needed(input_csv, logger=logger)
-        except Exception as exc:
-            if logger:
-                logger(f"HWINFO yearly: loop error ({exc})")
-        time.sleep(poll_interval_sec)
-
-
-def write_status(status_path: str, payload: dict) -> None:
-    tmp = status_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, status_path)
-
-
-def read_json(path: str):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def safe_move(src: str, dst: str) -> None:
-    try:
-        os.replace(src, dst)
-    except Exception:
-        pass
+    if not alive:
+        result["reason"] = "stale"
+    return result
 
 
 def exec_shutdown(action: str) -> int:
@@ -384,31 +148,26 @@ def main() -> int:
     ap.add_argument("--interval", type=int, default=5)
     args = ap.parse_args()
 
-    status_dir = LOGS_DIR / "status"
+    status_dir = STATUS_DIR
     config_dir = CONFIG_DIR
     logs_dir = LOGS_DIR
 
     ensure_dir(status_dir)
     ensure_dir(config_dir)
     ensure_dir(logs_dir)
-    ensure_dir(HWINFO_LOG_DIR)
-    ensure_dir(HWINFO_YEARLY_DIR)
 
-    status_path = str(status_dir / "pc_status.json")
-    cmd_path = str(config_dir / "command.json")
-    cmd_result_path = str(status_dir / "command_result.json")
-    log_path = str(logs_dir / "pc_agent.log")
+    status_path = status_dir / "pc_status.json"
+    cmd_path = config_dir / "command.json"
+    cmd_result_path = status_dir / "command_result.json"
+    log_path = logs_dir / "pc_agent.log"
+    heartbeat_path = status_dir / "pc_agent_heartbeat.json"
+    player_heartbeat_path = status_dir / "auto_play_heartbeat.json"
 
     if psutil is None:
         log_line(log_path, "WARN: psutil is not installed. CPU/mem/disk metrics may be missing.")
 
-    threading.Thread(
-        target=run_hwinfo_yearly_logger,
-        kwargs={"logger": lambda msg: log_line(log_path, msg)},
-        daemon=True,
-    ).start()
-
     hostname = socket.gethostname()
+    agent_started_at = time.time()
 
     if psutil:
         try:
@@ -420,28 +179,29 @@ def main() -> int:
 
     while True:
         try:
+            now_dt = datetime.now(JST)
+            agent_uptime_sec = int(time.time() - agent_started_at)
+            os_uptime_sec = get_os_uptime_sec()
+
             cpu_percent = None
             cpu_percent_source = "none"
-            cpu_temp_c = None
-            cpu_temp_source = "none"
+            mem_used_percent = None
+            mem_used_source = "none"
             ssd_usage_percent = None
             ssd_used_gb = None
             ssd_total_gb = None
             ssd_usage_source = "none"
-
-            hwinfo_metrics = read_hwinfo_latest_metrics(str(HWINFO_CSV))
-            hwinfo_cpu_usage = hwinfo_metrics.get("cpu_usage")
-            hwinfo_cpu_temp = hwinfo_metrics.get("cpu_temp_c")
-            hwinfo_cpu_temp_source = hwinfo_metrics.get("cpu_temp_source", "none")
-            hwinfo_ssd_temp = hwinfo_metrics.get("ssd_temp_c")
-            hwinfo_memory_temp = hwinfo_metrics.get("mem_temp_c")
 
             if psutil:
                 # CPU TOTAL (%)
                 cpu_percent = psutil.cpu_percent(interval=0.2)
                 cpu_percent_source = "psutil"
 
-                # SSD使用率は C:\ 固定（曖昧さ排除）
+                # MEMORY (% used)
+                mem_used_percent = get_mem_used_percent()
+                mem_used_source = "psutil" if mem_used_percent is not None else "none"
+
+                # SSD usage C:\
                 try:
                     du = psutil.disk_usage(r"C:\\")
                     ssd_usage_percent = float(du.percent)
@@ -457,59 +217,49 @@ def main() -> int:
                 ssd_used_gb = None
                 ssd_total_gb = None
 
-            if hwinfo_cpu_usage is not None:
-                cpu_percent = hwinfo_cpu_usage
-                cpu_percent_source = "hwinfo"
-
-            if hwinfo_cpu_temp is not None:
-                cpu_temp_c = hwinfo_cpu_temp
-                cpu_temp_source = hwinfo_cpu_temp_source or "hwinfo"
-
-            memory_temp_c = None
-            memory_temp_source = "none"
-            if hwinfo_memory_temp is not None:
-                memory_temp_c = hwinfo_memory_temp
-                memory_temp_source = "hwinfo"
-
-            ssd_temp_c = None
-            ssd_temp_source = "none"
-            if hwinfo_ssd_temp is not None:
-                ssd_temp_c = hwinfo_ssd_temp
-                ssd_temp_source = "hwinfo"
-
             if cpu_percent is None:
                 cpu_percent_source = "none"
-            if cpu_temp_c is None:
-                cpu_temp_source = "none"
+
+            auto_play_status = find_auto_play_process()
+            player_status = read_player_heartbeat(player_heartbeat_path, now_dt)
 
             payload = {
                 "timestamp": now_iso(),
                 "host": hostname,
                 "cpu_total_percent": cpu_percent,
-                "cpu_temp_c": cpu_temp_c,
-                "mem_temp_c": memory_temp_c,
-                "ssd_temp_c": ssd_temp_c,
+                "mem_used_percent": mem_used_percent,
+                "agent_uptime_sec": agent_uptime_sec,
+                "os_uptime_sec": os_uptime_sec,
                 "ssd": {
                     "drive": r"C:\\",
                     "usage_percent": ssd_usage_percent,
                     "used_gb": ssd_used_gb,
                     "total_gb": ssd_total_gb,
                 },
+                "auto_play": auto_play_status,
+                "player": player_status,
                 "source": {
                     "cpu_total_percent": cpu_percent_source,
-                    "cpu_temp_c": cpu_temp_source,
-                    "mem_temp_c": memory_temp_source,
-                    "ssd_temp_c": ssd_temp_source,
+                    "mem_used_percent": mem_used_source,
                     "ssd_usage_percent": ssd_usage_source,
                     "ssd_used_gb": "shutil" if ssd_used_gb is not None else "none",
                     "ssd_total_gb": "shutil" if ssd_total_gb is not None else "none",
                 },
             }
-            write_status(status_path, payload)
+            write_json_atomic(status_path, payload)
+
+            heartbeat_payload = {
+                "timestamp": now_iso(),
+                "host": hostname,
+                "pid": os.getpid(),
+                "agent_uptime_sec": agent_uptime_sec,
+                "os_uptime_sec": os_uptime_sec,
+            }
+            write_json_atomic(heartbeat_path, heartbeat_payload)
 
             if os.path.isfile(cmd_path):
                 try:
-                    cmd = read_json(cmd_path)
+                    cmd = read_json_safe(Path(cmd_path)) or {}
                     action = (cmd.get("action") or cmd.get("command") or "").lower().strip()
                     force = bool(cmd.get("force", False))
 
@@ -531,9 +281,12 @@ def main() -> int:
                             "note": "ignored (action invalid or force=false)",
                         }
 
-                    write_status(cmd_result_path, result)
+                    write_json_atomic(cmd_result_path, result)
                     done_path = os.path.join(config_dir, f"command.done.{int(time.time())}.json")
-                    safe_move(cmd_path, done_path)
+                    try:
+                        os.replace(cmd_path, done_path)
+                    except Exception:
+                        pass
 
                 except Exception as e:
                     log_line(log_path, f"Command handling error: {e}")

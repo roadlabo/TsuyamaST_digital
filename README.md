@@ -6,9 +6,8 @@
   - 再生: `app/signagePC/auto_play.py`
   - PC管理: `app/signagePC/pc_agent.py`
     - 再起動／シャットダウン
-    - 温度ログ
-    - truncate
-    - 容量監視
+    - 死活監視／再生監視（heartbeat）
+    - 負荷／容量監視
 
 ## フォルダ構成（GitHub/USB/現場で完全一致）
 ```
@@ -23,7 +22,6 @@ TsuyamaST_digital\
   runtime\
     python\
     mpv\
-    hwinfo\
 ```
 
 ## USB更新手順（GitHub → USB → 現場）
@@ -37,7 +35,6 @@ TsuyamaST_digital\
 - runtime 配下には必ず以下を配置する。
   - `runtime/python/python.exe`
   - `runtime/mpv/mpv.exe`
-  - `runtime/hwinfo/HWiNFO64.exe`
 
 ## 動画同期の方式（ミラー同期）
 - **全消去全転送ではありません**。差分のみコピーします。
