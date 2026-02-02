@@ -1122,9 +1122,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
             column.clicked_config.connect(self._on_column_config)
             column.clicked_reboot.connect(self._on_column_reboot)
             column.clicked_shutdown.connect(self._on_column_shutdown)
-            column.toggled_active.connect(
-                lambda _sign_id, checked, i=idx: self._on_column_active_toggle(i, checked)
-            )
+            column.toggled_active.connect(self._on_column_active_toggle)
 
         signage_grid.setColumnMinimumWidth(0, LEFT_COL_WIDTH)
         for idx in range(N_SIGNAGE):
@@ -1611,7 +1609,7 @@ QPushButton:disabled {
             self._update_column(col, state)
         self.update_ai_badge()
 
-    def _update_column(self, col: int, state: SignState) -> None:
+    def _update_column(self, col: int, state: SignState, update_preview: bool = True) -> None:
         column = self._column_widgets.get(state.name.replace("Sign", "Signage"))
         if not column:
             return
@@ -1646,7 +1644,8 @@ QPushButton:disabled {
             else:
                 header_label.setStyleSheet("border: 1px solid #999;")
 
-        self.update_preview_cell(state, column)
+        if update_preview:
+            self.update_preview_cell(state, column)
 
     def build_status_text(self, state: SignState) -> str:
         return (
@@ -2198,25 +2197,34 @@ QPushButton:disabled {
     def log(self, message: str) -> None:
         logging.info("%s", message)
 
-    def _on_column_active_toggle(self, idx: int, active: bool) -> None:
-        pc_no = idx + 1
-        self.log(f"[UI] active clicked idx={idx} pc_no={pc_no}")
-        sign_name = f"Sign{pc_no:02d}"
+    def _on_column_active_toggle(self, sign_id: str, active: bool) -> None:
         try:
-            state = self._get_state_by_sign_name(sign_name)
-            if not state:
-                self.log(f"[ERROR] active click failed for {sign_name}: state missing")
-                return
-            previous = state.enabled
-            state.enabled = active
-            self._save_inventory_state(state)
-            if previous != active:
-                before_label = "アクティブ" if previous else "非アクティブ"
-                after_label = "アクティブ" if active else "非アクティブ"
-                logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
-            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-        except Exception as exc:
-            self.log(f"[ERROR] active click failed for {sign_name}: {exc}")
+            pc_no = int(sign_id.replace("Sign", ""))
+        except ValueError:
+            logging.info("[ERROR] active toggle: invalid sign_id %s", sign_id)
+            return
+
+        state = self.sign_states.get(sign_id)
+        if not state:
+            logging.info("[ERROR] active toggle: state missing %s", sign_id)
+            return
+        if state.enabled == active:
+            return
+
+        before_label = "アクティブ" if state.enabled else "非アクティブ"
+        after_label = "アクティブ" if active else "非アクティブ"
+        logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
+
+        state.enabled = active
+        self._save_inventory_state(state)
+        self._update_column(pc_no - 1, state, update_preview=False)
+
+        column = self._column_widgets.get(sign_id.replace("Sign", "Signage"))
+        if column:
+            if not active:
+                column.show_preview_message("非アクティブ")
+            else:
+                column.show_preview_message("プレビューOFF")
 
     def check_timer_transition(self) -> None:
         self.recompute_all()
