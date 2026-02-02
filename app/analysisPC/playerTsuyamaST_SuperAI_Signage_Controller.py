@@ -79,12 +79,12 @@ PC_STATUS_ROW_HEIGHT = 18
 PC_STATUS_FONT_SIZE = 8
 PC_STATUS_ITEMS = [
     ("cpu_usage", "CPU使用率[%]"),
+    ("c_drive", "Cドライブ使用状況[GB]"),
     ("cpu_temp", "CPU温度[℃]"),
     ("chipset_temp", "チップセット温度[℃]"),
     ("gpu_temp", "CPU内GPU温度[℃]"),
     ("ssd_temp", "SSD温度[℃]"),
     ("memory_temp", "メモリ温度[℃]"),
-    ("c_drive", "Cドライブ使用状況[GB]"),
 ]
 
 
@@ -594,7 +594,7 @@ class TimerLegendWidget(QtWidgets.QWidget):
         painter.setFont(font)
         metrics = QtGui.QFontMetrics(font)
         text_width = metrics.horizontalAdvance(label_text)
-        text_x = 8
+        text_x = width - right_pad - 14
         text_y = int(height / 2 + text_width / 2)
         painter.translate(text_x, text_y)
         painter.rotate(-90)
@@ -919,18 +919,8 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._column_widgets: Dict[str, SignageColumnWidget] = {}
         self.ai_level_badge: Optional[QtWidgets.QLabel] = None
         self.left_panel: Optional[QtWidgets.QWidget] = None
-        self.sys_panel: Optional[QtWidgets.QWidget] = None
-        self.remote_status_panel: Optional[QtWidgets.QWidget] = None
         self.header_buttons: List[QtWidgets.QPushButton] = []
         self.columns: List[SignageColumnWidget] = []
-        self.chip_cpu_load: Optional[QtWidgets.QLabel] = None
-        self.chip_cpu_temp: Optional[QtWidgets.QLabel] = None
-        self.chip_gpu_temp: Optional[QtWidgets.QLabel] = None
-        self.chip_ssd_temp: Optional[QtWidgets.QLabel] = None
-        self.chip_chipset_temp: Optional[QtWidgets.QLabel] = None
-        self.lb_ssd_usage: Optional[QtWidgets.QLabel] = None
-        self.remote_status_labels: Dict[str, Dict[str, QtWidgets.QLabel]] = {}
-        self._remote_status_spacers: Dict[str, QtWidgets.QLabel] = {}
         self._remote_status_cache: Dict[str, dict] = {}
         self._remote_status_pending: Dict[str, dict] = {}
         self._remote_status_log_state: Dict[str, str] = {}
@@ -950,10 +940,8 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         self._telemetry_timer = QtCore.QTimer(self)
         self._telemetry_timer.setInterval(2000)
-        self._telemetry_timer.timeout.connect(self.refresh_local_telemetry)
         self._telemetry_timer.timeout.connect(self.refresh_remote_telemetry)
         self._telemetry_timer.start()
-        self.refresh_local_telemetry()
         self.refresh_remote_telemetry()
 
     def _init_ui(self) -> None:
@@ -1071,100 +1059,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
         body_layout.addWidget(body_container)
         layout.addLayout(body_layout)
 
-        status_label = QtWidgets.QLabel("Controller PC状態（CPU/温度）")
-        status_label.setFixedHeight(16)
-        status_label.setStyleSheet("color:#666;")
-        layout.addWidget(status_label)
-
-        self.sys_panel = QtWidgets.QWidget()
-        sys_layout = QtWidgets.QVBoxLayout(self.sys_panel)
-        sys_layout.setContentsMargins(0, 0, 0, 0)
-        sys_layout.setSpacing(2)
-        self.sys_panel.setFixedHeight(74)
-
-        chips_row = QtWidgets.QWidget()
-        chips_layout = QtWidgets.QHBoxLayout(chips_row)
-        chips_layout.setContentsMargins(0, 0, 0, 0)
-        chips_layout.setSpacing(6)
-        self.chip_cpu_load = self._make_chip("CPU負荷")
-        self.chip_cpu_temp = self._make_chip("CPU温度")
-        self.chip_gpu_temp = self._make_chip("GPU温度")
-        self.chip_ssd_temp = self._make_chip("SSD温度")
-        self.chip_chipset_temp = self._make_chip("チップセット")
-        for chip in [
-            self.chip_cpu_load,
-            self.chip_cpu_temp,
-            self.chip_gpu_temp,
-            self.chip_ssd_temp,
-            self.chip_chipset_temp,
-        ]:
-            chips_layout.addWidget(chip)
-        chips_layout.addStretch()
-
-        ssd_row = QtWidgets.QWidget()
-        ssd_layout = QtWidgets.QHBoxLayout(ssd_row)
-        ssd_layout.setContentsMargins(0, 0, 0, 0)
-        ssd_layout.setSpacing(6)
-        self.lb_ssd_usage = QtWidgets.QLabel("SSD使用状況 -/-")
-        self.lb_ssd_usage.setAlignment(QtCore.Qt.AlignCenter)
-        self.lb_ssd_usage.setFixedHeight(20)
-        self.lb_ssd_usage.setStyleSheet(
-            "background:#ffffff; color:#111; border:1px solid #bbb; border-radius:8px; padding:2px 8px;"
-        )
-        ssd_layout.addWidget(self.lb_ssd_usage)
-        ssd_layout.addStretch()
-
-        sys_layout.addWidget(chips_row)
-        sys_layout.addWidget(ssd_row)
-        layout.addWidget(self.sys_panel)
-
-        remote_label = QtWidgets.QLabel("サイネージPC状態（CPU/温度）")
-        remote_label.setFixedHeight(16)
-        remote_label.setStyleSheet("color:#666;")
-        layout.addWidget(remote_label)
-
-        self.remote_status_panel = QtWidgets.QWidget()
-        remote_panel_layout = QtWidgets.QVBoxLayout(self.remote_status_panel)
-        remote_panel_layout.setContentsMargins(0, 0, 0, 0)
-        remote_panel_layout.setSpacing(2)
-        self.remote_status_panel.setFixedHeight(74)
-
-        remote_cpu_row = QtWidgets.QWidget()
-        remote_cpu_layout = QtWidgets.QHBoxLayout(remote_cpu_row)
-        remote_cpu_layout.setContentsMargins(0, 0, 0, 0)
-        remote_cpu_layout.setSpacing(GAP_PX)
-        remote_cpu_spacer = QtWidgets.QLabel("")
-        remote_cpu_spacer.setFixedWidth(LEFT_COL_WIDTH)
-        remote_cpu_spacer.setFixedHeight(26)
-        remote_cpu_layout.addWidget(remote_cpu_spacer)
-        self._remote_status_spacers["cpu"] = remote_cpu_spacer
-
-        remote_ssd_row = QtWidgets.QWidget()
-        remote_ssd_layout = QtWidgets.QHBoxLayout(remote_ssd_row)
-        remote_ssd_layout.setContentsMargins(0, 0, 0, 0)
-        remote_ssd_layout.setSpacing(GAP_PX)
-        remote_ssd_spacer = QtWidgets.QLabel("")
-        remote_ssd_spacer.setFixedWidth(LEFT_COL_WIDTH)
-        remote_ssd_spacer.setFixedHeight(20)
-        remote_ssd_layout.addWidget(remote_ssd_spacer)
-        self._remote_status_spacers["ssd"] = remote_ssd_spacer
-
-        for idx in range(1, 21):
-            name = f"Sign{idx:02d}"
-            cpu_label = self._make_status_cell()
-            cpu_label.setFixedHeight(26)
-            ssd_label = self._make_status_cell()
-            ssd_label.setFixedHeight(20)
-            remote_cpu_layout.addWidget(cpu_label)
-            remote_ssd_layout.addWidget(ssd_label)
-            self.remote_status_labels[name] = {"cpu": cpu_label, "ssd": ssd_label}
-
-        remote_cpu_layout.addStretch()
-        remote_ssd_layout.addStretch()
-        remote_panel_layout.addWidget(remote_cpu_row)
-        remote_panel_layout.addWidget(remote_ssd_row)
-        layout.addWidget(self.remote_status_panel)
-
         log_label = QtWidgets.QLabel("ログ")
         layout.addWidget(log_label)
         self.log_view = QtWidgets.QPlainTextEdit()
@@ -1226,15 +1120,6 @@ QPushButton:disabled {
                 column.setFixedWidth(col_w)
                 column.setMinimumWidth(0)
                 column.setMaximumWidth(col_w)
-
-        if self._remote_status_spacers:
-            for spacer in self._remote_status_spacers.values():
-                spacer.setFixedWidth(LEFT_COL_WIDTH)
-
-        if self.remote_status_labels:
-            for labels in self.remote_status_labels.values():
-                labels["cpu"].setFixedWidth(col_w)
-                labels["ssd"].setFixedWidth(col_w)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1465,46 +1350,6 @@ QPushButton:disabled {
 
         sys.excepthook = excepthook
 
-    def refresh_local_telemetry(self) -> None:
-        data: dict = {}
-        try:
-            if TELEMETRY_LOCAL_PATH.exists():
-                with TELEMETRY_LOCAL_PATH.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-        except Exception as exc:
-            logging.warning("telemetry_local read failed: %s", exc)
-            data = {}
-
-        cpu_load = data.get("cpu_total")
-        cpu_temp = data.get("cpu_temp")
-        if cpu_temp is None:
-            cpu_temp = data.get("cpu_package")
-        gpu_temp = data.get("gpu_temp")
-        ssd_temp = data.get("ssd_temp")
-        chipset_temp = data.get("chipset_temp")
-        ssd_used_gb = None
-        ssd_total_gb = None
-        try:
-            usage = shutil.disk_usage(r"C:\\")
-            ssd_used_gb = round(usage.used / (1024**3), 1)
-            ssd_total_gb = round(usage.total / (1024**3), 1)
-        except Exception:
-            ssd_used_gb = None
-            ssd_total_gb = None
-
-        if self.chip_cpu_load:
-            self._chip_set_value(self.chip_cpu_load, cpu_load, "%", "load")
-        if self.chip_cpu_temp:
-            self._chip_set_value(self.chip_cpu_temp, cpu_temp, "℃", "temp")
-        if self.chip_gpu_temp:
-            self._chip_set_value(self.chip_gpu_temp, gpu_temp, "℃", "temp")
-        if self.chip_ssd_temp:
-            self._chip_set_value(self.chip_ssd_temp, ssd_temp, "℃", "temp")
-        if self.chip_chipset_temp:
-            self._chip_set_value(self.chip_chipset_temp, chipset_temp, "℃", "temp")
-        if self.lb_ssd_usage:
-            self._set_ssd_usage_label(self.lb_ssd_usage, ssd_used_gb, ssd_total_gb)
-
     def _remote_status_path(self, state: SignState) -> Path:
         remote_path = build_unc_path(
             state.ip,
@@ -1533,19 +1378,12 @@ QPushButton:disabled {
         timeout_sec = 2.0
         now = time_module.monotonic()
         for state in self.sign_states.values():
-            labels = self.remote_status_labels.get(state.name)
-            if not labels:
-                continue
             if not state.exists:
                 self._remote_status_pending.pop(state.name, None)
-                self._set_status_error(labels["cpu"], "通信NG")
-                self._set_status_error(labels["ssd"], "通信NG")
                 self._set_pc_status_values(state, None)
                 continue
             if not state.enabled:
                 self._remote_status_pending.pop(state.name, None)
-                self._set_status_inactive(labels["cpu"], "非アクティブ")
-                self._set_status_inactive(labels["ssd"], "非アクティブ")
                 self._set_pc_status_values(state, None)
                 continue
 
@@ -1570,21 +1408,8 @@ QPushButton:disabled {
             self._remote_status_pending[state.name] = {"future": future, "started": now}
 
     def _apply_remote_status(self, state: SignState, result: dict) -> None:
-        labels = self.remote_status_labels.get(state.name)
-        if not labels:
-            return
-
-        if state.last_update and state.online is False:
-            self._set_status_error(labels["cpu"], "通信NG")
-            self._set_status_error(labels["ssd"], "通信NG")
-            self._set_pc_status_values(state, None)
-            return
-
         if not result.get("ok"):
             error = result.get("error") or "error"
-            message = "通信NG" if error in ("not_found", "timeout") else "エラー"
-            self._set_status_error(labels["cpu"], message)
-            self._set_status_error(labels["ssd"], message)
             self._set_pc_status_values(state, None)
             log_line = f"[ERR] {state.name} pc_status取得失敗 ({error})"
             if self._remote_status_log_state.get(state.name) != log_line:
@@ -1594,8 +1419,6 @@ QPushButton:disabled {
 
         payload = result.get("payload")
         if not isinstance(payload, dict):
-            self._set_status_error(labels["cpu"], "エラー")
-            self._set_status_error(labels["ssd"], "エラー")
             self._set_pc_status_values(state, None)
             log_line = f"[ERR] {state.name} pc_status取得失敗 (payload)"
             if self._remote_status_log_state.get(state.name) != log_line:
@@ -1603,50 +1426,8 @@ QPushButton:disabled {
                 self._remote_status_log_state[state.name] = log_line
             return
 
-        cpu_load = payload.get("cpu_total_percent")
-        cpu_temp = payload.get("cpu_temp_c") or payload.get("cpu_temp") or payload.get("cpu_package")
-        gpu_temp = payload.get("gpu_temp_c") or payload.get("gpu_temp")
-        chipset_temp = payload.get("chipset_temp_c") or payload.get("chipset_temp")
-        ssd_temp = payload.get("ssd", {}).get("temp_c")
-        used_gb = payload.get("ssd", {}).get("used_gb")
-        total_gb = payload.get("ssd", {}).get("total_gb")
-        missing_keys = []
-        if cpu_load is None:
-            missing_keys.append("cpu_total_percent")
-        if cpu_temp is None:
-            missing_keys.append("cpu_temp_c")
-        if gpu_temp is None:
-            missing_keys.append("gpu_temp_c")
-        if chipset_temp is None:
-            missing_keys.append("chipset_temp_c")
-        if ssd_temp is None:
-            missing_keys.append("ssd_temp_c")
-
-        severities = [
-            self._calc_severity(cpu_load, "load"),
-            self._calc_severity(cpu_temp, "temp"),
-            self._calc_severity(gpu_temp, "temp"),
-            self._calc_severity(ssd_temp, "temp"),
-            self._calc_severity(chipset_temp, "temp"),
-        ]
-        severity_values = [s for s in severities if s is not None]
-        if not severity_values:
-            self._set_status_error(labels["cpu"], "エラー")
-        else:
-            cpu_text = (
-                f"CPU {self._format_metric(cpu_load, '%')} {self._format_metric(cpu_temp, '℃')}\n"
-                f"GPU {self._format_metric(gpu_temp, '℃')} "
-                f"SSD {self._format_metric(ssd_temp, '℃')} "
-                f"CHP {self._format_metric(chipset_temp, '℃')}"
-            )
-            self._set_status_label(labels["cpu"], cpu_text, max(severity_values))
-
-        self._set_ssd_usage_label(labels["ssd"], used_gb, total_gb)
         self._set_pc_status_values(state, payload)
-        if missing_keys:
-            log_line = f"[OK] {state.name} pc_status payload missing: {','.join(missing_keys)}"
-        else:
-            log_line = f"[OK] {state.name} pc_status payload complete"
+        log_line = f"[OK] {state.name} pc_status更新"
         if self._remote_status_log_state.get(state.name) != log_line:
             logging.info("%s", log_line)
             self._remote_status_log_state[state.name] = log_line

@@ -571,6 +571,7 @@ def main() -> int:
             hwinfo_pch_temp = hwinfo_metrics.get("pch_temp")
             hwinfo_gpu_temp = hwinfo_metrics.get("gpu_temp")
             hwinfo_ssd_temp = hwinfo_metrics.get("ssd_temp")
+            hwinfo_memory_temp = hwinfo_metrics.get("memory_temp")
 
             if psutil:
                 # CPU TOTAL (%)
@@ -613,6 +614,12 @@ def main() -> int:
                 chipset_temp_c = hwinfo_pch_temp
                 chipset_temp_source = "hwinfo"
 
+            memory_temp_c = None
+            memory_temp_source = "none"
+            if hwinfo_memory_temp is not None:
+                memory_temp_c = hwinfo_memory_temp
+                memory_temp_source = "hwinfo"
+
             ssd_temp_sensor = None
             if hwinfo_ssd_temp is not None:
                 ssd_temp_c = hwinfo_ssd_temp
@@ -641,6 +648,7 @@ def main() -> int:
                 "cpu_temp_c": cpu_temp_c,
                 "gpu_temp_c": gpu_temp_c,
                 "chipset_temp_c": chipset_temp_c,
+                "memory_temp_c": memory_temp_c,
                 "ssd": {
                     "drive": r"C:\\",
                     "usage_percent": ssd_usage_percent,
@@ -655,6 +663,7 @@ def main() -> int:
                     "cpu_temp_c": cpu_temp_source,
                     "gpu_temp_c": gpu_temp_source,
                     "chipset_temp_c": chipset_temp_source,
+                    "memory_temp_c": memory_temp_source,
                     "ssd_temp_c": ssd_temp_source or "none",
                     "ssd_usage_percent": ssd_usage_source,
                     "ssd_used_gb": "shutil" if ssd_used_gb is not None else "none",
