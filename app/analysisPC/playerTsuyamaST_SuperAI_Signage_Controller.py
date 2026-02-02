@@ -419,6 +419,14 @@ class ConfigDialog(QtWidgets.QDialog):
         self.sleep_table = QtWidgets.QTableWidget(1, 2)
         self.sleep_table.setHorizontalHeaderLabels(["開始", "終了"])
         self.sleep_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        # 休眠時間帯：1行のみ見える高さに固定
+        self.sleep_table.verticalHeader().setVisible(False)
+        self.sleep_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.sleep_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.sleep_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.sleep_table.setFixedHeight(
+            self.sleep_table.horizontalHeader().height() + self.sleep_table.rowHeight(0) + 6
+        )
         layout.addWidget(self.sleep_table)
         self._set_sleep_rule(config.get("sleep_rules", []))
 
@@ -428,6 +436,16 @@ class ConfigDialog(QtWidgets.QDialog):
         delegate = TimeNormalizeDelegate(self.timer_table, self.timer_table)
         self.timer_table.setItemDelegateForColumn(0, delegate)
         self.timer_table.setItemDelegateForColumn(1, delegate)
+        # タイマー設定：10行程度見える高さを確保
+        self.timer_table.verticalHeader().setVisible(False)
+        self.timer_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        row_h = self.timer_table.verticalHeader().defaultSectionSize()
+        if row_h <= 0:
+            row_h = 24
+        visible_rows = 10
+        self.timer_table.setMinimumHeight(
+            self.timer_table.horizontalHeader().height() + row_h * visible_rows + 8
+        )
         layout.addWidget(QtWidgets.QLabel("タイマー設定"))
         layout.addWidget(self.timer_table)
 
@@ -631,10 +649,15 @@ class TimerBarWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._rules = []
+        self._sleep_rules = []
         self._enabled = True
 
     def set_rules(self, rules: List[dict]) -> None:
         self._rules = rules
+        self.update()
+
+    def set_sleep_rules(self, rules: List[dict]) -> None:
+        self._sleep_rules = rules or []
         self.update()
 
     def set_column_enabled(self, enabled: bool) -> None:
@@ -651,6 +674,25 @@ class TimerBarWidget(QtWidgets.QWidget):
         for hour in range(0, 25, 2):
             y = int(height * (hour * 60) / (24 * 60))
             painter.drawLine(0, y, width, y)
+
+        # 休眠帯（黒っぽいねずみ色）を背景として表示
+        sleep_color = QtGui.QColor(90, 90, 90)
+        sleep_color.setAlpha(140)
+        for rule in self._sleep_rules:
+            try:
+                start = parse_time(rule["start"])
+                end = parse_time(rule["end"])
+            except Exception:
+                continue
+            start_minutes = start.hour * 60 + start.minute
+            end_minutes = end.hour * 60 + end.minute
+            if start_minutes == end_minutes:
+                continue
+            if start_minutes < end_minutes:
+                self._paint_segment(painter, start_minutes, end_minutes, sleep_color, height, width)
+            else:
+                self._paint_segment(painter, start_minutes, 24 * 60, sleep_color, height, width)
+                self._paint_segment(painter, 0, end_minutes, sleep_color, height, width)
 
         for rule in self._rules:
             try:
@@ -770,9 +812,9 @@ class SignageColumnWidget(QtWidgets.QWidget):
         for key, _ in PC_STATUS_ITEMS:
             self.layout.addWidget(self.pc_status_labels[key])
 
-        self.setting_button.setStyleSheet("background:#ffffff;")
-        self.btn_reboot.setStyleSheet("background:#e8f4ff;")
-        self.btn_shutdown.setStyleSheet("background:#ffecec;")
+        self._apply_3d_button_style(self.setting_button)
+        self._apply_3d_button_style(self.btn_reboot)
+        self._apply_3d_button_style(self.btn_shutdown)
 
         self.setting_button.clicked.connect(
             lambda: self.clicked_config.emit(self.sign_id)
@@ -787,6 +829,23 @@ class SignageColumnWidget(QtWidgets.QWidget):
             lambda checked: self.toggled_active.emit(self.sign_id, checked)
         )
         self.set_comm_status(True, None)
+
+    def _apply_3d_button_style(self, btn: QtWidgets.QPushButton) -> None:
+        btn.setStyleSheet(
+            """
+QPushButton {
+  padding: 4px 6px;
+  border: 1px solid #8a8a8a;
+  border-radius: 6px;
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                              stop:0 #ffffff, stop:1 #e6e6e6);
+}
+QPushButton:pressed {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                              stop:0 #dcdcdc, stop:1 #f6f6f6);
+}
+"""
+        )
 
     def _make_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
@@ -989,6 +1048,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
             self.btn_logs,
             self.btn_preview_toggle,
         ]:
+            self._apply_3d_button_style(btn)
             button_layout.addWidget(btn)
 
         header_layout.addStretch()
@@ -1130,6 +1190,32 @@ class ControllerWindow(QtWidgets.QMainWindow):
         label.setStyleSheet("border: 1px solid #999;")
         label.setWordWrap(True)
         return label
+
+    def _apply_3d_button_style(self, btn: QtWidgets.QPushButton) -> None:
+        btn.setStyleSheet(
+            """
+QPushButton {
+  padding: 6px 10px;
+  border: 1px solid #8a8a8a;
+  border-radius: 6px;
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                              stop:0 #ffffff, stop:1 #e6e6e6);
+}
+QPushButton:hover {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                              stop:0 #ffffff, stop:1 #f0f0f0);
+}
+QPushButton:pressed {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                              stop:0 #dcdcdc, stop:1 #f6f6f6);
+  border: 1px solid #6f6f6f;
+}
+QPushButton:disabled {
+  background: #d6d6d6;
+  color: #777;
+}
+"""
+        )
 
     def _make_pc_status_row_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
@@ -1534,6 +1620,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         column.ai_lv4_label.setText(self._display_ai_channel(config.get("ai_channels", {}).get("level4")))
         column.normal_label.setText(config.get("normal_channel", "ch05"))
         column.timer_bar.set_rules(config.get("timer_rules", []))
+        column.timer_bar.set_sleep_rules(config.get("sleep_rules", []))
 
         inactive = (not state.exists) or (not state.enabled)
         column.set_active_state(state.enabled)
@@ -2178,6 +2265,13 @@ def main():
 
     try:
         app = QtWidgets.QApplication(sys.argv)
+        try:
+            app.setStyle("windowsvista")
+        except Exception:
+            try:
+                app.setStyle("windows")
+            except Exception:
+                pass
         window = ControllerWindow()
         window.showMaximized()
         window.recompute_all()
