@@ -380,10 +380,12 @@ class TimeNormalizeDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class ConfigDialog(QtWidgets.QDialog):
-    def __init__(self, sign_name: str, config: dict, parent=None):
+    def __init__(self, sign_name: str, config: dict, parent=None, controller_window=None):
         super().__init__(parent)
         self.setWindowTitle(f"{sign_name} 設定")
         self.config = config
+        self.controller_window = controller_window
+        self.sign_name = sign_name
 
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
@@ -396,25 +398,18 @@ class ConfigDialog(QtWidgets.QDialog):
 
         self.normal_combo = QtWidgets.QComboBox()
         self.normal_combo.addItems(NORMAL_CHOICES)
-        normal_value = config.get("normal_channel", "ch05")
-        if normal_value not in NORMAL_CHOICES:
-            normal_value = NORMAL_CHOICES[0]
-        self.normal_combo.setCurrentText(normal_value)
         form.addRow("通常チャンネル", self.normal_combo)
 
         self.ai_level2 = QtWidgets.QComboBox()
         self.ai_level2.addItems(AI_CHOICES)
-        self.ai_level2.setCurrentText(self._ai_choice_to_display(config.get("ai_channels", {}).get("level2")))
         form.addRow("AI LV2", self.ai_level2)
 
         self.ai_level3 = QtWidgets.QComboBox()
         self.ai_level3.addItems(AI_CHOICES)
-        self.ai_level3.setCurrentText(self._ai_choice_to_display(config.get("ai_channels", {}).get("level3")))
         form.addRow("AI LV3", self.ai_level3)
 
         self.ai_level4 = QtWidgets.QComboBox()
         self.ai_level4.addItems(AI_CHOICES)
-        self.ai_level4.setCurrentText(self._ai_choice_to_display(config.get("ai_channels", {}).get("level4")))
         form.addRow("AI LV4", self.ai_level4)
 
         layout.addLayout(form)
@@ -432,7 +427,6 @@ class ConfigDialog(QtWidgets.QDialog):
             self.sleep_table.horizontalHeader().height() + self.sleep_table.rowHeight(0) + 6
         )
         layout.addWidget(self.sleep_table)
-        self._set_sleep_rule(config.get("sleep_rules", []))
 
         self.timer_table = QtWidgets.QTableWidget(0, 3)
         self.timer_table.setHorizontalHeaderLabels(["開始", "終了", "CH"])
@@ -453,9 +447,6 @@ class ConfigDialog(QtWidgets.QDialog):
         layout.addWidget(QtWidgets.QLabel("タイマー設定"))
         layout.addWidget(self.timer_table)
 
-        for rule in config.get("timer_rules", []):
-            self.add_timer_rule(rule)
-
         buttons_layout = QtWidgets.QHBoxLayout()
         add_button = QtWidgets.QPushButton("追加")
         remove_button = QtWidgets.QPushButton("削除")
@@ -471,14 +462,19 @@ class ConfigDialog(QtWidgets.QDialog):
         action_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("保存")
         cancel_button = QtWidgets.QPushButton("キャンセル")
+        self.btn_ref_other = QtWidgets.QPushButton("他チャンネルの設定を参照")
+        self.btn_ref_other.setFixedHeight(34)
         action_layout.addStretch()
+        action_layout.addWidget(self.btn_ref_other)
         action_layout.addWidget(save_button)
         action_layout.addWidget(cancel_button)
         layout.addLayout(action_layout)
 
         self._built_config = None
+        self.btn_ref_other.clicked.connect(self.on_ref_other_clicked)
         save_button.clicked.connect(self._on_save)
         cancel_button.clicked.connect(self.reject)
+        self._reload_form_from_config()
 
     def _ai_choice_to_display(self, value: Optional[str]) -> str:
         if value == "same_as_normal":
@@ -492,6 +488,25 @@ class ConfigDialog(QtWidgets.QDialog):
         rule = rules[0] if rules else default_rule
         self.sleep_table.setItem(0, 0, QtWidgets.QTableWidgetItem(rule.get("start", "")))
         self.sleep_table.setItem(0, 1, QtWidgets.QTableWidgetItem(rule.get("end", "")))
+
+    def _rebuild_timer_rows(self, rules: List[dict]) -> None:
+        while self.timer_table.rowCount() > 0:
+            self.timer_table.removeRow(0)
+        for rule in rules:
+            self.add_timer_rule(rule)
+
+    def _reload_form_from_config(self) -> None:
+        normal_value = self.config.get("normal_channel", "ch05")
+        if normal_value not in NORMAL_CHOICES:
+            normal_value = NORMAL_CHOICES[0]
+        self.normal_combo.setCurrentText(normal_value)
+        ai_channels = self.config.get("ai_channels", {})
+        self.ai_level2.setCurrentText(self._ai_choice_to_display(ai_channels.get("level2")))
+        self.ai_level3.setCurrentText(self._ai_choice_to_display(ai_channels.get("level3")))
+        self.ai_level4.setCurrentText(self._ai_choice_to_display(ai_channels.get("level4")))
+        self._set_sleep_rule(self.config.get("sleep_rules", []))
+        rules = self.config.get("timer_rules", [])
+        self._rebuild_timer_rows(rules)
 
     def add_timer_rule(self, rule: dict) -> None:
         row = self.timer_table.rowCount()
@@ -518,6 +533,66 @@ class ConfigDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "入力エラー", str(exc))
             return
         self.accept()
+
+    def on_ref_other_clicked(self) -> None:
+        if self.controller_window is None:
+            QtWidgets.QMessageBox.critical(self, "エラー", "参照元一覧を取得できません")
+            return
+
+        current_sign = self.sign_name
+        candidates = []
+        for state in self.controller_window.sign_states.values():
+            if not state.exists:
+                continue
+            if state.name == current_sign:
+                continue
+            candidates.append(state.name)
+
+        if not candidates:
+            QtWidgets.QMessageBox.information(self, "確認", "参照できる対象がありません")
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("他チャンネルの設定を参照")
+        layout = QtWidgets.QVBoxLayout(dlg)
+        layout.addWidget(QtWidgets.QLabel("参照元サイネージ番号を選択してください（1つ）"))
+        listw = QtWidgets.QListWidget()
+        listw.addItems(candidates)
+        listw.setCurrentRow(0)
+        layout.addWidget(listw)
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        layout.addWidget(btns)
+
+        def ok():
+            item = listw.currentItem()
+            if not item:
+                return
+            src_sign = item.text()
+            dlg.accept()
+            self._apply_reference_from(src_sign)
+
+        btns.accepted.connect(ok)
+        btns.rejected.connect(dlg.reject)
+        dlg.resize(360, 420)
+        dlg.exec()
+
+    def _apply_reference_from(self, src_sign: str) -> None:
+        try:
+            src_cfg = read_config(CONFIG_DIR / src_sign)
+            self.config = src_cfg
+            if "timer_rules" in self.config and isinstance(self.config["timer_rules"], list):
+                filtered = []
+                for rule in self.config["timer_rules"]:
+                    channel = (rule or {}).get("channel", "")
+                    if channel == EMERGENCY_CHANNEL:
+                        continue
+                    filtered.append(rule)
+                self.config["timer_rules"] = filtered
+            self._reload_form_from_config()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "エラー", f"参照に失敗しました: {exc}")
 
     def get_config(self) -> Optional[dict]:
         return self._built_config
@@ -2310,7 +2385,7 @@ QPushButton:disabled {
     def open_config_dialog(self, state: SignState) -> None:
         config_path = CONFIG_DIR / state.name / "config.json"
         config = read_config(CONFIG_DIR / state.name)
-        dialog = ConfigDialog(state.name, config, self)
+        dialog = ConfigDialog(sign_name=state.name, config=config, parent=self, controller_window=self)
         if dialog.exec() == QtWidgets.QDialog.Accepted:
             new_config = dialog.get_config()
             if not new_config:
