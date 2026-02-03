@@ -60,7 +60,8 @@ BASE_COL = 1
 N_SIGNAGE = 20
 CHANNELS = [f"ch{idx:02d}" for idx in range(1, N_SIGNAGE + 1)]
 NORMAL_CHOICES = [f"ch{n:02d}" for n in range(5, 11)]
-TIMER_CHOICES = [f"ch{n:02d}" for n in range(11, 21)]
+EMERGENCY_CHANNEL = "ch20"
+TIMER_CHOICES = [f"ch{n:02d}" for n in range(11, 20)]
 AI_CHOICES = ["通常時と同じ", "ch02", "ch03", "ch04"]
 SLEEP_FIXED = "ch01"
 TIMER_CHANNEL_COLORS = {
@@ -991,6 +992,8 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.left_panel: Optional[QtWidgets.QWidget] = None
         self.header_buttons: List[QtWidgets.QPushButton] = []
         self.columns: List[SignageColumnWidget] = []
+        self._emergency_override_enabled: bool = False
+        self._emergency_override_channel: str = EMERGENCY_CHANNEL
         self._remote_status_cache: Dict[str, dict] = {}
         self._remote_status_pending: Dict[str, dict] = {}
         self._remote_status_log_state: Dict[str, str] = {}
@@ -1065,6 +1068,13 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         header_layout.addStretch()
         header_layout.addLayout(button_layout)
+        # --- 最上位強制メッセージ（20ch） ---
+        self.btn_emergency_override = QtWidgets.QPushButton("最上位強制メッセージ（20ch）")
+        self.btn_emergency_override.setCheckable(True)
+        self.btn_emergency_override.setFixedHeight(44)
+        self.btn_emergency_override.setMinimumWidth(220)
+        self._apply_3d_button_style(self.btn_emergency_override)
+        header_layout.addWidget(self.btn_emergency_override)
         self.ai_level_badge = QtWidgets.QLabel("渋滞LEVEL1")
         self.ai_level_badge.setAlignment(QtCore.Qt.AlignCenter)
         self.ai_level_badge.setFixedSize(160, 44)
@@ -1162,6 +1172,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.btn_sync.clicked.connect(self.start_sync)
         self.btn_logs.clicked.connect(self.collect_logs)
         self.btn_preview_toggle.clicked.connect(self.toggle_preview)
+        self.btn_emergency_override.toggled.connect(self.toggle_emergency_override)
 
         QtCore.QTimer.singleShot(800, self.check_connectivity)
 
@@ -1969,7 +1980,10 @@ QPushButton:disabled {
                 if not state.exists or not state.enabled:
                     state.active_channel = None
                     continue
-                active_channel = compute_active_channel(config, self.ai_status, now)
+                if self._emergency_override_enabled:
+                    active_channel = self._emergency_override_channel
+                else:
+                    active_channel = compute_active_channel(config, self.ai_status, now)
                 if state.active_channel != active_channel:
                     updated_any = True
                 state.active_channel = active_channel
@@ -1984,6 +1998,26 @@ QPushButton:disabled {
         self._log_command_accept(command)
         self._log_command_run(command)
         self.recompute_all()
+        ok_count, skip_count, err_count = self.distribute_all(command)
+        self._log_command_done(command, ok_count, skip_count, err_count)
+
+    def toggle_emergency_override(self, enabled: bool) -> None:
+        if enabled:
+            self.btn_emergency_override.setStyleSheet(
+                "background:#e53935; color:#fff; border-radius:8px; font-weight:900; font-size:14px;"
+            )
+        else:
+            self.btn_emergency_override.setStyleSheet("")
+            self._apply_3d_button_style(self.btn_emergency_override)
+
+        self._emergency_override_enabled = bool(enabled)
+
+        command = "最上位強制メッセージ（20ch）" + (" ON" if enabled else " OFF")
+        self._log_command_accept(command)
+        self._log_command_run(command)
+
+        self.recompute_all()
+
         ok_count, skip_count, err_count = self.distribute_all(command)
         self._log_command_done(command, ok_count, skip_count, err_count)
 
