@@ -997,6 +997,11 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._remote_status_cache: Dict[str, dict] = {}
         self._remote_status_pending: Dict[str, dict] = {}
         self._remote_status_log_state: Dict[str, str] = {}
+        self._ui_busy: bool = False
+        self._busy_label: str = ""
+        self._work_line_active: bool = False
+        self._work_line_title: str = ""
+        self._work_line_tokens: List[str] = []
         # ---- Telemetry軽量化用 ----
         self._telemetry_rr_index = 0  # round-robin index
         self._telemetry_batch_size = int(self.settings.get("telemetry_batch_size", 5))  # 1回に更新する台数
@@ -1630,6 +1635,101 @@ QPushButton:disabled {
         cursor.movePosition(QtGui.QTextCursor.End)
         self.log_view.setTextCursor(cursor)
 
+    def _set_interaction_enabled(self, enabled: bool) -> None:
+        for btn in self.header_buttons:
+            btn.setEnabled(enabled)
+
+        if hasattr(self, "btn_emergency_override"):
+            self.btn_emergency_override.setEnabled(enabled)
+
+        if self.left_panel is not None:
+            self.left_panel.setEnabled(enabled)
+
+        for col in getattr(self, "columns", []):
+            col.setEnabled(enabled)
+
+        self.log_view.setEnabled(True)
+
+    def _work_start(self, title: str) -> None:
+        self._work_line_active = True
+        self._work_line_title = title
+        self._work_line_tokens = []
+        self.log_view.appendPlainText(f"{title} …")
+
+    def _work_update_token(self, token: str) -> None:
+        if not self._work_line_active:
+            return
+        token = token.strip()
+        if not token:
+            return
+        if token not in self._work_line_tokens:
+            self._work_line_tokens.append(token)
+        body = " ".join(self._work_line_tokens)
+        if body:
+            self._replace_last_log_line(f"{self._work_line_title} {body} …")
+        else:
+            self._replace_last_log_line(f"{self._work_line_title} …")
+
+    def _work_done(self) -> None:
+        if not self._work_line_active:
+            return
+        body = " ".join(self._work_line_tokens)
+        if body:
+            self._replace_last_log_line(f"{self._work_line_title} {body} 【完了】")
+        else:
+            self._replace_last_log_line(f"{self._work_line_title} 【完了】")
+        self._work_line_active = False
+
+    def _work_error(self, reason: str) -> None:
+        if not self._work_line_active:
+            self.log_view.appendPlainText(f"【エラー】({reason})")
+            return
+        body = " ".join(self._work_line_tokens)
+        reason = (reason or "").strip()
+        if body:
+            self._replace_last_log_line(f"{self._work_line_title} {body} 【エラー】({reason})")
+        else:
+            self._replace_last_log_line(f"{self._work_line_title} 【エラー】({reason})")
+        self._work_line_active = False
+
+    def _ui_call(self, fn) -> None:
+        QtCore.QTimer.singleShot(0, fn)
+
+    def run_exclusive_task(self, title: str, worker_fn) -> None:
+        if self._ui_busy:
+            self.log_view.appendPlainText(f"{title} は作業中のため受付不可")
+            return
+
+        self._ui_busy = True
+        self._busy_label = title
+        self._set_interaction_enabled(False)
+
+        self._work_start(title)
+
+        def progress_token(token: str) -> None:
+            self._ui_call(lambda: self._work_update_token(token))
+
+        def finish_ok() -> None:
+            self._work_done()
+            self._ui_busy = False
+            self._busy_label = ""
+            self._set_interaction_enabled(True)
+
+        def finish_err(reason: str) -> None:
+            self._work_error(reason)
+            self._ui_busy = False
+            self._busy_label = ""
+            self._set_interaction_enabled(True)
+
+        def runner() -> None:
+            try:
+                worker_fn(progress_token)
+                self._ui_call(finish_ok)
+            except Exception as exc:
+                self._ui_call(lambda: finish_err(str(exc)))
+
+        threading.Thread(target=runner, daemon=True).start()
+
     def _shorten_log_line(self, line: str) -> str:
         trimmed = line.rstrip("\r")
         if not trimmed:
@@ -1793,11 +1893,17 @@ QPushButton:disabled {
             return False, str(exc)
 
     def refresh_content_request(self) -> None:
-        command = "フォルダ内動画情報取得"
-        self._log_command_accept(command)
-        self._log_command_run(command)
-        ok_count, skip_count, err_count = self.refresh_preview_info(command)
-        self._log_command_done(command, ok_count, skip_count, err_count)
+        self.run_exclusive_task("動画フォルダ情報更新中", self._task_refresh_content)
+
+    def _task_refresh_content(self, progress) -> None:
+        for state in self.sign_states.values():
+            if not state.exists or not state.enabled:
+                continue
+            progress(state.name)
+            column = self._column_widgets.get(state.name.replace("Sign", "Signage"))
+            if not column:
+                continue
+            self._ui_call(lambda s=state, c=column: self.update_preview_cell(s, c))
 
     def toggle_preview(self) -> None:
         command = "プレビューON/OFF"
@@ -1894,44 +2000,26 @@ QPushButton:disabled {
         return frame
 
     def check_connectivity(self) -> None:
-        command = "サイネージPC通信確認"
-        self._log_command_accept(command)
-        self._log_command_run(command)
+        self.run_exclusive_task("サイネージPC通信確認", self._task_check_connectivity)
+
+    def _task_check_connectivity(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
-        ok_count = 0
-        skip_count = 0
-        err_count = 0
         for state in self.sign_states.values():
-            if not state.exists:
-                self._log_sign_skip(state, "到達不可")
-                skip_count += 1
-                continue
-            if not state.enabled:
-                self._log_sign_skip(state, "非アクティブ")
-                skip_count += 1
+            if not state.exists or not state.enabled:
                 continue
             futures[self._executor.submit(self.check_single_connectivity, state)] = state
 
         for future, state in futures.items():
+            progress(state.name)
             try:
                 online, error = future.result(timeout=timeout)
-                state.online = online
-                state.last_error = error or ""
-                state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if online:
-                    ok_count += 1
-                    self._log_sign_ok(state, "オンライン")
-                else:
-                    err_count += 1
-                    self._log_sign_error(state, error or "オフライン")
             except Exception as exc:
-                state.online = False
-                state.last_error = str(exc)
-                err_count += 1
-                self._log_sign_error(state, str(exc))
-            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-        self._log_command_done(command, ok_count, skip_count, err_count)
+                online, error = False, str(exc)
+            state.online = bool(online)
+            state.last_error = error or ""
+            state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
 
     def poll_connectivity_silent(self) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
@@ -1994,32 +2082,40 @@ QPushButton:disabled {
             self.distribute_all()
 
     def bulk_update(self) -> None:
-        command = "一斉Ch更新"
-        self._log_command_accept(command)
-        self._log_command_run(command)
+        self.run_exclusive_task("一斉Ch更新", self._task_bulk_update)
+
+    def _task_bulk_update(self, progress) -> None:
         self.recompute_all()
-        ok_count, skip_count, err_count = self.distribute_all(command)
-        self._log_command_done(command, ok_count, skip_count, err_count)
+        for state in self.sign_states.values():
+            if not state.exists or not state.enabled:
+                continue
+            progress(state.name)
+        _, _, err_count = self.distribute_all("一斉Ch更新")
+        if err_count:
+            raise RuntimeError(f"配布エラー {err_count} 台")
 
     def toggle_emergency_override(self, enabled: bool) -> None:
-        if enabled:
-            self.btn_emergency_override.setStyleSheet(
-                "background:#e53935; color:#fff; border-radius:8px; font-weight:900; font-size:14px;"
-            )
-        else:
-            self.btn_emergency_override.setStyleSheet("")
-            self._apply_3d_button_style(self.btn_emergency_override)
-
         self._emergency_override_enabled = bool(enabled)
+        self.run_exclusive_task(
+            "最上位強制メッセージ切替中",
+            lambda progress: self._task_apply_emergency_override(progress, enabled),
+        )
 
-        command = "最上位強制メッセージ（20ch）" + (" ON" if enabled else " OFF")
-        self._log_command_accept(command)
-        self._log_command_run(command)
+    def _task_apply_emergency_override(self, progress, enabled: bool) -> None:
+        def update_button() -> None:
+            if enabled:
+                self.btn_emergency_override.setStyleSheet(
+                    "background:#e53935; color:#fff; border-radius:8px; font-weight:900; font-size:14px;"
+                )
+            else:
+                self.btn_emergency_override.setStyleSheet("")
+                self._apply_3d_button_style(self.btn_emergency_override)
 
+        self._ui_call(update_button)
         self.recompute_all()
-
-        ok_count, skip_count, err_count = self.distribute_all(command)
-        self._log_command_done(command, ok_count, skip_count, err_count)
+        _, _, err_count = self.distribute_all("最上位強制メッセージ（20ch）" + (" ON" if enabled else " OFF"))
+        if err_count:
+            raise RuntimeError(f"配布エラー {err_count} 台")
 
     def distribute_all(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
         timeout = self.settings.get("network_timeout_seconds", 4)
@@ -2090,50 +2186,33 @@ QPushButton:disabled {
             return False, f"{exc.__class__.__name__}: {exc}"
 
     def start_sync(self) -> None:
-        command = "動画の同期開始"
-        self._log_command_accept(command)
-        self._log_command_run(command)
-        compare_ctime = self.settings.get("compare_ctime", True)
-        logging.info("[RUN] 同期方式: mirror (ADD/UPD/DEL), compare_ctime=%s", compare_ctime)
+        self.run_exclusive_task("動画フォルダ更新中", self._task_sync_all)
+
+    def _task_sync_all(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
         max_workers = self.settings.get("sync_workers", 4)
         futures = {}
-        ok_count = 0
-        skip_count = 0
-        err_count = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for state in self.sign_states.values():
-                if not state.exists:
-                    skip_count += 1
-                    self._log_sign_skip(state, "到達不可")
+                if not state.exists or not state.enabled:
                     continue
-                if not state.enabled:
-                    skip_count += 1
-                    self._log_sign_skip(state, "非アクティブ")
-                    continue
-                futures[executor.submit(self.sync_sign_content, state)] = state
+                futures[executor.submit(self.sync_sign_content, state, progress)] = state
+
+            errors = []
             for future, state in futures.items():
                 try:
                     ok, message = future.result(timeout=timeout)
-                    state.last_error = message if not ok else ""
-                    if ok:
-                        ok_count += 1
-                        self._log_sign_ok(state, "同期完了")
-                    else:
-                        if "共有" in message or "到達" in message:
-                            skip_count += 1
-                            self._log_sign_skip(state, f"到達不可 ({message})")
-                        else:
-                            err_count += 1
-                            self._log_sign_error(state, message)
                 except Exception as exc:
-                    state.last_error = str(exc)
-                    err_count += 1
-                    self._log_sign_error(state, str(exc))
-                self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-        self._log_command_done(command, ok_count, skip_count, err_count)
+                    ok, message = False, str(exc)
+                state.last_error = message if not ok else ""
+                self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
+                if not ok:
+                    errors.append(f"{state.name}:{message}")
 
-    def sync_sign_content(self, state: SignState) -> Tuple[bool, str]:
+        if errors:
+            raise RuntimeError(" / ".join(errors[:3]) + (" ..." if len(errors) > 3 else ""))
+
+    def sync_sign_content(self, state: SignState, progress_channel=None) -> Tuple[bool, str]:
         logging.info("[RUN] %s 同期開始", state.name)
         ok, msg = self.is_share_reachable(state)
         if not ok:
@@ -2156,6 +2235,9 @@ QPushButton:disabled {
             remote_dir = Path(remote_content)
             if not remote_dir.exists():
                 return False, f"remote content missing: {remote_content}"
+            if progress_channel:
+                ch_num = channel.replace("ch", "").lstrip("0")
+                progress_channel(f"{ch_num}ch")
             result = sync_mirror_dir(
                 local_dir,
                 remote_dir,
@@ -2181,44 +2263,28 @@ QPushButton:disabled {
         return True, ""
 
     def collect_logs(self) -> None:
-        command = "LOGファイル取得"
-        self._log_command_accept(command)
-        self._log_command_run(command)
+        self.run_exclusive_task("LOG回収中", self._task_collect_logs)
+
+    def _task_collect_logs(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
-        ok_count = 0
-        skip_count = 0
-        err_count = 0
+        errors = []
         for state in self.sign_states.values():
-            if not state.exists:
-                skip_count += 1
-                self._log_sign_skip(state, "到達不可")
-                continue
-            if not state.enabled:
-                skip_count += 1
-                self._log_sign_skip(state, "非アクティブ")
+            if not state.exists or not state.enabled:
                 continue
             futures[self._executor.submit(self.fetch_logs_for_sign, state)] = state
         for future, state in futures.items():
+            progress(state.name)
             try:
                 ok, message = future.result(timeout=timeout)
-                state.last_error = message if not ok else ""
-                if ok:
-                    ok_count += 1
-                    self._log_sign_ok(state, "ログ取得完了")
-                else:
-                    if "共有" in message or "到達" in message:
-                        skip_count += 1
-                        self._log_sign_skip(state, f"到達不可 ({message})")
-                    else:
-                        err_count += 1
-                        self._log_sign_error(state, message)
             except Exception as exc:
-                state.last_error = str(exc)
-                err_count += 1
-                self._log_sign_error(state, str(exc))
-            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-        self._log_command_done(command, ok_count, skip_count, err_count)
+                ok, message = False, str(exc)
+            state.last_error = message if not ok else ""
+            if not ok:
+                errors.append(f"{state.name}:{message}")
+            self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
+        if errors:
+            raise RuntimeError(" / ".join(errors[:3]) + (" ..." if len(errors) > 3 else ""))
 
     def fetch_logs_for_sign(self, state: SignState) -> Tuple[bool, str]:
         ok, msg = self.is_share_reachable(state)
