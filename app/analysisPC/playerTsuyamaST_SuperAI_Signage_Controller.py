@@ -104,18 +104,64 @@ class SignState:
 
 
 def load_json(path: Path, default):
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return default
-    except json.JSONDecodeError as exc:
-        logging.exception("Failed to parse %s", path)
-        return default
+    return safe_read_json(path, default, retries=3)
 
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+# --- robust IO helpers (for SMB/AV/WinError5) -------------------------------
+
+def _sleep_backoff(i: int, cap: float = 0.5) -> None:
+    time_module.sleep(min(cap, 0.05 * (2 ** i)))
+
+
+def safe_replace(tmp_path: Path, dst_path: Path, *, retries: int = 10) -> None:
+    """
+    Windows/SMB/AV環境では、読み取り側が一瞬掴むだけで os.replace / Path.replace が WinError 5 で失敗することがある。
+    短いリトライで吸収する。
+    """
+    last_exc = None
+    for i in range(max(1, int(retries))):
+        try:
+            os.replace(tmp_path, dst_path)
+            return
+        except (PermissionError, OSError) as exc:
+            last_exc = exc
+            _sleep_backoff(i)
+    # 最後に Path.replace も試す（環境差対策）
+    try:
+        tmp_path.replace(dst_path)
+        return
+    except Exception as exc:
+        raise RuntimeError(
+            f"safe_replace failed: {tmp_path} -> {dst_path} ({last_exc or exc})"
+        ) from exc
+
+
+def safe_read_json(path: Path, default, *, retries: int = 3):
+    """
+    書き換え中の読み取りで JSONDecodeError / PermissionError が起こり得るので、短いリトライで吸収する。
+    """
+    if not path.exists():
+        return default
+    last_exc = None
+    for i in range(max(1, int(retries))):
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (FileNotFoundError,):
+            return default
+        except (json.JSONDecodeError, PermissionError, OSError) as exc:
+            last_exc = exc
+            _sleep_backoff(i, cap=0.2)
+            continue
+        except Exception as exc:
+            last_exc = exc
+            break
+    logging.warning("safe_read_json failed: %s (%s)", path, last_exc)
+    return default
 
 
 def stat_fingerprint(path: Path) -> Tuple[int, int, int]:
@@ -160,7 +206,7 @@ def copy_file_atomic(src: Path, dst: Path) -> None:
                 pass
     except Exception:
         pass
-    tmp.replace(dst)
+    safe_replace(tmp, dst, retries=12)
 
 
 SYNC_EXTS = {".mp4", ".mov", ".jpg", ".jpeg", ".png", ".webp"}
@@ -226,7 +272,7 @@ def sync_mirror_dir(
                 result["copied"] += 1
         except Exception as exc:
             if logger:
-                logger(f"[ERR] copy {rel}: {exc}")
+                logger(f"[ERR] copy {rel}: {repr(exc)}")
             result["errors"] += 1
 
     return result
@@ -240,7 +286,7 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
-    os.replace(tmp_path, path)
+    safe_replace(tmp_path, path, retries=10)
 
 
 def write_json_atomic_remote(path: Path, payload: dict) -> None:
@@ -258,7 +304,7 @@ def write_json_atomic_remote(path: Path, payload: dict) -> None:
     with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
-    os.replace(tmp_path, path)
+    safe_replace(tmp_path, path, retries=12)
 
 
 def parse_time(value: str) -> time:
@@ -1558,17 +1604,18 @@ QPushButton:disabled {
 
     def load_pc_status(self, state: SignState) -> dict:
         path = self._remote_status_path(state)
-        if not path.exists():
+        try:
+            if not path.exists():
+                return {"ok": False, "error": "not_found"}
+        except Exception:
             return {"ok": False, "error": "not_found"}
         fingerprint = stat_fingerprint(path)
         cached = self._remote_status_cache.get(state.name)
         if cached and cached.get("fingerprint") == fingerprint:
             return {"ok": True, "payload": cached.get("payload"), "cached": True}
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        payload = safe_read_json(path, default=None, retries=3)
+        if payload is None:
+            return {"ok": False, "error": "read_failed"}
         self._remote_status_cache[state.name] = {"fingerprint": fingerprint, "payload": payload}
         return {"ok": True, "payload": payload, "cached": False}
 
