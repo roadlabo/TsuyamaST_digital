@@ -10,7 +10,7 @@ import sys
 import threading
 import time as time_module
 import traceback
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
 from datetime import datetime, time
 from pathlib import Path
@@ -2339,31 +2339,66 @@ QPushButton:disabled {
 
     def _task_check_connectivity(self, progress, op_id: Optional[str] = None) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
-        futures = {}
-        for state in self.sign_states.values():
-            if not state.exists or not state.enabled:
-                continue
-            futures[self._executor.submit(self.check_single_connectivity, state)] = state
+        timeout = float(timeout)
+        timeout = max(0.2, min(timeout, 5.0))
+        targets = [state for state in self.sign_states.values() if state.exists and state.enabled]
+        deadline_seconds = max(1.0, min(12.0, len(targets) * 0.6))
+        deadline = time_module.time() + deadline_seconds
+        logging.info(
+            "通信確認開始: 対象=%s台 timeout=%.2fs deadline=%.2fs",
+            len(targets),
+            timeout,
+            deadline_seconds,
+        )
 
-        results: List[dict] = []
-        for future, state in futures.items():
-            progress(state.name)
+        future_to_state = {
+            self._executor.submit(self.check_single_connectivity, state): state
+            for state in targets
+        }
+        pending = set(future_to_state.keys())
+        while pending:
+            remaining = deadline - time_module.time()
+            if remaining <= 0:
+                break
             try:
-                online, error, status_note = future.result(timeout=timeout)
+                for future in as_completed(pending, timeout=remaining):
+                    pending.discard(future)
+                    state = future_to_state[future]
+                    progress(state.name)
+                    try:
+                        online, error, status_note = future.result(timeout=0)
+                    except Exception as exc:
+                        online, error, status_note = False, str(exc), ""
+                    state.online = bool(online)
+                    state.last_error = error or ""
+                    state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    if status_note and online:
+                        logging.info("[WARN] %s 状態未取得 (%s)", state.name, status_note)
+                    if op_id:
+                        reason = error or ""
+                        self._apply_pc_results(op_id, [self._build_pc_result(state, online, reason, "sent")])
+                    self._ui_call(
+                        lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s)
+                    )
             except FuturesTimeoutError:
-                online, error, status_note = False, "timeout", ""
-            except Exception as exc:
-                online, error, status_note = False, str(exc), ""
-            state.online = bool(online)
-            state.last_error = error or ""
-            state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if status_note and online:
-                logging.info("[WARN] %s 状態未取得 (%s)", state.name, status_note)
-            if op_id:
-                reason = error or ""
-                results.append(self._build_pc_result(state, online, reason, "sent"))
-            self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
-        self._apply_pc_results(op_id or "", results)
+                break
+
+        if pending:
+            for future in pending:
+                future.cancel()
+                state = future_to_state[future]
+                progress(state.name)
+                state.online = False
+                state.last_error = "timeout"
+                state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if op_id:
+                    self._apply_pc_results(
+                        op_id,
+                        [self._build_pc_result(state, False, state.last_error, "sent")],
+                    )
+                self._ui_call(
+                    lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s)
+                )
 
     def poll_connectivity_silent(self) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
