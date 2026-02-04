@@ -1299,6 +1299,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.btn_logs.clicked.connect(self.collect_logs)
         self.btn_preview_toggle.clicked.connect(self.toggle_preview)
         self.btn_emergency_override.toggled.connect(self.toggle_emergency_override)
+        self._apply_emergency_button_style()
 
         QtCore.QTimer.singleShot(800, self.check_connectivity)
 
@@ -1350,6 +1351,35 @@ QPushButton:pressed {
   background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                               stop:0 #dcdcdc, stop:1 #f6f6f6);
   border: 1px solid #6f6f6f;
+}
+QPushButton:disabled {
+  background: #d6d6d6;
+  color: #777;
+}
+"""
+        )
+
+    def _apply_emergency_button_style(self) -> None:
+        if not hasattr(self, "btn_emergency_override") or self.btn_emergency_override is None:
+            return
+        self.btn_emergency_override.setStyleSheet(
+            """
+QPushButton {
+  padding: 6px 10px;
+  border: 1px solid #8a8a8a;
+  border-radius: 8px;
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #e6e6e6);
+}
+QPushButton:checked {
+  background: #e53935;
+  color: #fff;
+  font-weight: 900;
+  font-size: 14px;
+  border: 1px solid #7a1f1f;
+}
+QPushButton:checked:disabled {
+  background: #e53935;
+  color: #fff;
 }
 QPushButton:disabled {
   background: #d6d6d6;
@@ -2173,7 +2203,7 @@ QPushButton:disabled {
                     state.online = False
                     state.last_error = ""
                     state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+                    self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
                 continue
             futures[self._executor.submit(self.check_single_connectivity, state)] = state
 
@@ -2191,7 +2221,7 @@ QPushButton:disabled {
                     logging.info("[POLL] %s オンライン", state.name)
                 else:
                     logging.info("[POLL] %s オフライン (%s)", state.name, error or "offline")
-                self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+                self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str]:
         remote_path = build_unc_path(state.ip, state.share_name, REMOTE_CONFIG_DIR)
@@ -2238,23 +2268,21 @@ QPushButton:disabled {
             raise RuntimeError(f"配布エラー {err_count} 台")
 
     def toggle_emergency_override(self, enabled: bool) -> None:
+        if self._ui_busy:
+            blocker = QtCore.QSignalBlocker(self.btn_emergency_override)
+            self.btn_emergency_override.setChecked(self._emergency_override_enabled)
+            del blocker
+            self.log_view.appendPlainText("最上位強制メッセージは作業中のため受付不可")
+            return
+
         self._emergency_override_enabled = bool(enabled)
+        self._apply_emergency_button_style()
         self.run_exclusive_task(
             "最上位強制メッセージ切替中",
             lambda progress: self._task_apply_emergency_override(progress, enabled),
         )
 
     def _task_apply_emergency_override(self, progress, enabled: bool) -> None:
-        def update_button() -> None:
-            if enabled:
-                self.btn_emergency_override.setStyleSheet(
-                    "background:#e53935; color:#fff; border-radius:8px; font-weight:900; font-size:14px;"
-                )
-            else:
-                self.btn_emergency_override.setStyleSheet("")
-                self._apply_3d_button_style(self.btn_emergency_override)
-
-        self._ui_call(update_button)
         self.recompute_all()
         _, _, err_count = self.distribute_all("最上位強制メッセージ（20ch）" + (" ON" if enabled else " OFF"))
         if err_count:
@@ -2302,7 +2330,7 @@ QPushButton:disabled {
                 err_count += 1
                 if log_label:
                     self._log_sign_error(state, str(exc))
-            self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+            self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
         return ok_count, skip_count, err_count
 
     def distribute_active(self, state: SignState) -> Tuple[bool, str]:
