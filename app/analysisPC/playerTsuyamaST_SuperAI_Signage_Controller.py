@@ -3098,7 +3098,7 @@ def setup_logging():
     handler.setFormatter(formatter)
 
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(logging.DEBUG)
     root.handlers = []
     root.addHandler(handler)
 
