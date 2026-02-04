@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import time
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,10 @@ except ImportError:
 JST = timezone(timedelta(hours=9))
 ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = ROOT / "app"
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from common.json_io import write_json_safe
 CONFIG_DIR = APP_DIR / "config"
 CONTENT_DIR = ROOT / "content"
 LOGS_DIR = ROOT / "logs"
@@ -44,49 +49,12 @@ def log_line(log_path: str, msg: str) -> None:
         pass
 
 
-def write_json_atomic(path: str | Path, payload: dict, *, retries: int = 10) -> None:
-    """
-    Windowsでは読み取り側が一瞬ファイルを掴んだだけでも os.replace が WinError 5 で失敗することがある。
-    そのため短いリトライ + 最終フォールバック（直接上書き）で「止まらない」を優先する。
-    """
-    path = str(path)
-    tmp = path + ".tmp"
-
-    # tmp を書く（ここは通常問題になりにくい）
-    ensure_dir(os.path.dirname(path))
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    last_err: Exception | None = None
-
-    # 置換をリトライ
-    for i in range(max(1, int(retries))):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError as e:
-            last_err = e
-            # すぐリトライ（指数バックオフ）
-            time.sleep(min(0.5, 0.05 * (2 ** i)))
-        except OSError as e:
-            # WinError 5 を含む可能性があるので同様に扱う（環境差対策）
-            last_err = e
-            time.sleep(min(0.5, 0.05 * (2 ** i)))
-
-    # 最終フォールバック：直接上書き（原子性は落ちるが、監視JSONは「止まらない」が最優先）
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        # tmp が残っていたら消す（消せなくても致命ではない）
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-        return
-    except Exception as e:
-        # ここで初めて呼び元に失敗を知らせる
-        raise RuntimeError(f"write_json_atomic failed for {path}: {last_err or e}") from e
+def write_json_status(path: str | Path, payload: dict, log_path: Path) -> None:
+    ok, retry_count, err = write_json_safe(path, payload, indent=2, ensure_ascii=False)
+    if ok and retry_count > 0:
+        log_line(str(log_path), f"WARN: JSON write retry succeeded ({retry_count} retries): {path}")
+    if not ok:
+        log_line(str(log_path), f"ERROR: JSON write failed after retries: {path} ({err})")
 
 
 def read_json_safe(path: Path) -> Optional[dict]:
@@ -322,7 +290,7 @@ def main() -> int:
                     "ssd_total_gb": "shutil" if ssd_total_gb is not None else "none",
                 },
             }
-            write_json_atomic(status_path, payload)
+            write_json_status(status_path, payload, log_path)
 
             heartbeat_payload = {
                 "timestamp": now_iso(),
@@ -331,7 +299,7 @@ def main() -> int:
                 "agent_uptime_sec": agent_uptime_sec,
                 "os_uptime_sec": os_uptime_sec,
             }
-            write_json_atomic(heartbeat_path, heartbeat_payload)
+            write_json_status(heartbeat_path, heartbeat_payload, log_path)
 
             if os.path.isfile(cmd_path):
                 try:
@@ -357,7 +325,7 @@ def main() -> int:
                             "note": "ignored (action invalid or force=false)",
                         }
 
-                    write_json_atomic(cmd_result_path, result)
+                    write_json_status(cmd_result_path, result, log_path)
                     done_path = os.path.join(config_dir, f"command.done.{int(time.time())}.json")
                     try:
                         os.replace(cmd_path, done_path)
