@@ -1797,9 +1797,9 @@ QPushButton:disabled {
             return
         body = " ".join(self._work_line_tokens)
         if body:
-            self._replace_last_log_line(f"{self._work_line_title} {body} 【完了】")
+            self._replace_last_log_line(f"{self._work_line_title} {body} 【作業完了】")
         else:
-            self._replace_last_log_line(f"{self._work_line_title} 【完了】")
+            self._replace_last_log_line(f"{self._work_line_title} 【作業完了】")
         self._work_line_active = False
 
     def _work_error(self, reason: str) -> None:
@@ -1817,7 +1817,7 @@ QPushButton:disabled {
     def _ui_call(self, fn) -> None:
         QtCore.QTimer.singleShot(0, fn)
 
-    def run_exclusive_task(self, title: str, worker_fn) -> None:
+    def run_exclusive_task(self, title: str, worker_fn, max_seconds: int = 30) -> None:
         if self._ui_busy:
             self.log_view.appendPlainText(f"{title} は作業中のため受付不可")
             return
@@ -1828,16 +1828,24 @@ QPushButton:disabled {
 
         self._work_start(title)
 
+        finished = threading.Event()
+
         def progress_token(token: str) -> None:
             self._ui_call(lambda: self._work_update_token(token))
 
         def finish_ok() -> None:
+            if finished.is_set():
+                return
+            finished.set()
             self._work_done()
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
 
         def finish_err(reason: str) -> None:
+            if finished.is_set():
+                return
+            finished.set()
             self._work_error(reason)
             self._ui_busy = False
             self._busy_label = ""
@@ -1846,11 +1854,24 @@ QPushButton:disabled {
         def runner() -> None:
             try:
                 worker_fn(progress_token)
-                self._ui_call(finish_ok)
             except Exception as exc:
                 self._ui_call(lambda: finish_err(str(exc)))
+                return
+            finally:
+                self._ui_call(finish_ok)
 
         threading.Thread(target=runner, daemon=True).start()
+
+        def force_release() -> None:
+            if finished.is_set():
+                return
+            self._work_error("タイムアウト（UI復旧）")
+            self._ui_busy = False
+            self._busy_label = ""
+            self._set_interaction_enabled(True)
+            finished.set()
+
+        QtCore.QTimer.singleShot(max_seconds * 1000, force_release)
 
     def _shorten_log_line(self, line: str) -> str:
         trimmed = line.rstrip("\r")
@@ -2122,7 +2143,7 @@ QPushButton:disabled {
         return frame
 
     def check_connectivity(self) -> None:
-        self.run_exclusive_task("サイネージPC通信確認", self._task_check_connectivity)
+        self.run_exclusive_task("サイネージPC通信確認", self._task_check_connectivity, max_seconds=20)
 
     def _task_check_connectivity(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
