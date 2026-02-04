@@ -1184,9 +1184,15 @@ class ControllerWindow(QtWidgets.QMainWindow):
         # ---- Debug trace (root cause investigation) ----
         self._dbg_enabled = bool(self.settings.get("debug_trace_enabled", True))
         self._dbg_hang_seconds = int(self.settings.get("debug_hang_seconds", 60))
+        self._dbg_dump_enabled = bool(self.settings.get("debug_dump_enabled", True))
+        self._dbg_dump_failures = 0
         self._dbg_last_progress = {"op_id": "", "title": "", "token": "", "ts": 0.0}
         self._dbg_ui_post_seq = 0
         self._dbg_ui_post_pending = {}  # seq -> {"label": str, "ts": float}
+        self._dbg_ui_post_ok = 0
+        self._dbg_ui_post_fail = 0
+        self._dbg_ui_post_last_enqueue_ts = 0.0
+        self._dbg_ui_post_last_dequeue_ts = 0.0
         self._dbg_watchdog_timer: Optional[QtCore.QTimer] = None
         self._op_seq = 0
         self._op_lines: Dict[str, int] = {}
@@ -1987,7 +1993,15 @@ QPushButton:disabled {
         """
         if not getattr(self, "_dbg_enabled", False):
             return
+        if not getattr(self, "_dbg_dump_enabled", False):
+            return
+        if not hasattr(sys.stderr, "fileno"):
+            return
         try:
+            try:
+                sys.stderr.fileno()
+            except Exception:
+                return
             buf = io.StringIO()
             buf.write("\n========== THREAD DUMP BEGIN ==========\n")
             buf.write(f"reason={reason}\n")
@@ -2003,10 +2017,20 @@ QPushButton:disabled {
             buf.write("\n========== THREAD DUMP END ==========\n")
             logging.error("%s", buf.getvalue())
         except Exception as exc:
+            self._dbg_dump_failures += 1
             try:
                 logging.error("[DBG] dump failed: %s", exc)
             except Exception:
                 pass
+            if self._dbg_dump_failures >= 3:
+                try:
+                    logging.error("[DBG] dump disabled after %d failures", self._dbg_dump_failures)
+                except Exception:
+                    pass
+                self._dbg_dump_enabled = False
+                timer = getattr(self, "_dbg_watchdog_timer", None)
+                if timer is not None and timer.isActive():
+                    timer.stop()
 
     def _dbg_watchdog_tick(self) -> None:
         if not getattr(self, "_dbg_enabled", False):
@@ -2030,7 +2054,24 @@ QPushButton:disabled {
 
     def _ui_call(self, fn, label: str = "") -> None:
         if not getattr(self, "_dbg_enabled", False):
-            QtCore.QTimer.singleShot(0, fn)
+            def wrapped_no_dbg():
+                try:
+                    fn()
+                    try:
+                        self._dbg_ui_post_ok += 1
+                    except Exception:
+                        pass
+                except Exception:
+                    try:
+                        self._dbg_ui_post_fail += 1
+                    except Exception:
+                        pass
+                    try:
+                        logging.exception("[DBG] ui_call failed label=%s", label or getattr(fn, "__name__", "fn"))
+                    except Exception:
+                        pass
+
+            QtCore.QTimer.singleShot(0, wrapped_no_dbg)
             return
 
         self._dbg_ui_post_seq += 1
@@ -2039,6 +2080,7 @@ QPushButton:disabled {
             "label": label or getattr(fn, "__name__", "fn"),
             "ts": time_module.monotonic(),
         }
+        self._dbg_ui_post_last_enqueue_ts = self._dbg_ui_post_pending[seq]["ts"]
         self._dbg(
             "ui_call enqueue seq=%d label=%s pending=%d",
             seq,
@@ -2051,6 +2093,7 @@ QPushButton:disabled {
                 meta = self._dbg_ui_post_pending.pop(seq, None)
                 if meta:
                     dt = time_module.monotonic() - float(meta.get("ts") or time_module.monotonic())
+                    self._dbg_ui_post_last_dequeue_ts = time_module.monotonic()
                     self._dbg(
                         "ui_call dequeue seq=%d label=%s dt=%.3fs pending=%d",
                         seq,
@@ -2060,7 +2103,15 @@ QPushButton:disabled {
                     )
             except Exception:
                 pass
-            fn()
+            try:
+                fn()
+                self._dbg_ui_post_ok += 1
+            except Exception:
+                self._dbg_ui_post_fail += 1
+                try:
+                    logging.exception("[DBG] ui_call failed seq=%d label=%s", seq, label or getattr(fn, "__name__", "fn"))
+                except Exception:
+                    pass
 
         QtCore.QTimer.singleShot(0, wrapped)
 
@@ -2161,6 +2212,18 @@ QPushButton:disabled {
 
         def handle_timeout() -> None:
             cancel_event.set()
+            try:
+                pending = len(getattr(self, "_dbg_ui_post_pending", {}))
+                last_dequeue = float(getattr(self, "_dbg_ui_post_last_dequeue_ts", 0.0) or 0.0)
+                last_enqueue = float(getattr(self, "_dbg_ui_post_last_enqueue_ts", 0.0) or 0.0)
+                logging.warning(
+                    "[DBG] ui timeout recovery pending=%d last_dequeue_ts=%.3f last_enqueue_ts=%.3f",
+                    pending,
+                    last_dequeue,
+                    last_enqueue,
+                )
+            except Exception:
+                pass
             finish_err("タイムアウト（UI復旧）")
 
         timeout_timer.timeout.connect(handle_timeout)
