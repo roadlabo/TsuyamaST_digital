@@ -1,3 +1,5 @@
+import faulthandler
+import io
 import json
 import importlib.util
 import inspect
@@ -1179,6 +1181,13 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._remote_status_log_state: Dict[str, str] = {}
         self._ui_busy: bool = False
         self._busy_label: str = ""
+        # ---- Debug trace (root cause investigation) ----
+        self._dbg_enabled = bool(self.settings.get("debug_trace_enabled", True))
+        self._dbg_hang_seconds = int(self.settings.get("debug_hang_seconds", 60))
+        self._dbg_last_progress = {"op_id": "", "title": "", "token": "", "ts": 0.0}
+        self._dbg_ui_post_seq = 0
+        self._dbg_ui_post_pending = {}  # seq -> {"label": str, "ts": float}
+        self._dbg_watchdog_timer: Optional[QtCore.QTimer] = None
         self._op_seq = 0
         self._op_lines: Dict[str, int] = {}
         self._op_results: Dict[str, dict] = {}
@@ -1219,6 +1228,12 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._connectivity_timer.setInterval(10000)
         self._connectivity_timer.timeout.connect(self.poll_connectivity_silent)
         self._connectivity_timer.start()
+
+        # watchdog: UI busy が一定時間続く場合にスレッドダンプをログ出力（挙動変更なし）
+        self._dbg_watchdog_timer = QtCore.QTimer(self)
+        self._dbg_watchdog_timer.setInterval(1000)  # 1秒周期
+        self._dbg_watchdog_timer.timeout.connect(self._dbg_watchdog_tick)
+        self._dbg_watchdog_timer.start()
 
     def _init_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -1953,8 +1968,101 @@ QPushButton:disabled {
         now = QtCore.QDateTime.currentDateTime().toString("yyyy/MM/dd HH:mm:ss")
         self.log_view.appendPlainText(f"{now} {title} … 【受付不可】({reason})")
 
-    def _ui_call(self, fn) -> None:
-        QtCore.QTimer.singleShot(0, fn)
+    def _dbg(self, msg: str, *args) -> None:
+        if not getattr(self, "_dbg_enabled", False):
+            return
+        try:
+            logging.debug("[DBG] " + (msg % args if args else msg))
+        except Exception:
+            # ログで落ちないように
+            try:
+                logging.debug("[DBG] %s", msg)
+            except Exception:
+                pass
+
+    def _dbg_dump_all_threads(self, reason: str) -> None:
+        """
+        UIがbusyのまま戻らない等、異常系の原因特定用。
+        挙動変更はせず、スタックトレースをログに吐くだけ。
+        """
+        if not getattr(self, "_dbg_enabled", False):
+            return
+        try:
+            buf = io.StringIO()
+            buf.write("\n========== THREAD DUMP BEGIN ==========\n")
+            buf.write(f"reason={reason}\n")
+            buf.write(f"ui_busy={getattr(self, '_ui_busy', None)} busy_label={getattr(self, '_busy_label', '')}\n")
+            buf.write(f"last_progress={getattr(self, '_dbg_last_progress', {})}\n")
+            buf.write(f"distribute_busy={getattr(self, '_distribute_busy', None)}\n")
+            buf.write(f"remote_pending_keys={list(getattr(self, '_remote_status_pending', {}).keys())}\n")
+            buf.write("threads:\n")
+            for th in threading.enumerate():
+                buf.write(f"  - name={th.name} ident={th.ident} daemon={th.daemon} alive={th.is_alive()}\n")
+            buf.write("\n-- stacktrace (all threads) --\n")
+            faulthandler.dump_traceback(file=buf, all_threads=True)
+            buf.write("\n========== THREAD DUMP END ==========\n")
+            logging.error("%s", buf.getvalue())
+        except Exception as exc:
+            try:
+                logging.error("[DBG] dump failed: %s", exc)
+            except Exception:
+                pass
+
+    def _dbg_watchdog_tick(self) -> None:
+        if not getattr(self, "_dbg_enabled", False):
+            return
+        try:
+            if not getattr(self, "_ui_busy", False):
+                return
+            last = getattr(self, "_dbg_last_progress", None) or {}
+            ts = float(last.get("ts") or 0.0)
+            if ts <= 0:
+                return
+            elapsed = time_module.monotonic() - ts
+            hang_sec = int(getattr(self, "_dbg_hang_seconds", 60))
+            if elapsed >= hang_sec:
+                # 連打防止：ダンプしたらtsを更新して間隔を空ける
+                self._dbg_dump_all_threads(f"UI busy >= {hang_sec}s (elapsed={elapsed:.1f}s)")
+                last["ts"] = time_module.monotonic()
+                self._dbg_last_progress = last
+        except Exception:
+            pass
+
+    def _ui_call(self, fn, label: str = "") -> None:
+        if not getattr(self, "_dbg_enabled", False):
+            QtCore.QTimer.singleShot(0, fn)
+            return
+
+        self._dbg_ui_post_seq += 1
+        seq = self._dbg_ui_post_seq
+        self._dbg_ui_post_pending[seq] = {
+            "label": label or getattr(fn, "__name__", "fn"),
+            "ts": time_module.monotonic(),
+        }
+        self._dbg(
+            "ui_call enqueue seq=%d label=%s pending=%d",
+            seq,
+            self._dbg_ui_post_pending[seq]["label"],
+            len(self._dbg_ui_post_pending),
+        )
+
+        def wrapped():
+            try:
+                meta = self._dbg_ui_post_pending.pop(seq, None)
+                if meta:
+                    dt = time_module.monotonic() - float(meta.get("ts") or time_module.monotonic())
+                    self._dbg(
+                        "ui_call dequeue seq=%d label=%s dt=%.3fs pending=%d",
+                        seq,
+                        meta.get("label"),
+                        dt,
+                        len(self._dbg_ui_post_pending),
+                    )
+            except Exception:
+                pass
+            fn()
+
+        QtCore.QTimer.singleShot(0, wrapped)
 
     def run_exclusive_task(
         self,
@@ -1964,14 +2072,26 @@ QPushButton:disabled {
         detail: str = "実行中",
     ) -> None:
         if self._ui_busy:
+            self._dbg("reject title=%s because ui_busy busy_label=%s", title, getattr(self, "_busy_label", ""))
             self._log_reject(title, "作業中")
             return
 
         self._ui_busy = True
         self._busy_label = title
+        self._dbg("ui_busy TRUE title=%s", title)
         self._set_interaction_enabled(False)
+        self._dbg("interaction disabled title=%s", title)
 
         op_id = self._log_op_start(title)
+        try:
+            self._dbg_last_progress = {
+                "op_id": op_id,
+                "title": title,
+                "token": "start",
+                "ts": time_module.monotonic(),
+            }
+        except Exception:
+            pass
 
         finished = threading.Event()
         cancel_event = threading.Event()
@@ -1981,6 +2101,15 @@ QPushButton:disabled {
         def progress_token(token: str) -> None:
             if token:
                 logging.info("[PROG] %s %s", title, token)
+                try:
+                    self._dbg_last_progress = {
+                        "op_id": op_id,
+                        "title": title,
+                        "token": token,
+                        "ts": time_module.monotonic(),
+                    }
+                except Exception:
+                    pass
 
         def accepts_op_id() -> bool:
             try:
@@ -2003,6 +2132,7 @@ QPushButton:disabled {
             return len(params) >= 3
 
         def finish_ok() -> None:
+            self._dbg("finish_ok called op_id=%s title=%s", op_id, title)
             if finished.is_set():
                 return
             if timeout_timer.isActive():
@@ -2011,9 +2141,12 @@ QPushButton:disabled {
             self._log_op_done(op_id)
             self._ui_busy = False
             self._busy_label = ""
+            self._dbg("ui_busy FALSE op_id=%s title=%s", op_id, title)
             self._set_interaction_enabled(True)
+            self._dbg("interaction enabled op_id=%s title=%s", op_id, title)
 
         def finish_err(reason: str) -> None:
+            self._dbg("finish_err called op_id=%s title=%s reason=%s", op_id, title, reason)
             if finished.is_set():
                 return
             if timeout_timer.isActive():
@@ -2022,7 +2155,9 @@ QPushButton:disabled {
             self._log_op_error(op_id, reason)
             self._ui_busy = False
             self._busy_label = ""
+            self._dbg("ui_busy FALSE op_id=%s title=%s", op_id, title)
             self._set_interaction_enabled(True)
+            self._dbg("interaction enabled op_id=%s title=%s", op_id, title)
 
         def handle_timeout() -> None:
             cancel_event.set()
@@ -2034,16 +2169,25 @@ QPushButton:disabled {
 
         def runner() -> None:
             try:
+                self._dbg("runner start op_id=%s title=%s thread=%s", op_id, title, threading.current_thread().name)
                 args = [progress_token]
                 if accepts_op_id():
                     args.append(op_id)
                 if accepts_cancel_event():
                     args.append(cancel_event)
+                self._dbg(
+                    "worker enter op_id=%s title=%s fn=%s args_len=%d",
+                    op_id,
+                    title,
+                    getattr(worker_fn, "__name__", "worker_fn"),
+                    len(args),
+                )
                 worker_fn(*args)
+                self._dbg("worker exit op_id=%s title=%s", op_id, title)
             except Exception as exc:
-                self._ui_call(lambda: finish_err(str(exc)))
+                self._ui_call(lambda: finish_err(str(exc)), label=f"finish_err:{title}")
             else:
-                self._ui_call(finish_ok)
+                self._ui_call(finish_ok, label=f"finish_ok:{title}")
 
         threading.Thread(target=runner, daemon=True).start()
 
@@ -2204,13 +2348,23 @@ QPushButton:disabled {
         return self._tcp_probe(ip, 445, timeout=timeout_sec)
 
     def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
-        if not is_reachable(state.ip):
+        t0 = time_module.monotonic()
+        self._dbg("share_reachable start sign=%s ip=%s share=%s", state.name, state.ip, state.share_name)
+        ok_ping = is_reachable(state.ip)
+        self._dbg("share_reachable ping sign=%s ok=%s dt=%.3fs", state.name, ok_ping, time_module.monotonic() - t0)
+        if not ok_ping:
             return False, "到達不可（ping）"
-        if not self._tcp_probe(state.ip, 445, timeout=1.0):
+        t1 = time_module.monotonic()
+        ok_tcp = self._tcp_probe(state.ip, 445, timeout=1.0)
+        self._dbg("share_reachable tcp445 sign=%s ok=%s dt=%.3fs", state.name, ok_tcp, time_module.monotonic() - t1)
+        if not ok_tcp:
             return False, "到達不可（tcp445）"
         root = build_unc_path(state.ip, state.share_name, "")
         try:
-            if Path(root).exists():
+            t2 = time_module.monotonic()
+            exists = Path(root).exists()
+            self._dbg("share_reachable unc_exists sign=%s ok=%s dt=%.3fs path=%s", state.name, exists, time_module.monotonic() - t2, root)
+            if exists:
                 return True, ""
             return False, f"共有に到達できません: {root}"
         except Exception as exc:
@@ -2577,14 +2731,30 @@ QPushButton:disabled {
         active = read_active(CONFIG_DIR / state.name)
         if not active.get("active_channel"):
             return False, "active_channel missing"
+        t0 = time_module.monotonic()
+        self._dbg("distribute_active start sign=%s", state.name)
         ok, msg = self.is_share_reachable(state)
+        self._dbg(
+            "distribute_active share_check sign=%s ok=%s dt=%.3fs msg=%s",
+            state.name,
+            ok,
+            time_module.monotonic() - t0,
+            msg,
+        )
         if not ok:
             logging.warning("到達不可 %s (%s)", state.name, msg)
             return False, msg
         remote_path = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONFIG_DIR}\\active.json")
         try:
             logging.info("[RUN] %s active.json 書込 -> %s", state.name, remote_path)
+            t1 = time_module.monotonic()
+            self._dbg("distribute_active write start sign=%s path=%s", state.name, remote_path)
             write_json_atomic_remote(Path(remote_path), active)
+            self._dbg(
+                "distribute_active write done sign=%s dt=%.3fs",
+                state.name,
+                time_module.monotonic() - t1,
+            )
             logging.info("Distributed active.json to %s", state.name)
             return True, ""
         except Exception as exc:
@@ -2627,7 +2797,10 @@ QPushButton:disabled {
 
     def sync_sign_content(self, state: SignState, progress_channel=None) -> Tuple[bool, str]:
         logging.info("[RUN] %s 同期開始", state.name)
+        self._dbg("sync start sign=%s", state.name)
+        t0 = time_module.monotonic()
         ok, msg = self.is_share_reachable(state)
+        self._dbg("sync share_check sign=%s ok=%s dt=%.3fs msg=%s", state.name, ok, time_module.monotonic() - t0, msg)
         if not ok:
             return False, msg
         total_copied = 0
@@ -2645,15 +2818,33 @@ QPushButton:disabled {
                 continue
             remote_content = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONTENT_DIR}\\{channel}")
             remote_dir = Path(remote_content)
-            if not remote_dir.exists():
+            t1 = time_module.monotonic()
+            exists = remote_dir.exists()
+            self._dbg(
+                "sync ch=%s remote_exists sign=%s exists=%s dt=%.3fs path=%s",
+                channel,
+                state.name,
+                exists,
+                time_module.monotonic() - t1,
+                str(remote_dir),
+            )
+            if not exists:
                 return False, f"remote content missing: {remote_content}"
             if progress_channel:
                 ch_num = channel.replace("ch", "").lstrip("0")
                 progress_channel(f"{ch_num}ch")
+            t2 = time_module.monotonic()
             result = sync_mirror_dir(
                 local_dir,
                 remote_dir,
                 logger=log_line,
+            )
+            self._dbg(
+                "sync ch=%s done sign=%s dt=%.3fs res=%s",
+                channel,
+                state.name,
+                time_module.monotonic() - t2,
+                result,
             )
             total_copied += result["copied"]
             total_updated += result["updated"]
@@ -2700,7 +2891,10 @@ QPushButton:disabled {
         self._apply_pc_results(op_id or "", results)
 
     def fetch_logs_for_sign(self, state: SignState) -> Tuple[bool, str]:
+        self._dbg("fetch_logs start sign=%s", state.name)
+        t0 = time_module.monotonic()
         ok, msg = self.is_share_reachable(state)
+        self._dbg("fetch_logs share_check sign=%s ok=%s dt=%.3fs msg=%s", state.name, ok, time_module.monotonic() - t0, msg)
         if not ok:
             return False, msg
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2709,11 +2903,32 @@ QPushButton:disabled {
         ensure_dir(dest)
         remote_logs = build_unc_path(state.ip, state.share_name, REMOTE_LOGS_DIR)
         try:
-            if not Path(remote_logs).exists():
+            t1 = time_module.monotonic()
+            exists = Path(remote_logs).exists()
+            self._dbg(
+                "fetch_logs exists sign=%s exists=%s dt=%.3fs path=%s",
+                state.name,
+                exists,
+                time_module.monotonic() - t1,
+                remote_logs,
+            )
+            if not exists:
                 return False, "remote logs missing"
+            t2 = time_module.monotonic()
+            copied = 0
+            entries = 0
             for entry in Path(remote_logs).iterdir():
+                entries += 1
                 if entry.is_file():
                     shutil.copy2(entry, dest / entry.name)
+                    copied += 1
+            self._dbg(
+                "fetch_logs iterdir sign=%s files=%d copied=%d dt=%.3fs",
+                state.name,
+                entries,
+                copied,
+                time_module.monotonic() - t2,
+            )
             logging.info("Logs fetched for %s", state.name)
             return True, ""
         except Exception as exc:
@@ -2877,12 +3092,15 @@ QPushButton:disabled {
 
 def setup_logging():
     log_path = LOG_DIR / f"controller_{datetime.now().strftime('%Y%m%d')}.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
-        force=True,
-    )
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s")
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers = []
+    root.addHandler(handler)
 
 
 def main():
