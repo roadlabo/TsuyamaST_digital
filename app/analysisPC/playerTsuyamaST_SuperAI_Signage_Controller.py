@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time as time_module
@@ -116,6 +117,22 @@ def ensure_dir(path: Path) -> None:
 
 def _sleep_backoff(i: int, cap: float = 0.5) -> None:
     time_module.sleep(min(cap, 0.05 * (2 ** i)))
+
+
+def is_reachable(ip: str) -> bool:
+    if not ip:
+        return False
+    try:
+        result = subprocess.run(
+            ["ping", "-n", "1", "-w", "300", ip],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+            check=False,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
 
 def safe_replace(tmp_path: Path, dst_path: Path, *, retries: int = 10) -> None:
@@ -308,17 +325,28 @@ def write_json_atomic_remote(path: Path, payload: dict) -> None:
     UNC(ネットワーク共有)向け: 親ディレクトリ作成はしない。
     （リモート側のフォルダ構成は前提として存在する）
     """
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    bak_path = path.with_suffix(path.suffix + ".bak")
-    try:
-        if path.exists():
-            shutil.copy2(path, bak_path)
-    except Exception:
-        pass
-    with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-    safe_replace(tmp_path, path, retries=12)
+    last_exc = None
+    for i in range(10):
+        try:
+            bak_path = path.with_suffix(path.suffix + ".bak")
+            try:
+                if path.exists():
+                    shutil.copy2(path, bak_path)
+            except Exception:
+                pass
+            with path.open("w", encoding="utf-8", newline="\n") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+                fh.write("\n")
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
+            return
+        except (PermissionError, OSError) as exc:
+            last_exc = exc
+            _sleep_backoff(i)
+    logging.error("write_json_remote_overwrite failed: %s (%s)", path, last_exc)
 
 
 def parse_time(value: str) -> time:
@@ -2104,6 +2132,8 @@ QPushButton:disabled {
         return self._tcp_probe(ip, 445, timeout=timeout_sec)
 
     def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
+        if not is_reachable(state.ip):
+            return False, "到達不可（ping）"
         if not self._tcp_probe(state.ip, 445, timeout=1.0):
             return False, "到達不可（tcp445）"
         root = build_unc_path(state.ip, state.share_name, "")
@@ -2292,6 +2322,8 @@ QPushButton:disabled {
                 self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str]:
+        if not is_reachable(state.ip):
+            return False, "到達不可（ping）"
         if not self._tcp_probe(state.ip, 445, timeout=1.0):
             return False, "到達不可（tcp445）"
         remote_path = build_unc_path(state.ip, state.share_name, REMOTE_CONFIG_DIR)
