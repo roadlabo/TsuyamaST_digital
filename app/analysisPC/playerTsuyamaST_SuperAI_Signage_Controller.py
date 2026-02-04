@@ -1120,9 +1120,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._remote_status_log_state: Dict[str, str] = {}
         self._ui_busy: bool = False
         self._busy_label: str = ""
-        self._work_line_active: bool = False
-        self._work_line_title: str = ""
-        self._work_line_tokens: List[str] = []
+        self._op_seq = 0
+        self._op_lines: Dict[str, int] = {}
+        self._distribute_busy = False
         # ---- Telemetry軽量化用 ----
         self._telemetry_rr_index = 0  # round-robin index
         self._telemetry_batch_size = int(self.settings.get("telemetry_batch_size", 5))  # 1回に更新する台数
@@ -1802,72 +1802,73 @@ QPushButton:disabled {
 
         self.log_view.setEnabled(True)
 
-    def _work_start(self, title: str) -> None:
-        self._work_line_active = True
-        self._work_line_title = title
-        self._work_line_tokens = []
-        self.log_view.appendPlainText(f"{title} …")
+    def _op_start(self, title: str, detail: str = "") -> str:
+        self._op_seq += 1
+        op_id = f"op{self._op_seq:04d}"
+        line = f"{title}"
+        if detail:
+            line += f" … {detail}"
+        self.log_view.appendPlainText(line)
+        cursor = self.log_view.textCursor()
+        block_no = cursor.blockNumber()
+        self._op_lines[op_id] = block_no
+        return op_id
 
-    def _work_update_token(self, token: str) -> None:
-        if not self._work_line_active:
+    def _op_append(self, op_id: str, suffix: str) -> None:
+        if op_id not in self._op_lines:
+            self.log_view.appendPlainText(suffix)
             return
-        token = token.strip()
-        if not token:
+        block_no = self._op_lines[op_id]
+        doc = self.log_view.document()
+        block = doc.findBlockByNumber(block_no)
+        if not block.isValid():
+            self.log_view.appendPlainText(suffix)
             return
-        if token not in self._work_line_tokens:
-            self._work_line_tokens.append(token)
-        body = " ".join(self._work_line_tokens)
-        if body:
-            self._replace_last_log_line(f"{self._work_line_title} {body} …")
-        else:
-            self._replace_last_log_line(f"{self._work_line_title} …")
+        cursor = QtGui.QTextCursor(block)
+        cursor.movePosition(QtGui.QTextCursor.EndOfBlock)
+        cursor.insertText(suffix)
+        self.log_view.moveCursor(QtGui.QTextCursor.End)
 
-    def _work_done(self) -> None:
-        if not self._work_line_active:
-            return
-        body = " ".join(self._work_line_tokens)
-        if body:
-            self._replace_last_log_line(f"{self._work_line_title} {body} 【作業完了】")
-        else:
-            self._replace_last_log_line(f"{self._work_line_title} 【作業完了】")
-        self._work_line_active = False
+    def _op_done(self, op_id: str) -> None:
+        self._op_append(op_id, " 【完了】")
 
-    def _work_error(self, reason: str) -> None:
-        if not self._work_line_active:
-            self.log_view.appendPlainText(f"【エラー】({reason})")
-            return
-        body = " ".join(self._work_line_tokens)
-        reason = (reason or "").strip()
-        if body:
-            self._replace_last_log_line(f"{self._work_line_title} {body} 【エラー】({reason})")
-        else:
-            self._replace_last_log_line(f"{self._work_line_title} 【エラー】({reason})")
-        self._work_line_active = False
+    def _op_error(self, op_id: str, reason: str) -> None:
+        self._op_append(op_id, f" 【エラー】({reason})")
+
+    def _op_reject(self, title: str, reason: str) -> None:
+        self.log_view.appendPlainText(f"{title} … 【受付不可】({reason})")
 
     def _ui_call(self, fn) -> None:
         QtCore.QTimer.singleShot(0, fn)
 
-    def run_exclusive_task(self, title: str, worker_fn, max_seconds: int = 30) -> None:
+    def run_exclusive_task(
+        self,
+        title: str,
+        worker_fn,
+        max_seconds: int = 30,
+        detail: str = "実行中",
+    ) -> None:
         if self._ui_busy:
-            self.log_view.appendPlainText(f"{title} は作業中のため受付不可")
+            self._op_reject(title, "作業中")
             return
 
         self._ui_busy = True
         self._busy_label = title
         self._set_interaction_enabled(False)
 
-        self._work_start(title)
+        op_id = self._op_start(title, detail)
 
         finished = threading.Event()
 
         def progress_token(token: str) -> None:
-            self._ui_call(lambda: self._work_update_token(token))
+            if token:
+                logging.info("[PROG] %s %s", title, token)
 
         def finish_ok() -> None:
             if finished.is_set():
                 return
             finished.set()
-            self._work_done()
+            self._op_done(op_id)
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
@@ -1876,7 +1877,7 @@ QPushButton:disabled {
             if finished.is_set():
                 return
             finished.set()
-            self._work_error(reason)
+            self._op_error(op_id, reason)
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
@@ -1895,7 +1896,7 @@ QPushButton:disabled {
         def force_release() -> None:
             if finished.is_set():
                 return
-            self._work_error("タイムアウト（UI復旧）")
+            self._op_error(op_id, "タイムアウト（UI復旧）")
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
@@ -2043,6 +2044,13 @@ QPushButton:disabled {
             return AI_CHOICES[0]
         return value or "-"
 
+    def _tcp_probe(self, ip: str, port: int, timeout: float = 1.0) -> bool:
+        try:
+            with socket.create_connection((ip, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
     def _fast_smb_reachable(self, ip: str, timeout_sec: float = 0.2) -> bool:
         """
         UNC(Path.exists/open)を触る前に、SMBポート(445)だけを短時間で確認する。
@@ -2050,13 +2058,11 @@ QPushButton:disabled {
         """
         if not ip:
             return False
-        try:
-            with socket.create_connection((ip, 445), timeout=timeout_sec):
-                return True
-        except Exception:
-            return False
+        return self._tcp_probe(ip, 445, timeout=timeout_sec)
 
     def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
+        if not self._tcp_probe(state.ip, 445, timeout=1.0):
+            return False, "到達不可（tcp445）"
         root = build_unc_path(state.ip, state.share_name, "")
         try:
             if Path(root).exists():
@@ -2066,7 +2072,7 @@ QPushButton:disabled {
             return False, str(exc)
 
     def refresh_content_request(self) -> None:
-        self.run_exclusive_task("動画フォルダ情報更新中", self._task_refresh_content)
+        self.run_exclusive_task("動画フォルダ情報更新中", self._task_refresh_content, detail="情報更新 指示送信")
 
     def _task_refresh_content(self, progress) -> None:
         for state in self.sign_states.values():
@@ -2080,11 +2086,17 @@ QPushButton:disabled {
 
     def toggle_preview(self) -> None:
         command = "プレビューON/OFF"
+        detail = "ON" if not self._preview_enabled else "OFF"
+        op_id = self._op_start(command, f"{detail} 指示送信")
         self._log_command_accept(command)
         self._log_command_run(command)
         self._preview_enabled = not self._preview_enabled
         ok_count, skip_count, err_count = self.refresh_preview_info(command)
         self._log_command_done(command, ok_count, skip_count, err_count)
+        if err_count:
+            self._op_error(op_id, f"ERR={err_count}")
+        else:
+            self._op_done(op_id)
 
     def refresh_preview_info(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
         ok_count = 0
@@ -2173,7 +2185,12 @@ QPushButton:disabled {
         return frame
 
     def check_connectivity(self) -> None:
-        self.run_exclusive_task("サイネージPC通信確認", self._task_check_connectivity, max_seconds=20)
+        self.run_exclusive_task(
+            "サイネージPC通信確認",
+            self._task_check_connectivity,
+            max_seconds=45,
+            detail="通信確認 指示送信",
+        )
 
     def _task_check_connectivity(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
@@ -2224,13 +2241,15 @@ QPushButton:disabled {
                 self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str]:
+        if not self._tcp_probe(state.ip, 445, timeout=1.0):
+            return False, "到達不可（tcp445）"
         remote_path = build_unc_path(state.ip, state.share_name, REMOTE_CONFIG_DIR)
         try:
             return Path(remote_path).exists(), ""
         except Exception as exc:
             return False, str(exc)
 
-    def recompute_all(self) -> None:
+    def recompute_all(self, auto_distribute: bool = True) -> None:
         with self._update_lock:
             self.ai_status = load_json(AI_STATUS_PATH, self.ai_status)
             self.update_ai_badge()
@@ -2251,14 +2270,14 @@ QPushButton:disabled {
                 write_json_atomic(CONFIG_DIR / state.name / "active.json", {"active_channel": active_channel})
             self.refresh_summary()
 
-        if updated_any and self.settings.get("auto_distribute_on_event", False):
+        if auto_distribute and updated_any and self.settings.get("auto_distribute_on_event", False):
             self.distribute_all()
 
     def bulk_update(self) -> None:
-        self.run_exclusive_task("一斉Ch更新", self._task_bulk_update)
+        self.run_exclusive_task("一斉Ch更新", self._task_bulk_update, detail="一斉更新 指示送信")
 
     def _task_bulk_update(self, progress) -> None:
-        self.recompute_all()
+        self.recompute_all(auto_distribute=False)
         for state in self.sign_states.values():
             if not state.exists or not state.enabled:
                 continue
@@ -2272,66 +2291,75 @@ QPushButton:disabled {
             blocker = QtCore.QSignalBlocker(self.btn_emergency_override)
             self.btn_emergency_override.setChecked(self._emergency_override_enabled)
             del blocker
-            self.log_view.appendPlainText("最上位強制メッセージは作業中のため受付不可")
+            self._op_reject("最上位強制メッセージ", "作業中")
             return
 
         self._emergency_override_enabled = bool(enabled)
         self._apply_emergency_button_style()
+        detail = "ON 指示送信" if enabled else "OFF 指示送信"
         self.run_exclusive_task(
             "最上位強制メッセージ切替中",
             lambda progress: self._task_apply_emergency_override(progress, enabled),
+            detail=detail,
         )
 
     def _task_apply_emergency_override(self, progress, enabled: bool) -> None:
-        self.recompute_all()
+        self.recompute_all(auto_distribute=False)
         _, _, err_count = self.distribute_all("最上位強制メッセージ（20ch）" + (" ON" if enabled else " OFF"))
         if err_count:
             raise RuntimeError(f"配布エラー {err_count} 台")
 
     def distribute_all(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
-        timeout = self.settings.get("network_timeout_seconds", 4)
-        futures = {}
-        ok_count = 0
-        skip_count = 0
-        err_count = 0
-        for state in self.sign_states.values():
-            if not state.exists:
-                skip_count += 1
-                if log_label:
-                    self._log_sign_skip(state, "到達不可")
-                continue
-            if not state.enabled:
-                skip_count += 1
-                if log_label:
-                    self._log_sign_skip(state, "非アクティブ")
-                continue
-            futures[self._executor.submit(self.distribute_active, state)] = state
-
-        for future, state in futures.items():
-            try:
-                ok, message = future.result(timeout=timeout)
-                state.last_error = message if not ok else ""
-                state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if ok:
-                    ok_count += 1
+        if getattr(self, "_distribute_busy", False):
+            self._ui_call(lambda: self._op_reject("配布処理", "すでに配布中"))
+            return 0, 0, 0
+        self._distribute_busy = True
+        try:
+            timeout = self.settings.get("network_timeout_seconds", 4)
+            futures = {}
+            ok_count = 0
+            skip_count = 0
+            err_count = 0
+            for state in self.sign_states.values():
+                if not state.exists:
+                    skip_count += 1
                     if log_label:
-                        self._log_sign_ok(state, "配布完了")
-                else:
-                    if "共有" in message or "到達" in message:
-                        skip_count += 1
+                        self._log_sign_skip(state, "到達不可")
+                    continue
+                if not state.enabled:
+                    skip_count += 1
+                    if log_label:
+                        self._log_sign_skip(state, "非アクティブ")
+                    continue
+                futures[self._executor.submit(self.distribute_active, state)] = state
+
+            for future, state in futures.items():
+                try:
+                    ok, message = future.result(timeout=timeout)
+                    state.last_error = message if not ok else ""
+                    state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    if ok:
+                        ok_count += 1
                         if log_label:
-                            self._log_sign_skip(state, f"到達不可 ({message})")
+                            self._log_sign_ok(state, "配布完了")
                     else:
-                        err_count += 1
-                        if log_label:
-                            self._log_sign_error(state, message)
-            except Exception as exc:
-                state.last_error = str(exc)
-                err_count += 1
-                if log_label:
-                    self._log_sign_error(state, str(exc))
-            self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
-        return ok_count, skip_count, err_count
+                        if "共有" in message or "到達" in message:
+                            skip_count += 1
+                            if log_label:
+                                self._log_sign_skip(state, f"到達不可 ({message})")
+                        else:
+                            err_count += 1
+                            if log_label:
+                                self._log_sign_error(state, message)
+                except Exception as exc:
+                    state.last_error = str(exc)
+                    err_count += 1
+                    if log_label:
+                        self._log_sign_error(state, str(exc))
+                self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
+            return ok_count, skip_count, err_count
+        finally:
+            self._distribute_busy = False
 
     def distribute_active(self, state: SignState) -> Tuple[bool, str]:
         active = read_active(CONFIG_DIR / state.name)
@@ -2357,7 +2385,7 @@ QPushButton:disabled {
             return False, f"{exc.__class__.__name__}: {exc}"
 
     def start_sync(self) -> None:
-        self.run_exclusive_task("動画フォルダ更新中", self._task_sync_all)
+        self.run_exclusive_task("動画フォルダ更新中", self._task_sync_all, detail="同期 指示送信")
 
     def _task_sync_all(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
@@ -2434,7 +2462,7 @@ QPushButton:disabled {
         return True, ""
 
     def collect_logs(self) -> None:
-        self.run_exclusive_task("LOG回収中", self._task_collect_logs)
+        self.run_exclusive_task("LOG回収中", self._task_collect_logs, detail="ログ回収 指示送信")
 
     def _task_collect_logs(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
@@ -2500,10 +2528,12 @@ QPushButton:disabled {
         )
         if confirm != QtWidgets.QMessageBox.Yes:
             return
+        op_id = self._op_start("電源操作", f"{state.name} {cmd_label} 指示送信")
         ok, msg = self.is_share_reachable(state)
         if not ok:
             state.last_error = msg
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+            self._op_error(op_id, msg)
             return
         command_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{state.name}"
         payload = {
@@ -2518,9 +2548,11 @@ QPushButton:disabled {
         try:
             write_json_atomic_remote(Path(remote_path), payload)
             logging.info("Power command %s sent to %s", command, state.name)
+            self._op_done(op_id)
         except Exception as exc:
             state.last_error = str(exc)
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
+            self._op_error(op_id, str(exc))
 
     def _get_state_by_sign_name(self, sign_name: str) -> Optional[SignState]:
         return self.sign_states.get(sign_name)
@@ -2560,10 +2592,12 @@ QPushButton:disabled {
         before_label = "アクティブ" if state.enabled else "非アクティブ"
         after_label = "アクティブ" if active else "非アクティブ"
         logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
+        op_id = self._op_start("稼働設定", f"{state.name} {after_label} 指示送信")
 
         state.enabled = active
         self._save_inventory_state(state)
         self._update_column(pc_no - 1, state, update_preview=False)
+        self._op_done(op_id)
 
         column = self._column_widgets.get(sign_id.replace("Sign", "Signage"))
         if column:
