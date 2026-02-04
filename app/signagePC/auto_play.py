@@ -41,12 +41,42 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 
-def write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-    tmp.replace(path)
+def write_json_atomic(path: str | Path, payload: dict, *, retries: int = 10) -> bool:
+    path = str(path)
+    tmp = path + ".tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        return False
+
+    for i in range(max(1, int(retries))):
+        try:
+            os.replace(tmp, path)
+            return True
+        except (PermissionError, OSError):
+            time.sleep(min(0.5, 0.05 * (2 ** i)))
+
+    # フォールバック：直接上書き
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def write_heartbeat(payload: dict) -> None:
+    ok = write_json_atomic(HEARTBEAT_PATH, payload)
+    if not ok:
+        logger.warning("heartbeat write failed (will continue)")
 
 
 @dataclass
@@ -270,17 +300,14 @@ def run_player_with_watch(
         _blackout_proc = None
     last_folder_state = FolderState.from_folder(channel_folder)
     last_heartbeat = time.monotonic()
-    write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error=None, mpv_pid=proc.pid))
+    write_heartbeat(heartbeat.to_payload(error=None, mpv_pid=proc.pid))
 
     try:
         while True:
             # プロセスが落ちたら終了コードで戻す（上位で再起動）
             exit_code = proc.poll()
             if exit_code is not None:
-                write_json_atomic(
-                    HEARTBEAT_PATH,
-                    heartbeat.to_payload(error=f"mpv exited ({exit_code})", mpv_pid=None),
-                )
+                write_heartbeat(heartbeat.to_payload(error=f"mpv exited ({exit_code})", mpv_pid=None))
                 return int(exit_code)
 
             # 監視
@@ -288,7 +315,7 @@ def run_player_with_watch(
 
             now_monotonic = time.monotonic()
             if now_monotonic - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
-                write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error=None, mpv_pid=proc.pid))
+                write_heartbeat(heartbeat.to_payload(error=None, mpv_pid=proc.pid))
                 last_heartbeat = now_monotonic
 
             # active.json が変わったらチャンネル切替の可能性 → 再起動
@@ -339,7 +366,7 @@ def run_player_with_watch(
 def sleep_with_heartbeat(duration: float, heartbeat: HeartbeatState, *, error: str | None) -> None:
     end_at = time.monotonic() + duration
     while True:
-        write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error=error, mpv_pid=None))
+        write_heartbeat(heartbeat.to_payload(error=error, mpv_pid=None))
         remaining = end_at - time.monotonic()
         if remaining <= 0:
             break
@@ -374,7 +401,7 @@ def main() -> None:
     logger.info("Active path: %s", active_path)
 
     heartbeat = HeartbeatState()
-    write_json_atomic(HEARTBEAT_PATH, heartbeat.to_payload(error="starting", mpv_pid=None))
+    write_heartbeat(heartbeat.to_payload(error="starting", mpv_pid=None))
 
     while True:
         try:
@@ -413,10 +440,7 @@ def main() -> None:
                 exit_code,
                 RETRY_PLAYER_SECONDS,
             )
-            write_json_atomic(
-                HEARTBEAT_PATH,
-                heartbeat.to_payload(error=f"player stopped ({exit_code})", mpv_pid=None),
-            )
+            write_heartbeat(heartbeat.to_payload(error=f"player stopped ({exit_code})", mpv_pid=None))
             sleep_with_heartbeat(RETRY_PLAYER_SECONDS, heartbeat, error=f"player stopped ({exit_code})")
 
         except Exception as exc:
