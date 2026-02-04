@@ -1818,7 +1818,7 @@ QPushButton:disabled {
     def _log_op_start(self, title: str, detail: str = "") -> str:
         self._op_seq += 1
         op_id = f"op{self._op_seq:04d}"
-        now = QtCore.QDateTime.currentDateTime().toString("HH:mm:ss")
+        now = QtCore.QDateTime.currentDateTime().toString("yyyy/MM/dd HH:mm:ss")
         text = f"{now} {title} … {detail if detail else '実行中'}"
         self.log_view.appendPlainText(text)
         block_no = self.log_view.textCursor().blockNumber()
@@ -1865,7 +1865,8 @@ QPushButton:disabled {
         self._log_op_append(op_id, f" 【エラー】({reason})")
 
     def _log_reject(self, title: str, reason: str) -> None:
-        self.log_view.appendPlainText(f"{title} … 【受付不可】({reason})")
+        now = QtCore.QDateTime.currentDateTime().toString("yyyy/MM/dd HH:mm:ss")
+        self.log_view.appendPlainText(f"{now} {title} … 【受付不可】({reason})")
 
     def _ui_call(self, fn) -> None:
         QtCore.QTimer.singleShot(0, fn)
