@@ -1,5 +1,4 @@
 import faulthandler
-import io
 import json
 import importlib.util
 import inspect
@@ -1181,6 +1180,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._remote_status_log_state: Dict[str, str] = {}
         self._ui_busy: bool = False
         self._busy_label: str = ""
+        self._ui_dispatcher = QtCore.QObject(self)
         # ---- Debug trace (root cause investigation) ----
         self._dbg_enabled = bool(self.settings.get("debug_trace_enabled", True))
         self._dbg_hang_seconds = int(self.settings.get("debug_hang_seconds", 60))
@@ -1995,27 +1995,26 @@ QPushButton:disabled {
             return
         if not getattr(self, "_dbg_dump_enabled", False):
             return
-        if not hasattr(sys.stderr, "fileno"):
-            return
         try:
-            try:
-                sys.stderr.fileno()
-            except Exception:
-                return
-            buf = io.StringIO()
-            buf.write("\n========== THREAD DUMP BEGIN ==========\n")
-            buf.write(f"reason={reason}\n")
-            buf.write(f"ui_busy={getattr(self, '_ui_busy', None)} busy_label={getattr(self, '_busy_label', '')}\n")
-            buf.write(f"last_progress={getattr(self, '_dbg_last_progress', {})}\n")
-            buf.write(f"distribute_busy={getattr(self, '_distribute_busy', None)}\n")
-            buf.write(f"remote_pending_keys={list(getattr(self, '_remote_status_pending', {}).keys())}\n")
-            buf.write("threads:\n")
-            for th in threading.enumerate():
-                buf.write(f"  - name={th.name} ident={th.ident} daemon={th.daemon} alive={th.is_alive()}\n")
-            buf.write("\n-- stacktrace (all threads) --\n")
-            faulthandler.dump_traceback(file=buf, all_threads=True)
-            buf.write("\n========== THREAD DUMP END ==========\n")
-            logging.error("%s", buf.getvalue())
+            dump_path = LOG_DIR / f"thread_dump_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            with dump_path.open("w", encoding="utf-8") as dump_file:
+                dump_file.write("\n========== THREAD DUMP BEGIN ==========\n")
+                dump_file.write(f"reason={reason}\n")
+                dump_file.write(
+                    f"ui_busy={getattr(self, '_ui_busy', None)} busy_label={getattr(self, '_busy_label', '')}\n"
+                )
+                dump_file.write(f"last_progress={getattr(self, '_dbg_last_progress', {})}\n")
+                dump_file.write(f"distribute_busy={getattr(self, '_distribute_busy', None)}\n")
+                dump_file.write(f"remote_pending_keys={list(getattr(self, '_remote_status_pending', {}).keys())}\n")
+                dump_file.write("threads:\n")
+                for th in threading.enumerate():
+                    dump_file.write(
+                        f"  - name={th.name} ident={th.ident} daemon={th.daemon} alive={th.is_alive()}\n"
+                    )
+                dump_file.write("\n-- stacktrace (all threads) --\n")
+                faulthandler.dump_traceback(file=dump_file, all_threads=True)
+                dump_file.write("\n========== THREAD DUMP END ==========\n")
+            logging.error("[DBG] thread dump saved: %s", dump_path)
         except Exception as exc:
             self._dbg_dump_failures += 1
             try:
@@ -2053,6 +2052,25 @@ QPushButton:disabled {
             pass
 
     def _ui_call(self, fn, label: str = "") -> None:
+        def enqueue(callback):
+            try:
+                # MainThread(=selfの所属スレッド)で確実に実行させる
+                QtCore.QTimer.singleShot(0, self, callback)
+                return
+            except TypeError:
+                pass
+            try:
+                # 環境によりオーバーロード解決できない場合のフォールバック
+                QtCore.QMetaObject.invokeMethod(self, callback, QtCore.Qt.QueuedConnection)
+                return
+            except TypeError:
+                pass
+            dispatcher = getattr(self, "_ui_dispatcher", None)
+            if dispatcher is None:
+                dispatcher = QtCore.QObject(self)
+                self._ui_dispatcher = dispatcher
+            QtCore.QTimer.singleShot(0, dispatcher, callback)
+
         if not getattr(self, "_dbg_enabled", False):
             def wrapped_no_dbg():
                 try:
@@ -2071,7 +2089,7 @@ QPushButton:disabled {
                     except Exception:
                         pass
 
-            QtCore.QTimer.singleShot(0, wrapped_no_dbg)
+            enqueue(wrapped_no_dbg)
             return
 
         self._dbg_ui_post_seq += 1
@@ -2113,7 +2131,7 @@ QPushButton:disabled {
                 except Exception:
                     pass
 
-        QtCore.QTimer.singleShot(0, wrapped)
+        enqueue(wrapped)
 
     def run_exclusive_task(
         self,
