@@ -119,11 +119,28 @@ def _sleep_backoff(i: int, cap: float = 0.5) -> None:
     time_module.sleep(min(cap, 0.05 * (2 ** i)))
 
 
+def run_hidden(*args, **kwargs) -> subprocess.CompletedProcess:
+    if "stdout" not in kwargs:
+        kwargs["stdout"] = subprocess.PIPE
+    if "stderr" not in kwargs:
+        kwargs["stderr"] = subprocess.PIPE
+    if os.name == "nt":
+        creationflags = kwargs.pop("creationflags", 0)
+        kwargs["creationflags"] = creationflags | subprocess.CREATE_NO_WINDOW
+        startupinfo = kwargs.get("startupinfo")
+        if startupinfo is None:
+            startupinfo = subprocess.STARTUPINFO()
+            kwargs["startupinfo"] = startupinfo
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+    return subprocess.run(*args, **kwargs)
+
+
 def is_reachable(ip: str) -> bool:
     if not ip:
         return False
     try:
-        result = subprocess.run(
+        result = run_hidden(
             ["ping", "-n", "1", "-w", "300", ip],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
