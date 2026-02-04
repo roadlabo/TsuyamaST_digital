@@ -10,5 +10,6 @@
   "telemetry_batch_size": 5,
   "telemetry_min_interval_ok": 10.0,
   "telemetry_min_interval_ng": 30.0,
-  "telemetry_max_interval_ng": 120.0
+  "telemetry_max_interval_ng": 120.0,
+  "debug_hang_seconds": 10
 }
