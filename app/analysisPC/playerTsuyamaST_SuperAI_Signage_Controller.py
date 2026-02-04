@@ -1974,6 +1974,9 @@ QPushButton:disabled {
         op_id = self._log_op_start(title)
 
         finished = threading.Event()
+        cancel_event = threading.Event()
+        timeout_timer = QtCore.QTimer(self)
+        timeout_timer.setSingleShot(True)
 
         def progress_token(token: str) -> None:
             if token:
@@ -1989,9 +1992,21 @@ QPushButton:disabled {
                 return True
             return len(params) >= 2
 
+        def accepts_cancel_event() -> bool:
+            try:
+                sig = inspect.signature(worker_fn)
+            except (TypeError, ValueError):
+                return False
+            params = list(sig.parameters.values())
+            if any(p.kind == p.VAR_POSITIONAL for p in params):
+                return True
+            return len(params) >= 3
+
         def finish_ok() -> None:
             if finished.is_set():
                 return
+            if timeout_timer.isActive():
+                timeout_timer.stop()
             finished.set()
             self._log_op_done(op_id)
             self._ui_busy = False
@@ -2001,26 +2016,36 @@ QPushButton:disabled {
         def finish_err(reason: str) -> None:
             if finished.is_set():
                 return
+            if timeout_timer.isActive():
+                timeout_timer.stop()
             finished.set()
             self._log_op_error(op_id, reason)
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
 
+        def handle_timeout() -> None:
+            cancel_event.set()
+            finish_err("タイムアウト（UI復旧）")
+
+        timeout_timer.timeout.connect(handle_timeout)
+        if max_seconds and max_seconds > 0:
+            timeout_timer.start(max_seconds * 1000)
+
         def runner() -> None:
             try:
+                args = [progress_token]
                 if accepts_op_id():
-                    worker_fn(progress_token, op_id)
-                else:
-                    worker_fn(progress_token)
+                    args.append(op_id)
+                if accepts_cancel_event():
+                    args.append(cancel_event)
+                worker_fn(*args)
             except Exception as exc:
                 self._ui_call(lambda: finish_err(str(exc)))
-                return
-            finally:
+            else:
                 self._ui_call(finish_ok)
 
         threading.Thread(target=runner, daemon=True).start()
-        _ = max_seconds
 
     def _shorten_log_line(self, line: str) -> str:
         trimmed = line.rstrip("\r")
