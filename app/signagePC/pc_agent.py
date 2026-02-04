@@ -44,12 +44,49 @@ def log_line(log_path: str, msg: str) -> None:
         pass
 
 
-def write_json_atomic(path: str | Path, payload: dict) -> None:
+def write_json_atomic(path: str | Path, payload: dict, *, retries: int = 10) -> None:
+    """
+    Windowsでは読み取り側が一瞬ファイルを掴んだだけでも os.replace が WinError 5 で失敗することがある。
+    そのため短いリトライ + 最終フォールバック（直接上書き）で「止まらない」を優先する。
+    """
     path = str(path)
     tmp = path + ".tmp"
+
+    # tmp を書く（ここは通常問題になりにくい）
+    ensure_dir(os.path.dirname(path))
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+
+    last_err: Exception | None = None
+
+    # 置換をリトライ
+    for i in range(max(1, int(retries))):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError as e:
+            last_err = e
+            # すぐリトライ（指数バックオフ）
+            time.sleep(min(0.5, 0.05 * (2 ** i)))
+        except OSError as e:
+            # WinError 5 を含む可能性があるので同様に扱う（環境差対策）
+            last_err = e
+            time.sleep(min(0.5, 0.05 * (2 ** i)))
+
+    # 最終フォールバック：直接上書き（原子性は落ちるが、監視JSONは「止まらない」が最優先）
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        # tmp が残っていたら消す（消せなくても致命ではない）
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return
+    except Exception as e:
+        # ここで初めて呼び元に失敗を知らせる
+        raise RuntimeError(f"write_json_atomic failed for {path}: {last_err or e}") from e
 
 
 def read_json_safe(path: Path) -> Optional[dict]:
@@ -62,16 +99,29 @@ def read_json_safe(path: Path) -> Optional[dict]:
         return None
 
 
-def read_json_with_error(path: Path) -> tuple[Optional[dict], Optional[str]]:
+def read_json_with_error(path: Path, *, retries: int = 3) -> tuple[Optional[dict], Optional[str]]:
     if not path.is_file():
         return None, "missing"
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f), None
-    except json.JSONDecodeError:
-        return None, "parse_error"
-    except Exception:
-        return None, "parse_error"
+
+    last_err: Exception | None = None
+    for i in range(max(1, int(retries))):
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f), None
+        except (PermissionError, OSError) as e:
+            last_err = e
+            time.sleep(min(0.2, 0.05 * (2 ** i)))
+            continue
+        except json.JSONDecodeError as e:
+            last_err = e
+            time.sleep(min(0.2, 0.05 * (2 ** i)))
+            continue
+        except Exception as e:
+            last_err = e
+            break
+
+    # ここに来たら読めなかった
+    return None, "parse_error"
 
 
 def parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
