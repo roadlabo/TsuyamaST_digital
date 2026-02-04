@@ -213,6 +213,10 @@ SYNC_EXTS = {".mp4", ".mov", ".jpg", ".jpeg", ".png", ".webp"}
 SYNC_SAMPLE_SUFFIX = "_sample.mp4"
 
 
+def _is_sample_video(name: str) -> bool:
+    return name.lower().endswith(SYNC_SAMPLE_SUFFIX)
+
+
 def sync_mirror_dir(
     master_dir: Path,
     remote_dir: Path,
@@ -223,56 +227,61 @@ def sync_mirror_dir(
     result = {"copied": 0, "updated": 0, "deleted": 0, "skipped": 0, "errors": 0}
     ensure_dir(remote_dir)
 
-    master_files: Dict[str, Path] = {}
-    for entry in master_dir.rglob("*"):
-        if entry.is_file() and entry.suffix.lower() in SYNC_EXTS:
-            if entry.name.lower().endswith(SYNC_SAMPLE_SUFFIX):
-                continue
-            rel = entry.relative_to(master_dir).as_posix()
-            master_files[rel] = entry
+    master_files: Dict[str, int] = {}
+    for entry in master_dir.iterdir():
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in SYNC_EXTS:
+            continue
+        if _is_sample_video(entry.name):
+            continue
+        master_files[entry.name] = entry.stat().st_size
 
-    remote_files: Dict[str, Path] = {}
-    for entry in remote_dir.rglob("*"):
-        if entry.is_file() and entry.suffix.lower() in SYNC_EXTS:
-            if entry.name.lower().endswith(SYNC_SAMPLE_SUFFIX):
-                continue
-            rel = entry.relative_to(remote_dir).as_posix()
-            remote_files[rel] = entry
+    remote_files: Dict[str, int] = {}
+    for entry in remote_dir.iterdir():
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in SYNC_EXTS:
+            continue
+        if _is_sample_video(entry.name):
+            continue
+        remote_files[entry.name] = entry.stat().st_size
 
-    for rel, rp in sorted(remote_files.items()):
-        if rel not in master_files:
-            try:
-                if logger:
-                    logger(f"[DEL] {rel}")
-                if not dry_run:
-                    rp.unlink()
-                result["deleted"] += 1
-            except Exception as exc:
-                if logger:
-                    logger(f"[ERR] delete {rel}: {exc}")
-                result["errors"] += 1
+    to_copy: List[str] = []
+    for name, msize in master_files.items():
+        tsize = remote_files.get(name)
+        if tsize is None or tsize != msize:
+            to_copy.append(name)
 
-    for rel, mp in sorted(master_files.items()):
-        rp = remote_dir / Path(rel)
+    to_delete = [name for name in remote_files.keys() if name not in master_files]
+
+    for name in sorted(to_copy):
+        src = master_dir / name
+        dst = remote_dir / name
         try:
-            if rp.exists():
-                if is_same_file(mp, rp, compare_ctime=compare_ctime):
-                    result["skipped"] += 1
-                else:
-                    if logger:
-                        logger(f"[UPD] {rel}")
-                    if not dry_run:
-                        copy_file_atomic(mp, rp)
-                    result["updated"] += 1
+            if logger:
+                logger(f"[COPY] {name}")
+            if not dry_run:
+                copy_file_atomic(src, dst)
+            if name in remote_files:
+                result["updated"] += 1
             else:
-                if logger:
-                    logger(f"[ADD] {rel}")
-                if not dry_run:
-                    copy_file_atomic(mp, rp)
                 result["copied"] += 1
         except Exception as exc:
             if logger:
-                logger(f"[ERR] copy {rel}: {repr(exc)}")
+                logger(f"[ERR] copy {name}: {repr(exc)}")
+            result["errors"] += 1
+
+    for name in sorted(to_delete):
+        try:
+            if logger:
+                logger(f"[DEL] {name}")
+            if not dry_run:
+                (remote_dir / name).unlink()
+            result["deleted"] += 1
+        except Exception as exc:
+            if logger:
+                logger(f"[ERR] delete {name}: {exc}")
             result["errors"] += 1
 
     return result
@@ -1605,22 +1614,14 @@ QPushButton:disabled {
                 playback_label.setStyleSheet("border:1px solid #999;")
 
     def _setup_log_stream(self) -> None:
-        orig_err = sys.__stderr__
-
-        self._log_stream = EmittingStream(fallback=orig_err)
-        self._log_stream.text_written.connect(self.append_log_text)
-        sys.stdout = self._log_stream
-        sys.stderr = self._log_stream
-        handler = LogHandler(self._log_stream)
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        root = logging.getLogger()
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
-        self._log_handler = handler
-
         def excepthook(exc_type, exc_value, exc_traceback):
             formatted = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-            self._log_stream.write(formatted)
+            logging.error("%s", formatted)
+            try:
+                sys.__stderr__.write(formatted)
+                sys.__stderr__.flush()
+            except Exception:
+                pass
 
         sys.excepthook = excepthook
 
@@ -1802,40 +1803,35 @@ QPushButton:disabled {
 
         self.log_view.setEnabled(True)
 
-    def _op_start(self, title: str, detail: str = "") -> str:
+    def _log_op_start(self, title: str, detail: str = "") -> str:
         self._op_seq += 1
         op_id = f"op{self._op_seq:04d}"
-        line = f"{title}"
-        if detail:
-            line += f" … {detail}"
-        self.log_view.appendPlainText(line)
-        cursor = self.log_view.textCursor()
-        block_no = cursor.blockNumber()
+        text = f"{title} … {detail if detail else '実行中'}"
+        self.log_view.appendPlainText(text)
+        block_no = self.log_view.textCursor().blockNumber()
         self._op_lines[op_id] = block_no
         return op_id
 
-    def _op_append(self, op_id: str, suffix: str) -> None:
-        if op_id not in self._op_lines:
-            self.log_view.appendPlainText(suffix)
+    def _log_op_append(self, op_id: str, suffix: str) -> None:
+        block_no = self._op_lines.get(op_id)
+        if block_no is None:
             return
-        block_no = self._op_lines[op_id]
         doc = self.log_view.document()
         block = doc.findBlockByNumber(block_no)
         if not block.isValid():
-            self.log_view.appendPlainText(suffix)
             return
         cursor = QtGui.QTextCursor(block)
         cursor.movePosition(QtGui.QTextCursor.EndOfBlock)
         cursor.insertText(suffix)
         self.log_view.moveCursor(QtGui.QTextCursor.End)
 
-    def _op_done(self, op_id: str) -> None:
-        self._op_append(op_id, " 【完了】")
+    def _log_op_done(self, op_id: str) -> None:
+        self._log_op_append(op_id, " 【完了】")
 
-    def _op_error(self, op_id: str, reason: str) -> None:
-        self._op_append(op_id, f" 【エラー】({reason})")
+    def _log_op_error(self, op_id: str, reason: str) -> None:
+        self._log_op_append(op_id, f" 【エラー】({reason})")
 
-    def _op_reject(self, title: str, reason: str) -> None:
+    def _log_reject(self, title: str, reason: str) -> None:
         self.log_view.appendPlainText(f"{title} … 【受付不可】({reason})")
 
     def _ui_call(self, fn) -> None:
@@ -1849,14 +1845,14 @@ QPushButton:disabled {
         detail: str = "実行中",
     ) -> None:
         if self._ui_busy:
-            self._op_reject(title, "作業中")
+            self._log_reject(title, "作業中")
             return
 
         self._ui_busy = True
         self._busy_label = title
         self._set_interaction_enabled(False)
 
-        op_id = self._op_start(title, detail)
+        op_id = self._log_op_start(title)
 
         finished = threading.Event()
 
@@ -1868,7 +1864,7 @@ QPushButton:disabled {
             if finished.is_set():
                 return
             finished.set()
-            self._op_done(op_id)
+            self._log_op_done(op_id)
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
@@ -1877,7 +1873,7 @@ QPushButton:disabled {
             if finished.is_set():
                 return
             finished.set()
-            self._op_error(op_id, reason)
+            self._log_op_error(op_id, reason)
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
@@ -1896,7 +1892,7 @@ QPushButton:disabled {
         def force_release() -> None:
             if finished.is_set():
                 return
-            self._op_error(op_id, "タイムアウト（UI復旧）")
+            self._log_op_error(op_id, "タイムアウト（UI復旧）")
             self._ui_busy = False
             self._busy_label = ""
             self._set_interaction_enabled(True)
@@ -2087,16 +2083,16 @@ QPushButton:disabled {
     def toggle_preview(self) -> None:
         command = "プレビューON/OFF"
         detail = "ON" if not self._preview_enabled else "OFF"
-        op_id = self._op_start(command, f"{detail} 指示送信")
+        op_id = self._log_op_start(command, f"{detail} 指示送信")
         self._log_command_accept(command)
         self._log_command_run(command)
         self._preview_enabled = not self._preview_enabled
         ok_count, skip_count, err_count = self.refresh_preview_info(command)
         self._log_command_done(command, ok_count, skip_count, err_count)
         if err_count:
-            self._op_error(op_id, f"ERR={err_count}")
+            self._log_op_error(op_id, f"ERR={err_count}")
         else:
-            self._op_done(op_id)
+            self._log_op_done(op_id)
 
     def refresh_preview_info(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
         ok_count = 0
@@ -2291,7 +2287,7 @@ QPushButton:disabled {
             blocker = QtCore.QSignalBlocker(self.btn_emergency_override)
             self.btn_emergency_override.setChecked(self._emergency_override_enabled)
             del blocker
-            self._op_reject("最上位強制メッセージ", "作業中")
+            self._log_reject("最上位強制メッセージ", "作業中")
             return
 
         self._emergency_override_enabled = bool(enabled)
@@ -2311,7 +2307,7 @@ QPushButton:disabled {
 
     def distribute_all(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
         if getattr(self, "_distribute_busy", False):
-            self._ui_call(lambda: self._op_reject("配布処理", "すでに配布中"))
+            self._ui_call(lambda: self._log_reject("配布処理", "すでに配布中"))
             return 0, 0, 0
         self._distribute_busy = True
         try:
@@ -2385,7 +2381,7 @@ QPushButton:disabled {
             return False, f"{exc.__class__.__name__}: {exc}"
 
     def start_sync(self) -> None:
-        self.run_exclusive_task("動画フォルダ更新中", self._task_sync_all, detail="同期 指示送信")
+        self.run_exclusive_task("動画同期", self._task_sync_all, detail="同期 指示送信")
 
     def _task_sync_all(self, progress) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
@@ -2416,7 +2412,6 @@ QPushButton:disabled {
         ok, msg = self.is_share_reachable(state)
         if not ok:
             return False, msg
-        compare_ctime = self.settings.get("compare_ctime", True)
         total_copied = 0
         total_updated = 0
         total_deleted = 0
@@ -2441,7 +2436,6 @@ QPushButton:disabled {
                 local_dir,
                 remote_dir,
                 logger=log_line,
-                compare_ctime=compare_ctime,
             )
             total_copied += result["copied"]
             total_updated += result["updated"]
@@ -2458,7 +2452,7 @@ QPushButton:disabled {
             total_errors,
         )
         if total_errors:
-            return False, "sync errors"
+            return False, f"コピー/削除失敗({total_errors})"
         return True, ""
 
     def collect_logs(self) -> None:
@@ -2528,12 +2522,12 @@ QPushButton:disabled {
         )
         if confirm != QtWidgets.QMessageBox.Yes:
             return
-        op_id = self._op_start("電源操作", f"{state.name} {cmd_label} 指示送信")
+        op_id = self._log_op_start("電源操作", f"{state.name} {cmd_label} 指示送信")
         ok, msg = self.is_share_reachable(state)
         if not ok:
             state.last_error = msg
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-            self._op_error(op_id, msg)
+            self._log_op_error(op_id, msg)
             return
         command_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{state.name}"
         payload = {
@@ -2548,11 +2542,11 @@ QPushButton:disabled {
         try:
             write_json_atomic_remote(Path(remote_path), payload)
             logging.info("Power command %s sent to %s", command, state.name)
-            self._op_done(op_id)
+            self._log_op_done(op_id)
         except Exception as exc:
             state.last_error = str(exc)
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
-            self._op_error(op_id, str(exc))
+            self._log_op_error(op_id, str(exc))
 
     def _get_state_by_sign_name(self, sign_name: str) -> Optional[SignState]:
         return self.sign_states.get(sign_name)
@@ -2592,12 +2586,12 @@ QPushButton:disabled {
         before_label = "アクティブ" if state.enabled else "非アクティブ"
         after_label = "アクティブ" if active else "非アクティブ"
         logging.info("[CMD] %s %s->%s", state.name, before_label, after_label)
-        op_id = self._op_start("稼働設定", f"{state.name} {after_label} 指示送信")
+        op_id = self._log_op_start("稼働設定", f"{state.name} {after_label} 指示送信")
 
         state.enabled = active
         self._save_inventory_state(state)
         self._update_column(pc_no - 1, state, update_preview=False)
-        self._op_done(op_id)
+        self._log_op_done(op_id)
 
         column = self._column_widgets.get(sign_id.replace("Sign", "Signage"))
         if column:
