@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import time
+import sys
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,10 @@ from typing import List, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = ROOT / "app"
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from common.json_io import write_json_safe
 CONFIG_DIR = APP_DIR / "config"
 CONTENT_DIR = ROOT / "content"
 LOGS_DIR = ROOT / "logs"
@@ -41,40 +46,17 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 
-def write_json_atomic(path: str | Path, payload: dict, *, retries: int = 10) -> bool:
-    path = str(path)
-    tmp = path + ".tmp"
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-    except Exception:
-        return False
-
-    for i in range(max(1, int(retries))):
-        try:
-            os.replace(tmp, path)
-            return True
-        except (PermissionError, OSError):
-            time.sleep(min(0.5, 0.05 * (2 ** i)))
-
-    # フォールバック：直接上書き
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
+def write_json_status(path: str | Path, payload: dict) -> bool:
+    ok, retry_count, err = write_json_safe(path, payload, indent=2, ensure_ascii=False)
+    if ok and retry_count > 0:
+        logger.warning("JSON write retry succeeded (%s retries): %s", retry_count, path)
+    if not ok:
+        logger.error("JSON write failed after retries: %s (%s)", path, err)
+    return ok
 
 
 def write_heartbeat(payload: dict) -> None:
-    ok = write_json_atomic(HEARTBEAT_PATH, payload)
+    ok = write_json_status(HEARTBEAT_PATH, payload)
     if not ok:
         logger.warning("heartbeat write failed (will continue)")
 
