@@ -1,5 +1,6 @@
 import json
 import importlib.util
+import inspect
 import logging
 import os
 import shutil
@@ -252,6 +253,10 @@ def sync_mirror_dir(
         tsize = remote_files.get(name)
         if tsize is None or tsize != msize:
             to_copy.append(name)
+        else:
+            if logger:
+                logger(f"[SKIP] {name}")
+            result["skipped"] += 1
 
     to_delete = [name for name in remote_files.keys() if name not in master_files]
 
@@ -1131,7 +1136,9 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._busy_label: str = ""
         self._op_seq = 0
         self._op_lines: Dict[str, int] = {}
+        self._op_results: Dict[str, dict] = {}
         self._distribute_busy = False
+        self._pc_status_skip_until: Dict[str, float] = {}
         # ---- Telemetry軽量化用 ----
         self._telemetry_rr_index = 0  # round-robin index
         self._telemetry_batch_size = int(self.settings.get("telemetry_batch_size", 5))  # 1回に更新する台数
@@ -1683,6 +1690,11 @@ QPushButton:disabled {
         timeout_sec = 2.0
 
         for state in picked:
+            skip_until = self._pc_status_skip_until.get(state.name, 0)
+            if now < skip_until:
+                if not self._fast_smb_reachable(state.ip, timeout_sec=0.2):
+                    self._apply_remote_status(state, {"ok": False, "error": "smb_unreachable"})
+                continue
             # backoff判定
             meta = self._telemetry_backoff.get(state.name)
             if meta and now < meta.get("next_allowed", 0):
@@ -1806,11 +1818,30 @@ QPushButton:disabled {
     def _log_op_start(self, title: str, detail: str = "") -> str:
         self._op_seq += 1
         op_id = f"op{self._op_seq:04d}"
-        text = f"{title} … {detail if detail else '実行中'}"
+        now = QtCore.QDateTime.currentDateTime().toString("HH:mm:ss")
+        text = f"{now} {title} … {detail if detail else '実行中'}"
         self.log_view.appendPlainText(text)
         block_no = self.log_view.textCursor().blockNumber()
         self._op_lines[op_id] = block_no
         return op_id
+
+    def _op_mark_ok(self, op_id: str, sign: str) -> None:
+        r = self._op_results.setdefault(op_id, {"ok": set(), "ng": {}})
+        r["ok"].add(sign)
+        r["ng"].pop(sign, None)
+
+    def _op_mark_ng(self, op_id: str, sign: str, reason: str) -> None:
+        r = self._op_results.setdefault(op_id, {"ok": set(), "ng": {}})
+        r["ng"][sign] = reason
+        r["ok"].discard(sign)
+
+    def _op_format_result(self, op_id: str) -> str:
+        r = self._op_results.get(op_id, {"ok": set(), "ng": {}})
+        ok = sorted(r["ok"])
+        ng = sorted(r["ng"].items(), key=lambda x: x[0])
+        ok_s = ",".join(ok) if ok else "-"
+        ng_s = ",".join([f"{s}({reason})" for s, reason in ng]) if ng else "-"
+        return f" OK:{ok_s} 失敗:{ng_s}"
 
     def _log_op_append(self, op_id: str, suffix: str) -> None:
         block_no = self._op_lines.get(op_id)
@@ -1826,9 +1857,11 @@ QPushButton:disabled {
         self.log_view.moveCursor(QtGui.QTextCursor.End)
 
     def _log_op_done(self, op_id: str) -> None:
+        self._log_op_append(op_id, self._op_format_result(op_id))
         self._log_op_append(op_id, " 【完了】")
 
     def _log_op_error(self, op_id: str, reason: str) -> None:
+        self._log_op_append(op_id, self._op_format_result(op_id))
         self._log_op_append(op_id, f" 【エラー】({reason})")
 
     def _log_reject(self, title: str, reason: str) -> None:
@@ -1860,6 +1893,16 @@ QPushButton:disabled {
             if token:
                 logging.info("[PROG] %s %s", title, token)
 
+        def accepts_op_id() -> bool:
+            try:
+                sig = inspect.signature(worker_fn)
+            except (TypeError, ValueError):
+                return False
+            params = list(sig.parameters.values())
+            if any(p.kind == p.VAR_POSITIONAL for p in params):
+                return True
+            return len(params) >= 2
+
         def finish_ok() -> None:
             if finished.is_set():
                 return
@@ -1880,7 +1923,10 @@ QPushButton:disabled {
 
         def runner() -> None:
             try:
-                worker_fn(progress_token)
+                if accepts_op_id():
+                    worker_fn(progress_token, op_id)
+                else:
+                    worker_fn(progress_token)
             except Exception as exc:
                 self._ui_call(lambda: finish_err(str(exc)))
                 return
@@ -2188,7 +2234,7 @@ QPushButton:disabled {
             detail="通信確認 指示送信",
         )
 
-    def _task_check_connectivity(self, progress) -> None:
+    def _task_check_connectivity(self, progress, op_id: Optional[str] = None) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
         for state in self.sign_states.values():
@@ -2205,6 +2251,14 @@ QPushButton:disabled {
             state.online = bool(online)
             state.last_error = error or ""
             state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if op_id:
+                sign = state.name.replace("Sign", "")
+                if online:
+                    self._ui_call(lambda oid=op_id, s=sign: self._op_mark_ok(oid, s))
+                else:
+                    self._ui_call(
+                        lambda oid=op_id, s=sign, r=error or "到達不可": self._op_mark_ng(oid, s, r)
+                    )
             self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
 
     def poll_connectivity_silent(self) -> None:
@@ -2383,7 +2437,7 @@ QPushButton:disabled {
     def start_sync(self) -> None:
         self.run_exclusive_task("動画同期", self._task_sync_all, detail="同期 指示送信")
 
-    def _task_sync_all(self, progress) -> None:
+    def _task_sync_all(self, progress, op_id: Optional[str] = None) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
         max_workers = self.settings.get("sync_workers", 4)
         futures = {}
@@ -2401,6 +2455,14 @@ QPushButton:disabled {
                     ok, message = False, str(exc)
                 state.last_error = message if not ok else ""
                 self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
+                if op_id:
+                    sign = state.name.replace("Sign", "")
+                    if ok:
+                        self._ui_call(lambda oid=op_id, s=sign: self._op_mark_ok(oid, s))
+                    else:
+                        self._ui_call(
+                            lambda oid=op_id, s=sign, r=message or "同期失敗": self._op_mark_ng(oid, s, r)
+                        )
                 if not ok:
                     errors.append(f"{state.name}:{message}")
 
@@ -2522,7 +2584,7 @@ QPushButton:disabled {
         )
         if confirm != QtWidgets.QMessageBox.Yes:
             return
-        op_id = self._log_op_start("電源操作", f"{state.name} {cmd_label} 指示送信")
+        op_id = self._log_op_start("電源操作", f"{state.name} {cmd_label} 指示送信（確認中）")
         ok, msg = self.is_share_reachable(state)
         if not ok:
             state.last_error = msg
@@ -2542,6 +2604,18 @@ QPushButton:disabled {
         try:
             write_json_atomic_remote(Path(remote_path), payload)
             logging.info("Power command %s sent to %s", command, state.name)
+            sign_no = state.name.replace("Sign", "")
+            self._op_mark_ok(op_id, sign_no)
+            self._pc_status_skip_until[state.name] = time_module.monotonic() + 60
+
+            def monitor_offline() -> None:
+                deadline = time_module.monotonic() + 120
+                while time_module.monotonic() < deadline:
+                    if not self._tcp_probe(state.ip, 445, timeout=1.0):
+                        self._ui_call(lambda oid=op_id: self._log_op_append(oid, " 実行確認OK"))
+                        break
+                    time_module.sleep(3)
+            threading.Thread(target=monitor_offline, daemon=True).start()
             self._log_op_done(op_id)
         except Exception as exc:
             state.last_error = str(exc)
