@@ -6,7 +6,7 @@ rem =========================================================
 rem TsuyamaSignage pc_agent watchdog (完成版)
 rem 目的:
 rem  - pc_agent.py が落ちたら自動で再起動
-rem  - 指定時間窓(WINDOW_SEC)内に MAX_CRASH 回落ちたら OS再起動
+rem  - 指定時間窓(WINDOW_SEC)内に MAX_CRASH 回落ちたらOS再起動
 rem  - STATE肥大化防止（古い記録は自動で捨てる）
 rem =========================================================
 
