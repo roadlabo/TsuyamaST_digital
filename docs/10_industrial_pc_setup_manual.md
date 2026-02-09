@@ -345,6 +345,93 @@ HP製PCに標準搭載されている HP Wolf Security は、
 
 ---
 
+## pc_agent 自己回復（watchdog）設定
+
+無人運用のサイネージPCでは、常駐アプリ pc_agent.py が何らかのエラーで停止してしまった場合でも、自動で復旧させる仕組みを導入する。  
+これにより、短時間の障害や突発的な例外発生後でも継続稼働を確保できる。
+
+### 1. 配置
+watchdogバッチファイル（自己回復バッチ）は次のパスへ保存する。
+
+`C:\_TsuyamaSignage\runtime\watchdog\pc_agent_watchdog.bat`
+
+このバッチは、pc_agent.py を監視し、落ちた場合は再起動、かつ一定時間内に複数回落ちる場合は OS を再起動する機能を持つ。
+
+### 2. 動作に必要な前提
+以下の構成があることを確認する。
+
+```
+C:\_TsuyamaSignage\
+├ app\
+│   └ pc_agent.py
+├ runtime\
+│   └ python\ (python.exe を含む)
+└ logs\   (ログ出力先)
+```
+
+また、以下が存在すること。
+
+`C:\_TsuyamaSignage\runtime\python\python.exe`
+
+`C:\_TsuyamaSignage\app\pc_agent.py`
+
+logs フォルダが存在しない場合でもバッチが自動で作成する。
+
+### 3. 手動テスト（推奨）
+管理者権限でコマンドプロンプトを開き、次を実行して確認する。
+
+`C:\_TsuyamaSignage\runtime\watchdog\pc_agent_watchdog.bat`
+
+実行後、次のログが増えていれば正常。
+
+`C:\_TsuyamaSignage\logs\pc_agent_watchdog.log`
+
+### 4. タスクスケジューラ設定（Windows）
+watchdog を常駐させるため、タスクスケジューラに設定する。
+
+#### 推奨設定
+**タスクの作成**
+- 名前：Tsuyama pc_agent watchdog
+- 「ユーザーがログオンしているかどうかにかかわらず実行する」：✔
+- 「最上位の特権で実行する」：✔
+
+**トリガー**
+- 「Windows 起動時」：✔
+
+**操作**
+- プログラム/スクリプト：`C:\_TsuyamaSignage\runtime\watchdog\pc_agent_watchdog.bat`
+- 開始（オプション）：`C:\_TsuyamaSignage\runtime\watchdog`
+
+※ 必ず「開始（オプション）」を指定すること。  
+相対パスのままだとログ出力やファイル書き込みに失敗する原因になる。
+
+**条件・設定**
+- 「タスクを要求時に実行する」：✔
+- 「新しいインスタンスを開始しない」：✔
+- タスク制限時間：なし（watchdog は常駐タスクのため）
+
+### 5. watchdog の動作仕様
+pc_agent.py が停止した場合：  
+数秒後に自動で再起動する。
+
+同一時間枠内（例：10 分）に一定回数以上（例：3 回）連続で落ちた場合：  
+OS 再起動を行う（再起動後に回復が期待できないケースに対応）。
+
+ログ出力先：
+- `C:\_TsuyamaSignage\logs\pc_agent_watchdog.log`
+- `C:\_TsuyamaSignage\logs\pc_agent_crash_state.csv`
+
+ログローテーションや肥大化対策がバッチ内で実装されている。
+
+### まとめ
+この設定を導入することで、次の運用課題が解決する。
+
+- アプリの予期しない停止 → 自動復旧
+- 短時間での異常停止 → OS 再起動
+- 現地無人サイネージの安定稼働
+
+---
+
 ## 10. 時計同期（閉鎖ネットワーク）
 このシステムはインターネットに接続しない閉鎖ネットワークで運用する。  
 そのため、**管理用PC（AI解析用事務所PC）を時刻の基準（親）**とし、サイネージPCの時刻を可能な範囲で一致させる。  
