@@ -12,7 +12,7 @@ rem =========================================================
 
 set "BASE=C:\_TsuyamaSignage"
 set "PY=%BASE%\runtime\python\python.exe"
-set "AGENT=%BASE%\app\pc_agent.py"
+set "AGENT=%BASE%\app\signagePC\pc_agent.py"
 set "LOGDIR=%BASE%\logs"
 set "LOG=%LOGDIR%\pc_agent_watchdog.log"
 set "STATE=%LOGDIR%\pc_agent_crash_state.csv"
