@@ -18,10 +18,17 @@ set "LOG=%LOGDIR%\pc_agent_watchdog.log"
 set "STATE=%LOGDIR%\pc_agent_crash_state.csv"
 
 rem ---- 監視パラメータ ----
-set "WINDOW_SEC=600"    rem 10分
-set "MAX_CRASH=3"       rem 10分で3回落ちたら再起動
-set "SLEEP_SEC=5"       rem 再起動までの待ち
-set "LOG_MAX_BYTES=10485760"  rem 10MBでログをローテ（簡易）
+rem 監視パラメータ（10分窓）
+set "WINDOW_SEC=600"
+
+rem 10分で3回落ちたら再起動
+set "MAX_CRASH=3"
+
+rem 再起動までの待ち（秒）
+set "SLEEP_SEC=5"
+
+rem 10MBでログをローテ（簡易）
+set "LOG_MAX_BYTES=10485760"
 
 rem ---- logsフォルダが無ければ作る ----
 if not exist "%LOGDIR%" (

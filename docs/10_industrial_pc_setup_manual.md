@@ -372,7 +372,7 @@ C:\_TsuyamaSignage\
 └ logs\ (ログ出力先)
 ```
 
-また、以下が存在すること。
+事前確認（チェック対象）は以下のとおり。
 
 - `C:\_TsuyamaSignage\runtime\python\python.exe`
 - `C:\_TsuyamaSignage\app\signagePC\pc_agent.py`
