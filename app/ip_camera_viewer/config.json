@@ -225,6 +225,6 @@
   ],
   "common_auth": {
     "username": "admin",
-    "password": "your_password"
+    "password": "admin123"
   }
 }
