@@ -43,6 +43,14 @@ def main() -> int:
         QMessageBox.critical(None, "設定エラー", str(exc))
         return 1
 
+    for camera in config.get("cameras", []):
+        camera_id = camera.get("id", "unknown")
+        enabled = camera.get("enabled", True)
+        if enabled:
+            logger.info("Camera %s: ENABLED", camera_id)
+        else:
+            logger.info("Camera %s: OFF (未設置)", camera_id)
+
     screens = QGuiApplication.screens()
     try:
         assignment = assign_displays(screens, config.get("displays", {}))
