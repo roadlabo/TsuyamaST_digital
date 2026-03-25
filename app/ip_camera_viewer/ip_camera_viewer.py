@@ -72,6 +72,7 @@ def setup_logger(name: str = "ip_camera_viewer") -> logging.Logger:
 
 
 logger = setup_logger(__name__)
+GROUP_TILE_WIDTH = 900
 
 
 def open_camera_settings_with_login(camera_config: dict, common_auth: dict, parent: QWidget | None = None) -> bool:
@@ -321,6 +322,8 @@ class ZoomPanVideoWidget(QWidget):
         self._zoom = max(self._min_zoom, min(self._max_zoom, self._zoom * step))
         if self._zoom <= self._min_zoom:
             self._offset = QPoint(0, 0)
+        else:
+            self._offset = self._clamp_offset(self._offset)
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -334,7 +337,7 @@ class ZoomPanVideoWidget(QWidget):
         if self._dragging:
             delta = event.pos() - self._drag_start
             self._drag_start = event.pos()
-            self._offset += delta
+            self._offset = self._clamp_offset(self._offset + delta)
             self.update()
         super().mouseMoveEvent(event)
 
@@ -352,12 +355,52 @@ class ZoomPanVideoWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "カメラを選択してください")
             return
 
-        scaled_w = int(self.width() * self._zoom)
-        scaled_h = int(self.height() * self._zoom)
-        target_x = (self.width() - scaled_w) // 2 + self._offset.x()
-        target_y = (self.height() - scaled_h) // 2 + self._offset.y()
+        pix_w = max(1, self._pixmap.width())
+        pix_h = max(1, self._pixmap.height())
+        view_w = max(1, self.width())
+        view_h = max(1, self.height())
+
+        fit_scale = min(view_w / pix_w, view_h / pix_h)
+        display_scale = fit_scale * self._zoom
+        scaled_w = max(1, int(pix_w * display_scale))
+        scaled_h = max(1, int(pix_h * display_scale))
+
+        if self._zoom <= self._min_zoom:
+            self._offset = QPoint(0, 0)
+        else:
+            self._offset = self._clamp_offset(self._offset, scaled_w=scaled_w, scaled_h=scaled_h)
+
+        target_x = (view_w - scaled_w) // 2 + self._offset.x()
+        target_y = (view_h - scaled_h) // 2 + self._offset.y()
 
         painter.drawPixmap(target_x, target_y, scaled_w, scaled_h, self._pixmap)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        if self._zoom > self._min_zoom:
+            self._offset = self._clamp_offset(self._offset)
+        super().resizeEvent(event)
+
+    def _clamp_offset(self, offset: QPoint, scaled_w: int | None = None, scaled_h: int | None = None) -> QPoint:
+        if self._pixmap is None or self._pixmap.isNull():
+            return QPoint(0, 0)
+
+        pix_w = max(1, self._pixmap.width())
+        pix_h = max(1, self._pixmap.height())
+        view_w = max(1, self.width())
+        view_h = max(1, self.height())
+
+        if scaled_w is None or scaled_h is None:
+            fit_scale = min(view_w / pix_w, view_h / pix_h)
+            display_scale = fit_scale * self._zoom
+            scaled_w = max(1, int(pix_w * display_scale))
+            scaled_h = max(1, int(pix_h * display_scale))
+
+        max_x = max(0, (scaled_w - view_w) // 2)
+        max_y = max(0, (scaled_h - view_h) // 2)
+
+        clamped_x = max(-max_x, min(max_x, offset.x()))
+        clamped_y = max(-max_y, min(max_y, offset.y()))
+        return QPoint(clamped_x, clamped_y)
 
 
 class AspectRatioVideoLabel(QLabel):
@@ -530,9 +573,9 @@ class CameraTile(QWidget):
 
     def set_display_mode(self, group_mode: bool) -> None:
         if group_mode:
-            self.setFixedWidth(1120)
+            self.setFixedWidth(GROUP_TILE_WIDTH)
             self.layout_main.setContentsMargins(2, 2, 2, 2)
-            self.layout_main.setSpacing(1)
+            self.layout_main.setSpacing(0)
         else:
             self.setFixedWidth(352)
             self.layout_main.setContentsMargins(4, 4, 4, 4)
@@ -805,7 +848,7 @@ class MainWindow(QMainWindow):
         columns = 1 if group_mode else 3
         if group_mode:
             self.grid_layout.setContentsMargins(0, 0, 0, 0)
-            self.grid_layout.setSpacing(1)
+            self.grid_layout.setSpacing(0)
         else:
             self.grid_layout.setContentsMargins(2, 2, 2, 2)
             self.grid_layout.setSpacing(3)
@@ -930,9 +973,32 @@ def main() -> int:
         QMessageBox.critical(None, "ディスプレイエラー", "利用可能なディスプレイが見つかりません")
         return 1
 
-    # 一括表示はディスプレイ1(インデックス0)をデフォルトにする
-    grid_screen = screens[0]
-    fullscreen_screen = screens[1] if len(screens) > 1 else screens[0]
+    portrait_screens: list[QScreen] = []
+    landscape_screens: list[QScreen] = []
+
+    for index, screen in enumerate(screens):
+        geo = screen.geometry()
+        orientation = "portrait" if geo.height() > geo.width() else "landscape"
+        if orientation == "portrait":
+            portrait_screens.append(screen)
+        else:
+            landscape_screens.append(screen)
+        logger.info(
+            "Screen[%d]: name=%s width=%d height=%d orientation=%s",
+            index,
+            screen.name(),
+            geo.width(),
+            geo.height(),
+            orientation,
+        )
+
+    # 優先: 縦型=一括表示, 横型=拡大表示 (見つからない場合のみフォールバック)
+    grid_screen = portrait_screens[0] if portrait_screens else screens[0]
+    fullscreen_screen = (
+        landscape_screens[0]
+        if landscape_screens
+        else (screens[1] if len(screens) > 1 else screens[0])
+    )
     single_display_mode = len(screens) < 2
 
     main_window = MainWindow(
@@ -945,7 +1011,7 @@ def main() -> int:
     main_window.showMaximized()
 
     logger.info(
-        "Display assignment: grid(default display1)=%s fullscreen=%s single_display_mode=%s",
+        "Display assignment result: grid_screen=%s fullscreen_screen=%s single_display_mode=%s",
         grid_screen.name(),
         fullscreen_screen.name(),
         single_display_mode,
