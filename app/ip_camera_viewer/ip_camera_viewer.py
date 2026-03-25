@@ -35,8 +35,8 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -360,29 +360,29 @@ class ZoomPanVideoWidget(QWidget):
         painter.drawPixmap(target_x, target_y, scaled_w, scaled_h, self._pixmap)
 
 
-class StatMeter(QWidget):
-    def __init__(self, name: str, parent: QWidget | None = None):
+class AspectRatioVideoLabel(QLabel):
+    def __init__(self, ratio_width: int = 16, ratio_height: int = 9, parent: QWidget | None = None):
         super().__init__(parent)
-        self.name_label = QLabel(name)
-        self.value_label = QLabel("--")
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 100)
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(6)
+        self.ratio_width = ratio_width
+        self.ratio_height = ratio_height
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self.name_label.setFixedWidth(68)
-        self.value_label.setFixedWidth(64)
-        layout.addWidget(self.name_label)
-        layout.addWidget(self.bar, 1)
-        layout.addWidget(self.value_label)
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
 
-    def set_value(self, value: float, text: str) -> None:
-        clamped = max(0, min(100, int(value)))
-        self.bar.setValue(clamped)
-        self.value_label.setText(text)
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        if self.ratio_width <= 0:
+            return width
+        return int(width * self.ratio_height / self.ratio_width)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        target_width = max(1, parent.width())
+        target_height = self.heightForWidth(target_width)
+        if self.height() != target_height:
+            self.setFixedHeight(target_height)
 
 
 class CameraTile(QWidget):
@@ -397,23 +397,21 @@ class CameraTile(QWidget):
         self._last_fps_update = time.monotonic()
         self._reconnect_count = 0
         self._last_status = "INIT"
+        self._status_text = "接続待機"
         self._last_frame_monotonic = 0.0
-        self._estimated_bitrate_mbps = 0.0
         self._stream_type = "SUB"
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(1000)
         self._update_timer.timeout.connect(self._update_info_panel)
         self._update_timer.start()
 
-        self.setFixedSize(352, 285)
+        self.setFixedWidth(352)
 
         self.setStyleSheet(
             """
-            QWidget { background-color: #05080d; border: 1px solid #123544; color: #c5d7de; }
-            QLabel#title { font-size: 13px; font-weight: bold; padding: 3px 6px; color: #7fe8ff; }
-            QLabel#info { font-size: 11px; padding: 1px 6px; color: #9eb8c3; }
-            QProgressBar { background: #061018; border: 1px solid #0b2733; border-radius: 2px; }
-            QProgressBar::chunk { background: #00a6c7; border-radius: 2px; }
+            QWidget { background-color: #1f1f22; border: 1px solid #38383c; color: #e4e4e4; }
+            QLabel#title { font-size: 12px; font-weight: bold; padding: 2px 4px; color: #f0f0f0; }
+            QLabel#info { font-size: 10px; padding: 1px 4px; color: #c7c7c7; }
             """
         )
 
@@ -422,30 +420,29 @@ class CameraTile(QWidget):
         self.info_label = QLabel("")
         self.info_label.setObjectName("info")
 
-        self.video_label = QLabel("読み込み中...")
+        self.video_container = QWidget()
+        self.video_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.video_label = AspectRatioVideoLabel(16, 9, self.video_container)
+        self.video_label.setText("読み込み中...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumHeight(205)
+        self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.video_label.setScaledContents(False)
-        self.video_label.setStyleSheet("background: #000000; border: 1px solid #0f2d3f;")
+        self.video_label.setStyleSheet("background: #000000; border: 1px solid #303236;")
+        video_layout = QVBoxLayout(self.video_container)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.addWidget(self.video_label)
 
         self.status_label = QLabel("接続待機")
         self.status_label.setObjectName("info")
-        self.meter_link = StatMeter("LINK")
-        self.meter_fps = StatMeter("FPS")
-        self.meter_bitrate = StatMeter("BITRATE")
-        self.meter_stability = StatMeter("STABILITY")
+        self.status_label.setStyleSheet("color: #ffb57a;")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(3)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.info_label)
-        layout.addWidget(self.video_label, 1)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.meter_link)
-        layout.addWidget(self.meter_fps)
-        layout.addWidget(self.meter_bitrate)
-        layout.addWidget(self.meter_stability)
+        self.layout_main = QVBoxLayout(self)
+        self.layout_main.setContentsMargins(4, 4, 4, 4)
+        self.layout_main.setSpacing(2)
+        self.layout_main.addWidget(self.title_label)
+        self.layout_main.addWidget(self.info_label)
+        self.layout_main.addWidget(self.video_container, 1, Qt.AlignmentFlag.AlignTop)
+        self.layout_main.addWidget(self.status_label)
 
         self.stream_player = StreamPlayer(self)
         self.stream_player.frame_ready.connect(self._update_frame)
@@ -493,8 +490,6 @@ class CameraTile(QWidget):
             self._fps = self._frame_count / elapsed
             self._frame_count = 0
             self._last_fps_update = now
-        size_bits = image.sizeInBytes() * 8
-        self._estimated_bitrate_mbps = (size_bits * max(self._fps, 1.0)) / 1_000_000.0
         self._set_pixmap(image)
 
     def _set_pixmap(self, image: QImage) -> None:
@@ -519,41 +514,45 @@ class CameraTile(QWidget):
             self._reconnect_count += 1
         self._last_status = status
         if status == "OK":
-            self.status_label.setText("ONLINE")
+            self._status_text = "ONLINE"
+            self.status_label.setText(self._status_text)
             self.status_label.setStyleSheet("color: #74ffce;")
             return
 
         if status == "OFF":
-            self.status_label.setText("OFFLINE / 未接続")
+            self._status_text = "OFFLINE / 未接続"
+            self.status_label.setText(self._status_text)
             self.status_label.setStyleSheet("color: #94a4ad;")
         else:
-            self.status_label.setText("RECONNECT / 接続再試行")
+            self._status_text = "RECONNECT / 接続再試行"
+            self.status_label.setText(self._status_text)
             self.status_label.setStyleSheet("color: #ffb57a;")
 
     def set_display_mode(self, group_mode: bool) -> None:
         if group_mode:
-            self.setFixedSize(560, 350)
-            self.video_label.setMinimumHeight(255)
+            self.setFixedWidth(1120)
+            self.layout_main.setContentsMargins(2, 2, 2, 2)
+            self.layout_main.setSpacing(1)
         else:
-            self.setFixedSize(352, 285)
-            self.video_label.setMinimumHeight(205)
+            self.setFixedWidth(352)
+            self.layout_main.setContentsMargins(4, 4, 4, 4)
+            self.layout_main.setSpacing(2)
+        self.video_label.setFixedHeight(self.video_label.heightForWidth(max(1, self.video_container.width())))
+        self.updateGeometry()
 
     def _update_info_panel(self) -> None:
         cam_ip = self.camera_config.get("ip", "-")
         resolution = "-"
         if self._last_image is not None:
-            resolution = f"{self._last_image.width()}x{self._last_image.height()}"
+            resolution = f"{self._last_image.width()}×{self._last_image.height()}"
         age_ms = 0.0
         if self._last_frame_monotonic > 0:
             age_ms = (time.monotonic() - self._last_frame_monotonic) * 1000.0
-        stability = max(0.0, 100.0 - (self._reconnect_count * 12.5))
+        stream_state = "ONLINE" if self._last_status == "OK" else ("OFFLINE" if self._last_status == "OFF" else "RECONNECT")
         self.info_label.setText(
-            f"IP: {cam_ip}  |  状態: {self.status_label.text()}  |  STREAM: {self._stream_type}  |  解像度: {resolution}"
+            f"{cam_ip} | {stream_state} | {self._stream_type} | {resolution}"
         )
-        self.meter_link.set_value(100.0 if self._last_status == "OK" else 30.0, "ONLINE" if self._last_status == "OK" else "WEAK")
-        self.meter_fps.set_value((self._fps / 15.0) * 100.0, f"{self._fps:0.1f}")
-        self.meter_bitrate.set_value((self._estimated_bitrate_mbps / 8.0) * 100.0, f"{self._estimated_bitrate_mbps:0.2f}M")
-        self.meter_stability.set_value(stability, f"{int(stability)}%/{int(age_ms)}ms")
+        self.status_label.setText(f"{self._status_text} | FPS {self._fps:0.1f} | {int(age_ms)}ms")
 
 
 class FullscreenWindow(QWidget):
@@ -802,13 +801,20 @@ class MainWindow(QMainWindow):
         return self.groups.get(group_no, [])
 
     def _layout_tiles(self, visible_ids: list[str]) -> None:
-        columns = 1 if self.current_mode.startswith("group") else 3
+        group_mode = self.current_mode.startswith("group")
+        columns = 1 if group_mode else 3
+        if group_mode:
+            self.grid_layout.setContentsMargins(0, 0, 0, 0)
+            self.grid_layout.setSpacing(1)
+        else:
+            self.grid_layout.setContentsMargins(2, 2, 2, 2)
+            self.grid_layout.setSpacing(3)
 
         for index, cam_id in enumerate(visible_ids):
             tile = self.tiles_by_camera_id.get(cam_id)
             if not tile:
                 continue
-            tile.set_display_mode(group_mode=self.current_mode.startswith("group"))
+            tile.set_display_mode(group_mode=group_mode)
             row = index // columns
             col = index % columns
             self.grid_layout.addWidget(tile, row, col)
