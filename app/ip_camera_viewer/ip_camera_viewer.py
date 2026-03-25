@@ -157,10 +157,7 @@ class StreamWorker(QThread):
     def stop(self) -> None:
         self._mutex.lock()
         self._running = False
-        cap = self._cap
         self._mutex.unlock()
-        if cap is not None:
-            cap.release()
 
     def _is_running(self) -> bool:
         self._mutex.lock()
@@ -173,54 +170,76 @@ class StreamWorker(QThread):
         self._running = True
         self._mutex.unlock()
 
-        frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
-        while self._is_running():
-            if not self.rtsp_url:
-                self.status_changed.emit("ERROR")
-                logger.warning("RTSP URL is empty. skip stream start.")
-                return
-
-            cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-            self._mutex.lock()
-            self._cap = cap
-            self._mutex.unlock()
-            if not cap.isOpened():
-                self.status_changed.emit("ERROR")
-                logger.warning("Failed to connect stream: %s", self.rtsp_url)
-                cap.release()
-                self._mutex.lock()
-                self._cap = None
-                self._mutex.unlock()
-                self._sleep_with_interrupt(self.reconnect_seconds)
-                continue
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-            self.status_changed.emit("OK")
-            last_emit = 0.0
-
+        try:
+            frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
             while self._is_running():
-                ok, frame = cap.read()
-                if not ok or frame is None:
+                if not self.rtsp_url:
                     self.status_changed.emit("ERROR")
-                    logger.warning("Stream dropped. reconnecting: %s", self.rtsp_url)
-                    break
+                    logger.warning("RTSP URL is empty. skip stream start.")
+                    return
 
-                now = time.monotonic()
-                if frame_interval > 0 and (now - last_emit) < frame_interval:
-                    continue
-                last_emit = now
+                cap: cv2.VideoCapture | None = None
+                try:
+                    cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+                    self._mutex.lock()
+                    self._cap = cap
+                    self._mutex.unlock()
 
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb.shape
-                bytes_per_line = ch * w
-                image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
-                self.frame_ready.emit(image)
+                    if not cap.isOpened():
+                        self.status_changed.emit("ERROR")
+                        logger.warning("Failed to connect stream: %s", self.rtsp_url)
+                        continue
 
-            cap.release()
-            self._mutex.lock()
-            self._cap = None
-            self._mutex.unlock()
-            self._sleep_with_interrupt(self.reconnect_seconds)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    self.status_changed.emit("OK")
+                    last_emit = 0.0
+
+                    while self._is_running():
+                        try:
+                            ok, frame = cap.read()
+                        except cv2.error as exc:
+                            self.status_changed.emit("ERROR")
+                            logger.warning("OpenCV read failed. reconnecting: %s error=%s", self.rtsp_url, exc)
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            self.status_changed.emit("ERROR")
+                            logger.warning("Unexpected read error. reconnecting: %s error=%s", self.rtsp_url, exc)
+                            break
+
+                        if not ok or frame is None:
+                            self.status_changed.emit("ERROR")
+                            logger.warning("Stream dropped. reconnecting: %s", self.rtsp_url)
+                            break
+
+                        now = time.monotonic()
+                        if frame_interval > 0 and (now - last_emit) < frame_interval:
+                            continue
+                        last_emit = now
+
+                        try:
+                            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        except cv2.error as exc:
+                            logger.warning("cvtColor failed. skip frame: %s error=%s", self.rtsp_url, exc)
+                            continue
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("Unexpected frame conversion error. skip frame: %s error=%s", self.rtsp_url, exc)
+                            continue
+
+                        h, w, ch = rgb.shape
+                        bytes_per_line = ch * w
+                        image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+                        self.frame_ready.emit(image)
+                finally:
+                    if cap is not None:
+                        cap.release()
+                    self._mutex.lock()
+                    self._cap = None
+                    self._mutex.unlock()
+
+                self._sleep_with_interrupt(self.reconnect_seconds)
+        except Exception as exc:  # noqa: BLE001
+            self.status_changed.emit("ERROR")
+            logger.exception("StreamWorker crashed: %s", exc)
 
     def _sleep_with_interrupt(self, seconds: float) -> None:
         until = time.monotonic() + max(0.0, seconds)
@@ -258,7 +277,7 @@ class StreamPlayer(QObject):
         try:
             worker.stop()
             worker.quit()
-            finished = worker.wait(3000)
+            finished = worker.wait(5000)
             if not finished:
                 logger.warning("Stream worker did not finish in timeout. force terminate.")
                 worker.terminate()
