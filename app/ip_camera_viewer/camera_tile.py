@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from stream_player import StreamPlayer
 
@@ -29,6 +29,7 @@ class CameraTile(QWidget):
         self.video_label = QLabel("読み込み中...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumHeight(140)
+        self.video_label.setScaledContents(False)
 
         self.status_label = QLabel("接続待機")
         self.status_label.setObjectName("status")
@@ -39,6 +40,9 @@ class CameraTile(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(self.video_label, 1)
         layout.addWidget(self.status_label)
+
+        self.setMaximumSize(360, 260)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         self.stream_player = StreamPlayer(self)
         self.stream_player.frame_ready.connect(self._update_frame)
