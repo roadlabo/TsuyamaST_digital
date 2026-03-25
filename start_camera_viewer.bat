@@ -1,52 +1,46 @@
 @echo off
-setlocal
 
 REM =========================
-REM ルートディレクトリ取得
+REM バッチの場所を基準にする
 REM =========================
-set "ROOT_DIR=%~dp0"
+cd /d "%~dp0"
 
 REM =========================
-REM Python実行ファイル
+REM 不具合の原因（記録）
 REM =========================
-set "PYTHON_EXE=%ROOT_DIR%runtime\python\python.exe"
-REM set "PYTHON_EXE=%ROOT_DIR%runtime\python\pythonw.exe"
+REM - python コマンドを直接呼んでいた
+REM - PATH環境変数に依存していた
+REM - embedded Python が参照されていなかった
 
 REM =========================
-REM Python環境設定
+REM Python（embedded）
 REM =========================
-set "PYTHONHOME=%ROOT_DIR%runtime\python"
-set "PYTHONPATH=%ROOT_DIR%runtime\pydeps"
+set "PYTHON=%~dp0runtime\python\python.exe"
+REM set "PYTHON=%~dp0runtime\python\pythonw.exe"
 
 REM =========================
-REM Qtライブラリパス（PyQt6用）
+REM PATH補完（必要ライブラリ対策）
 REM =========================
-set "PATH=%ROOT_DIR%runtime\python\Lib\site-packages\PyQt6\Qt6\bin;%PATH%"
-
-REM =========================
-REM アプリ起動スクリプト
-REM =========================
-set "MAIN_SCRIPT=%ROOT_DIR%src\main.py"
+set "PATH=%~dp0runtime\python;%~dp0runtime\python\Scripts;%PATH%"
 
 REM =========================
 REM 事前チェック
 REM =========================
-if not exist "%PYTHON_EXE%" (
-    echo Python runtime not found.
+if not exist "%PYTHON%" (
+    echo Python not found.
     pause
-    exit /b 1
+    exit /b
 )
 
-if not exist "%MAIN_SCRIPT%" (
+if not exist "app\ip_camera_viewer\main.py" (
     echo main.py not found.
     pause
-    exit /b 1
+    exit /b
 )
 
 REM =========================
-REM アプリ起動
+REM 起動
 REM =========================
-echo Starting Camera Viewer...
-"%PYTHON_EXE%" "%MAIN_SCRIPT%"
+"%PYTHON%" "app\ip_camera_viewer\main.py"
 
 pause
