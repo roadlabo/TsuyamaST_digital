@@ -1,0 +1,43 @@
+{
+  "cameras": [
+    {
+      "camera_id": 1,
+      "camera_name": "Camera1",
+      "stream_url": "rtsp://user:pass@192.168.0.101/stream1",
+      "enabled": true,
+      "direction": "LtoR",
+      "line_points": [[120, 280], [1020, 280]],
+      "exclude_polygon": [[20, 20], [200, 20], [200, 100], [20, 100]],
+      "congestion_threshold": 60,
+      "long_stay_minutes": 15,
+      "long_stay_trigger_count": 1,
+      "stay_zone_polygon": []
+    },
+    {
+      "camera_id": 2,
+      "camera_name": "Camera2",
+      "stream_url": "rtsp://user:pass@192.168.0.102/stream1",
+      "enabled": true,
+      "direction": "LtoR",
+      "line_points": [[120, 280], [1020, 280]],
+      "exclude_polygon": [],
+      "congestion_threshold": 60,
+      "long_stay_minutes": 15,
+      "long_stay_trigger_count": 1,
+      "stay_zone_polygon": []
+    },
+    {
+      "camera_id": 3,
+      "camera_name": "Camera3",
+      "stream_url": "rtsp://user:pass@192.168.0.103/stream1",
+      "enabled": true,
+      "direction": "RtoL",
+      "line_points": [[120, 280], [1020, 280]],
+      "exclude_polygon": [],
+      "congestion_threshold": 65,
+      "long_stay_minutes": 15,
+      "long_stay_trigger_count": 1,
+      "stay_zone_polygon": []
+    }
+  ]
+}
