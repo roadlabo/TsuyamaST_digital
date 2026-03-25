@@ -5,7 +5,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class ClickableImageLabel(QtWidgets.QLabel):
@@ -64,7 +64,9 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         row.addWidget(btn_poly)
         root.addLayout(row)
 
-        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
+        bb = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Save | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         root.addWidget(bb)
@@ -101,8 +103,13 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         if len(self.exclude_polygon) >= 2:
             cv2.polylines(frame, [np.array(self.exclude_polygon, np.int32)], False, (255, 0, 255), 2)
         h, w, _ = frame.shape
-        qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format_BGR888)
-        self.image.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.image.size(), QtCore.Qt.KeepAspectRatio))
+        qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
+        self.image.setPixmap(
+            QtGui.QPixmap.fromImage(qimg).scaled(
+                self.image.size(),
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            )
+        )
 
     def get_updated_config(self) -> dict[str, Any]:
         cfg = dict(self.camera_cfg)
@@ -167,8 +174,13 @@ class CameraPanel(QtWidgets.QFrame):
         frame = payload.get("frame")
         if frame is not None:
             h, w, _ = frame.shape
-            qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format_BGR888)
-            self.video.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.video.size(), QtCore.Qt.KeepAspectRatio))
+            qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
+            self.video.setPixmap(
+                QtGui.QPixmap.fromImage(qimg).scaled(
+                    self.video.size(),
+                    QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                )
+            )
 
         score = int(payload.get("congestion_score", 0))
         threshold = int(payload.get("threshold", 60))

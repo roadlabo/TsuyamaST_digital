@@ -5,7 +5,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from modules.camera_worker import CameraWorker
 from modules.config_manager import ConfigManager
@@ -62,7 +62,7 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
         self.timer.timeout.connect(self.tick)
         self.timer.start(int(self.app_cfg.system.get("ui_refresh_interval_ms", 500)))
 
-        self.setWindowState(QtCore.Qt.WindowMaximized)
+        self.setWindowState(QtCore.Qt.WindowState.WindowMaximized)
 
     def tick(self) -> None:
         payloads = {}
@@ -95,7 +95,7 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
         camera_id = int(selected.split(":", 1)[0])
         idx = next(i for i, c in enumerate(cams) if c["camera_id"] == camera_id)
         dlg = CameraSettingsDialog(cams[idx], self)
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             cams[idx] = dlg.get_updated_config()
             self.cfg_mgr.save_camera_settings(cams)
             QtWidgets.QMessageBox.information(self, "保存", "設定を保存しました。再起動で完全反映されます。")
@@ -132,7 +132,7 @@ def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
     win = MonitorMainWindow(root_dir)
     win.show()
-    return app.exec_()
+    return app.exec()
 
 
 if __name__ == "__main__":
