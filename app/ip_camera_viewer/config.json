@@ -49,7 +49,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.101:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.101:554/snl/live/1",
       "web_url": "http://192.168.1.101/",
-      "enabled": true
+      "enabled": true,
+      "settings_url": "http://192.168.1.101/"
     },
     {
       "id": "cam02",
@@ -58,7 +59,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.102:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.102:554/snl/live/1",
       "web_url": "http://192.168.1.102/",
-      "enabled": true
+      "enabled": true,
+      "settings_url": "http://192.168.1.102/"
     },
     {
       "id": "cam03",
@@ -67,7 +69,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.103:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.103:554/snl/live/1",
       "web_url": "http://192.168.1.103/",
-      "enabled": true
+      "enabled": true,
+      "settings_url": "http://192.168.1.103/"
     },
     {
       "id": "cam04",
@@ -76,7 +79,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.104:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.104:554/snl/live/1",
       "web_url": "http://192.168.1.104/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.104/"
     },
     {
       "id": "cam05",
@@ -85,7 +89,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.105:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.105:554/snl/live/1",
       "web_url": "http://192.168.1.105/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.105/"
     },
     {
       "id": "cam06",
@@ -94,7 +99,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.106:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.106:554/snl/live/1",
       "web_url": "http://192.168.1.106/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.106/"
     },
     {
       "id": "cam07",
@@ -103,7 +109,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.107:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.107:554/snl/live/1",
       "web_url": "http://192.168.1.107/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.107/"
     },
     {
       "id": "cam08",
@@ -112,7 +119,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.108:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.108:554/snl/live/1",
       "web_url": "http://192.168.1.108/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.108/"
     },
     {
       "id": "cam09",
@@ -121,7 +129,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.109:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.109:554/snl/live/1",
       "web_url": "http://192.168.1.109/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.109/"
     },
     {
       "id": "cam10",
@@ -130,7 +139,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.110:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.110:554/snl/live/1",
       "web_url": "http://192.168.1.110/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.110/"
     },
     {
       "id": "cam11",
@@ -139,7 +149,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.111:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.111:554/snl/live/1",
       "web_url": "http://192.168.1.111/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.111/"
     },
     {
       "id": "cam12",
@@ -148,7 +159,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.112:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.112:554/snl/live/1",
       "web_url": "http://192.168.1.112/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.112/"
     },
     {
       "id": "cam13",
@@ -157,7 +169,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.113:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.113:554/snl/live/1",
       "web_url": "http://192.168.1.113/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.113/"
     },
     {
       "id": "cam14",
@@ -166,7 +179,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.114:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.114:554/snl/live/1",
       "web_url": "http://192.168.1.114/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.114/"
     },
     {
       "id": "cam15",
@@ -175,7 +189,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.115:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.115:554/snl/live/1",
       "web_url": "http://192.168.1.115/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.115/"
     },
     {
       "id": "cam16",
@@ -184,7 +199,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.116:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.116:554/snl/live/1",
       "web_url": "http://192.168.1.116/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.116/"
     },
     {
       "id": "cam17",
@@ -193,7 +209,8 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.117:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.117:554/snl/live/1",
       "web_url": "http://192.168.1.117/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.117/"
     },
     {
       "id": "cam18",
@@ -202,7 +219,12 @@
       "rtsp_sub": "rtsp://admin:admin123@192.168.1.118:554/snl/live/3",
       "rtsp_main": "rtsp://admin:admin123@192.168.1.118:554/snl/live/1",
       "web_url": "http://192.168.1.118/",
-      "enabled": false
+      "enabled": false,
+      "settings_url": "http://192.168.1.118/"
     }
-  ]
+  ],
+  "common_auth": {
+    "username": "admin",
+    "password": "your_password"
+  }
 }

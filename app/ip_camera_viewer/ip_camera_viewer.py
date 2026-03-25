@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 from PyQt6.QtCore import QMutex, QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QGuiApplication, QImage, QMouseEvent, QPixmap, QResizeEvent, QScreen
 from PyQt6.QtWidgets import (
@@ -56,6 +61,56 @@ def setup_logger(name: str = "ip_camera_viewer") -> logging.Logger:
 
 
 logger = setup_logger(__name__)
+
+
+def open_camera_settings_with_login(camera_config: dict, common_auth: dict, parent: QWidget | None = None) -> bool:
+    url = (camera_config.get("settings_url") or camera_config.get("web_url") or "").strip()
+    username = common_auth.get("username", "").strip()
+    password = common_auth.get("password", "").strip()
+
+    if not url:
+        QMessageBox.warning(parent, "URLエラー", "設定画面URLが未設定です。")
+        logger.warning("Settings URL is not set: camera_id=%s", camera_config.get("id", "unknown"))
+        return False
+
+    if not username or not password:
+        logger.info(
+            "Common auth is not configured. Fallback to default browser: camera_id=%s url=%s",
+            camera_config.get("id", "unknown"),
+            url,
+        )
+        return open_camera_settings(url, parent=parent)
+
+    try:
+        options = Options()
+        options.add_argument("--start-maximized")
+
+        driver = webdriver.Edge(options=options)
+        driver.get(url)
+
+        wait = WebDriverWait(driver, 10)
+
+        user_input = wait.until(EC.presence_of_element_located((By.ID, "UserName")))
+        user_input.clear()
+        user_input.send_keys(username)
+
+        pass_input = wait.until(EC.presence_of_element_located((By.ID, "Password")))
+        pass_input.clear()
+        pass_input.send_keys(password)
+
+        login_button = wait.until(EC.element_to_be_clickable((By.NAME, "B1")))
+        login_button.click()
+
+        logger.info("Camera settings auto-login started: camera_id=%s url=%s", camera_config.get("id", "unknown"), url)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Auto-login failed. Fallback to default browser: camera_id=%s url=%s error=%s",
+            camera_config.get("id", "unknown"),
+            url,
+            exc,
+        )
+        return open_camera_settings(url, parent=parent)
 
 
 def open_camera_settings(url: str, parent: QWidget | None = None) -> bool:
@@ -276,10 +331,17 @@ class CameraTile(QWidget):
 
 
 class FullscreenWindow(QWidget):
-    def __init__(self, target_screen: QScreen | None = None, single_display_mode: bool = False, parent: QWidget | None = None):
+    def __init__(
+        self,
+        target_screen: QScreen | None = None,
+        single_display_mode: bool = False,
+        common_auth: dict | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.target_screen = target_screen
         self.single_display_mode = single_display_mode
+        self.common_auth = common_auth or {}
         self.current_camera: dict | None = None
         self._last_image: QImage | None = None
 
@@ -376,7 +438,7 @@ class FullscreenWindow(QWidget):
     def _open_settings(self) -> None:
         if not self.current_camera:
             return
-        open_camera_settings(self.current_camera.get("web_url", ""), parent=self)
+        open_camera_settings_with_login(self.current_camera, self.common_auth, parent=self)
 
 
 class MainWindow(QMainWindow):
@@ -502,6 +564,7 @@ class MainWindow(QMainWindow):
         self.fullscreen_window = FullscreenWindow(
             target_screen=self.fullscreen_screen,
             single_display_mode=self.single_display_mode,
+            common_auth=self.config.get("common_auth", {}),
         )
         self.fullscreen_window.destroyed.connect(self._on_fullscreen_destroyed)
         self.fullscreen_window.set_camera(camera_config)
