@@ -45,9 +45,14 @@ class CameraTile(QWidget):
         self.stream_player.status_changed.connect(self._update_status)
 
     def start_stream(self) -> None:
+        if not self.camera_config.get("enabled", True):
+            self.show_offline()
+            self._update_status("OFF")
+            return
+
         rtsp_sub = self.camera_config.get("rtsp_sub")
         if not rtsp_sub:
-            self._update_status("OFFLINE")
+            self._update_status("ERROR")
             self.video_label.setText("サブストリーム未設定")
             return
         self.stream_player.start(rtsp_sub, target_fps=5.0)
@@ -75,13 +80,26 @@ class CameraTile(QWidget):
             pixmap.scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         )
 
+    def show_offline(self) -> None:
+        self.setStyleSheet(
+            """
+            QWidget { background-color: #333333; border: 1px solid #2a2a2a; color: #aaaaaa; }
+            QLabel#title { font-size: 14px; font-weight: bold; padding: 4px 6px; }
+            QLabel#status { font-size: 12px; color: #aaaaaa; padding: 2px 6px; }
+            """
+        )
+        self.video_label.setPixmap(QPixmap())
+        self.video_label.setText("未接続\n(準備中)")
+
     def _update_status(self, status: str) -> None:
-        if status == "ONLINE":
-            self.status_label.setText("ONLINE")
+        if status == "OK":
+            self.status_label.setText("OK")
             self.status_label.setStyleSheet("color: #8fff8f;")
-        elif status == "RECONNECTING":
-            self.status_label.setText("再接続中...")
-            self.status_label.setStyleSheet("color: #ffcc66;")
+            return
+
+        if status == "OFF":
+            self.status_label.setText("OFF / 未接続")
+            self.status_label.setStyleSheet("color: #aaaaaa;")
         else:
-            self.status_label.setText("OFFLINE / 接続失敗")
+            self.status_label.setText("ERROR / 接続失敗")
             self.status_label.setStyleSheet("color: #ff8888;")

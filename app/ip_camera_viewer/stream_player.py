@@ -42,21 +42,26 @@ class StreamWorker(QThread):
 
         frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
         while self._is_running():
+            if not self.rtsp_url:
+                self.status_changed.emit("ERROR")
+                logger.warning("RTSP URL is empty. skip stream start.")
+                return
+
             cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
             if not cap.isOpened():
-                self.status_changed.emit("OFFLINE")
+                self.status_changed.emit("ERROR")
                 logger.warning("Failed to connect stream: %s", self.rtsp_url)
                 cap.release()
                 self._sleep_with_interrupt(self.reconnect_seconds)
                 continue
 
-            self.status_changed.emit("ONLINE")
+            self.status_changed.emit("OK")
             last_emit = 0.0
 
             while self._is_running():
                 ok, frame = cap.read()
                 if not ok or frame is None:
-                    self.status_changed.emit("RECONNECTING")
+                    self.status_changed.emit("ERROR")
                     logger.warning("Stream dropped. reconnecting: %s", self.rtsp_url)
                     break
 
@@ -90,6 +95,9 @@ class StreamPlayer(QObject):
 
     def start(self, rtsp_url: str, target_fps: float = 5.0) -> None:
         self.stop()
+        if not rtsp_url:
+            self.status_changed.emit("ERROR")
+            return
         self._worker = StreamWorker(rtsp_url=rtsp_url, target_fps=target_fps, parent=self)
         self._worker.frame_ready.connect(self.frame_ready.emit)
         self._worker.status_changed.connect(self.status_changed.emit)

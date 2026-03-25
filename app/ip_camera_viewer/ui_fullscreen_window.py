@@ -54,6 +54,12 @@ class FullscreenWindow(QWidget):
         self.current_camera = camera_config
         self.setWindowTitle(f"拡大表示 - {camera_config.get('name', camera_config.get('id', ''))}")
 
+        if not camera_config.get("enabled", True):
+            self.player.stop()
+            self.video_label.setPixmap(QPixmap())
+            self.video_label.setText("未接続\n(準備中)")
+            return
+
         rtsp_main = camera_config.get("rtsp_main")
         if not rtsp_main:
             QMessageBox.warning(self, "設定不足", "このカメラにはメインストリームURLがありません。")
