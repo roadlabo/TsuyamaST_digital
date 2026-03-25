@@ -19,16 +19,16 @@ if not exist "%PYTHON%" (
     exit /b 1
 )
 
-if not exist "%~dp0app\ip_camera_viewer\main.py" (
-    echo main.py not found.
+if not exist "%~dp0app\ip_camera_viewer\ip_camera_viewer.py" (
+    echo ip_camera_viewer.py not found.
     pause
     exit /b 1
 )
 
 REM =========================
-REM main.py のディレクトリで起動（相対 import 対策）
+REM ip_camera_viewer.py のディレクトリで起動（相対 import 対策）
 REM =========================
 cd /d "%~dp0app\ip_camera_viewer"
-"%PYTHON%" main.py
+"%PYTHON%" ip_camera_viewer.py
 
 pause
