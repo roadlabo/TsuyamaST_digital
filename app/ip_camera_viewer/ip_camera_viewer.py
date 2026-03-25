@@ -22,7 +22,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -183,6 +182,7 @@ class CameraTile(QWidget):
         super().__init__(parent)
         self.camera_config = camera_config
         self._last_image: QImage | None = None
+        self.setFixedSize(320, 240)
 
         self.setStyleSheet(
             """
@@ -197,7 +197,7 @@ class CameraTile(QWidget):
 
         self.video_label = QLabel("読み込み中...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumHeight(140)
+        self.video_label.setFixedSize(320, 240)
         self.video_label.setScaledContents(False)
 
         self.status_label = QLabel("接続待機")
@@ -209,9 +209,6 @@ class CameraTile(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(self.video_label, 1)
         layout.addWidget(self.status_label)
-
-        self.setMaximumSize(360, 260)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         self.stream_player = StreamPlayer(self)
         self.stream_player.frame_ready.connect(self._update_frame)
