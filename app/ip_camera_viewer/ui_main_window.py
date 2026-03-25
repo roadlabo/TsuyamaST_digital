@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -54,9 +55,14 @@ class MainWindow(QMainWindow):
 
         self.grid_widget = QWidget()
         self.grid_layout = QGridLayout(self.grid_widget)
-        self.grid_layout.setContentsMargins(0, 0, 0, 0)
-        self.grid_layout.setSpacing(6)
-        self.root_layout.addWidget(self.grid_widget, 1)
+        self.grid_layout.setContentsMargins(5, 5, 5, 5)
+        self.grid_layout.setSpacing(5)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidget(self.grid_widget)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.root_layout.addWidget(self.scroll_area, 1)
 
         self._build_mode_buttons()
         self._build_tiles()
@@ -96,7 +102,7 @@ class MainWindow(QMainWindow):
                 widget.setParent(None)
 
         visible_ids = self._visible_camera_ids(mode)
-        self._layout_tiles(visible_ids, mode)
+        self._layout_tiles(visible_ids)
         self._update_streams(visible_ids)
 
     def _visible_camera_ids(self, mode: str) -> list[str]:
@@ -106,11 +112,8 @@ class MainWindow(QMainWindow):
         group_no = mode.replace("group", "")
         return self.groups.get(group_no, [])
 
-    def _layout_tiles(self, visible_ids: list[str], mode: str) -> None:
-        if mode == "all":
-            columns = 3
-        else:
-            columns = 1
+    def _layout_tiles(self, visible_ids: list[str]) -> None:
+        columns = 3
 
         for index, cam_id in enumerate(visible_ids):
             tile = self.tiles_by_camera_id.get(cam_id)
