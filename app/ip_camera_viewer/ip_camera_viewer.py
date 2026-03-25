@@ -448,7 +448,7 @@ class FullscreenWindow(QWidget):
             return
 
         self.move(screen_geo.topLeft())
-        self.showFullScreen()
+        self.showMaximized()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self.player.stop()
@@ -720,7 +720,7 @@ def main() -> int:
         main_window.show()
     else:
         main_window.move(vertical_screen.geometry().topLeft())
-        main_window.showFullScreen()
+        main_window.showMaximized()
 
     logger.info(
         "Display assignment: vertical=%s horizontal=%s single_display_mode=%s",
