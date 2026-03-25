@@ -1,0 +1,40 @@
+{
+  "app": {
+    "startup_mode": "all",
+    "fullscreen_single_instance": true
+  },
+  "displays": {
+    "grid_screen_preference": "portrait",
+    "fullscreen_screen_preference": "landscape",
+    "grid_screen_index": null,
+    "fullscreen_screen_index": null
+  },
+  "groups": {
+    "1": ["cam01", "cam02", "cam03"],
+    "2": ["cam04", "cam05", "cam06"],
+    "3": ["cam07", "cam08", "cam09"],
+    "4": ["cam10", "cam11", "cam12"],
+    "5": ["cam13", "cam14", "cam15"],
+    "6": ["cam16", "cam17", "cam18"]
+  },
+  "cameras": [
+    {"id": "cam01", "name": "CAM01_入口", "ip": "192.168.1.101", "rtsp_sub": "rtsp://user:pass@192.168.1.101:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.101:554/main", "web_url": "http://192.168.1.101/"},
+    {"id": "cam02", "name": "CAM02_通路北", "ip": "192.168.1.102", "rtsp_sub": "rtsp://user:pass@192.168.1.102:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.102:554/main", "web_url": "http://192.168.1.102/"},
+    {"id": "cam03", "name": "CAM03_通路南", "ip": "192.168.1.103", "rtsp_sub": "rtsp://user:pass@192.168.1.103:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.103:554/main", "web_url": "http://192.168.1.103/"},
+    {"id": "cam04", "name": "CAM04_搬入口", "ip": "192.168.1.104", "rtsp_sub": "rtsp://user:pass@192.168.1.104:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.104:554/main", "web_url": "http://192.168.1.104/"},
+    {"id": "cam05", "name": "CAM05_倉庫A", "ip": "192.168.1.105", "rtsp_sub": "rtsp://user:pass@192.168.1.105:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.105:554/main", "web_url": "http://192.168.1.105/"},
+    {"id": "cam06", "name": "CAM06_倉庫B", "ip": "192.168.1.106", "rtsp_sub": "rtsp://user:pass@192.168.1.106:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.106:554/main", "web_url": "http://192.168.1.106/"},
+    {"id": "cam07", "name": "CAM07_作業場1", "ip": "192.168.1.107", "rtsp_sub": "rtsp://user:pass@192.168.1.107:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.107:554/main", "web_url": "http://192.168.1.107/"},
+    {"id": "cam08", "name": "CAM08_作業場2", "ip": "192.168.1.108", "rtsp_sub": "rtsp://user:pass@192.168.1.108:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.108:554/main", "web_url": "http://192.168.1.108/"},
+    {"id": "cam09", "name": "CAM09_作業場3", "ip": "192.168.1.109", "rtsp_sub": "rtsp://user:pass@192.168.1.109:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.109:554/main", "web_url": "http://192.168.1.109/"},
+    {"id": "cam10", "name": "CAM10_通路東", "ip": "192.168.1.110", "rtsp_sub": "rtsp://user:pass@192.168.1.110:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.110:554/main", "web_url": "http://192.168.1.110/"},
+    {"id": "cam11", "name": "CAM11_通路西", "ip": "192.168.1.111", "rtsp_sub": "rtsp://user:pass@192.168.1.111:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.111:554/main", "web_url": "http://192.168.1.111/"},
+    {"id": "cam12", "name": "CAM12_外周1", "ip": "192.168.1.112", "rtsp_sub": "rtsp://user:pass@192.168.1.112:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.112:554/main", "web_url": "http://192.168.1.112/"},
+    {"id": "cam13", "name": "CAM13_外周2", "ip": "192.168.1.113", "rtsp_sub": "rtsp://user:pass@192.168.1.113:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.113:554/main", "web_url": "http://192.168.1.113/"},
+    {"id": "cam14", "name": "CAM14_外周3", "ip": "192.168.1.114", "rtsp_sub": "rtsp://user:pass@192.168.1.114:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.114:554/main", "web_url": "http://192.168.1.114/"},
+    {"id": "cam15", "name": "CAM15_駐車場", "ip": "192.168.1.115", "rtsp_sub": "rtsp://user:pass@192.168.1.115:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.115:554/main", "web_url": "http://192.168.1.115/"},
+    {"id": "cam16", "name": "CAM16_ゲート", "ip": "192.168.1.116", "rtsp_sub": "rtsp://user:pass@192.168.1.116:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.116:554/main", "web_url": "http://192.168.1.116/"},
+    {"id": "cam17", "name": "CAM17_搬出路", "ip": "192.168.1.117", "rtsp_sub": "rtsp://user:pass@192.168.1.117:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.117:554/main", "web_url": "http://192.168.1.117/"},
+    {"id": "cam18", "name": "CAM18_非常口", "ip": "192.168.1.118", "rtsp_sub": "rtsp://user:pass@192.168.1.118:554/sub", "rtsp_main": "rtsp://user:pass@192.168.1.118:554/main", "web_url": "http://192.168.1.118/"}
+  ]
+}
