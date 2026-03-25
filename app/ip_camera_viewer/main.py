@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
+
+# どこから起動しても同一フォルダのモジュールを import できるようにする
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QApplication, QMessageBox
