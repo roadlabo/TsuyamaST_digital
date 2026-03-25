@@ -16,8 +16,18 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from PyQt6.QtCore import QMutex, QObject, QThread, Qt, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QGuiApplication, QImage, QMouseEvent, QPixmap, QResizeEvent, QScreen
+from PyQt6.QtCore import QMutex, QObject, QPoint, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QCloseEvent,
+    QGuiApplication,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+    QScreen,
+    QWheelEvent,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -25,6 +35,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -182,6 +193,7 @@ class StreamWorker(QThread):
                 self._mutex.unlock()
                 self._sleep_with_interrupt(self.reconnect_seconds)
                 continue
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             self.status_changed.emit("OK")
             last_emit = 0.0
@@ -257,6 +269,103 @@ class StreamPlayer(QObject):
             self._stopping = False
 
 
+class ZoomPanVideoWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._pixmap: QPixmap | None = None
+        self._zoom = 1.0
+        self._min_zoom = 1.0
+        self._max_zoom = 4.0
+        self._offset = QPoint(0, 0)
+        self._dragging = False
+        self._drag_start = QPoint()
+
+    def set_image(self, image: QImage) -> None:
+        self._pixmap = QPixmap.fromImage(image)
+        self.update()
+
+    def reset_view(self) -> None:
+        self._zoom = self._min_zoom
+        self._offset = QPoint(0, 0)
+        self.update()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.reset_view()
+        super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        step = 1.15 if delta > 0 else 1 / 1.15
+        self._zoom = max(self._min_zoom, min(self._max_zoom, self._zoom * step))
+        if self._zoom <= self._min_zoom:
+            self._offset = QPoint(0, 0)
+        self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._zoom > self._min_zoom:
+            self._dragging = True
+            self._drag_start = event.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._dragging:
+            delta = event.pos() - self._drag_start
+            self._drag_start = event.pos()
+            self._offset += delta
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: ANN001, N802
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+        if self._pixmap is None or self._pixmap.isNull():
+            painter.setPen(Qt.GlobalColor.white)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "カメラを選択してください")
+            return
+
+        scaled_w = int(self.width() * self._zoom)
+        scaled_h = int(self.height() * self._zoom)
+        target_x = (self.width() - scaled_w) // 2 + self._offset.x()
+        target_y = (self.height() - scaled_h) // 2 + self._offset.y()
+
+        painter.drawPixmap(target_x, target_y, scaled_w, scaled_h, self._pixmap)
+
+
+class StatMeter(QWidget):
+    def __init__(self, name: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.name_label = QLabel(name)
+        self.value_label = QLabel("--")
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.name_label.setFixedWidth(68)
+        self.value_label.setFixedWidth(64)
+        layout.addWidget(self.name_label)
+        layout.addWidget(self.bar, 1)
+        layout.addWidget(self.value_label)
+
+    def set_value(self, value: float, text: str) -> None:
+        clamped = max(0, min(100, int(value)))
+        self.bar.setValue(clamped)
+        self.value_label.setText(text)
+
+
 class CameraTile(QWidget):
     clicked = pyqtSignal(dict)
 
@@ -264,33 +373,60 @@ class CameraTile(QWidget):
         super().__init__(parent)
         self.camera_config = camera_config
         self._last_image: QImage | None = None
-        self.setFixedSize(320, 240)
+        self._frame_count = 0
+        self._fps = 0.0
+        self._last_fps_update = time.monotonic()
+        self._reconnect_count = 0
+        self._last_status = "INIT"
+        self._last_frame_monotonic = 0.0
+        self._estimated_bitrate_mbps = 0.0
+        self._stream_type = "SUB"
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(1000)
+        self._update_timer.timeout.connect(self._update_info_panel)
+        self._update_timer.start()
+
+        self.setFixedSize(352, 285)
 
         self.setStyleSheet(
             """
-            QWidget { background-color: #111111; border: 1px solid #2a2a2a; color: #e0e0e0; }
-            QLabel#title { font-size: 14px; font-weight: bold; padding: 4px 6px; }
-            QLabel#status { font-size: 12px; color: #ff8888; padding: 2px 6px; }
+            QWidget { background-color: #05080d; border: 1px solid #123544; color: #c5d7de; }
+            QLabel#title { font-size: 13px; font-weight: bold; padding: 3px 6px; color: #7fe8ff; }
+            QLabel#info { font-size: 11px; padding: 1px 6px; color: #9eb8c3; }
+            QProgressBar { background: #061018; border: 1px solid #0b2733; border-radius: 2px; }
+            QProgressBar::chunk { background: #00a6c7; border-radius: 2px; }
             """
         )
 
         self.title_label = QLabel(camera_config.get("name", camera_config.get("id", "Unknown")))
         self.title_label.setObjectName("title")
+        self.info_label = QLabel("")
+        self.info_label.setObjectName("info")
 
         self.video_label = QLabel("読み込み中...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setFixedSize(320, 240)
+        self.video_label.setMinimumHeight(205)
         self.video_label.setScaledContents(False)
+        self.video_label.setStyleSheet("background: #000000; border: 1px solid #0f2d3f;")
 
         self.status_label = QLabel("接続待機")
-        self.status_label.setObjectName("status")
+        self.status_label.setObjectName("info")
+        self.meter_link = StatMeter("LINK")
+        self.meter_fps = StatMeter("FPS")
+        self.meter_bitrate = StatMeter("BITRATE")
+        self.meter_stability = StatMeter("STABILITY")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(3)
         layout.addWidget(self.title_label)
+        layout.addWidget(self.info_label)
         layout.addWidget(self.video_label, 1)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.meter_link)
+        layout.addWidget(self.meter_fps)
+        layout.addWidget(self.meter_bitrate)
+        layout.addWidget(self.meter_stability)
 
         self.stream_player = StreamPlayer(self)
         self.stream_player.frame_ready.connect(self._update_frame)
@@ -307,6 +443,7 @@ class CameraTile(QWidget):
             self._update_status("ERROR")
             self.video_label.setText("サブストリーム未設定")
             return
+        self._stream_type = "SUB"
         self.stream_player.start(rtsp_sub, target_fps=5.0)
 
     def stop_stream(self) -> None:
@@ -326,11 +463,19 @@ class CameraTile(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
-        if self._last_image:
-            self._set_pixmap(self._last_image)
 
     def _update_frame(self, image: QImage) -> None:
         self._last_image = image
+        self._frame_count += 1
+        now = time.monotonic()
+        self._last_frame_monotonic = now
+        elapsed = now - self._last_fps_update
+        if elapsed >= 1.0:
+            self._fps = self._frame_count / elapsed
+            self._frame_count = 0
+            self._last_fps_update = now
+        size_bits = image.sizeInBytes() * 8
+        self._estimated_bitrate_mbps = (size_bits * max(self._fps, 1.0)) / 1_000_000.0
         self._set_pixmap(image)
 
     def _set_pixmap(self, image: QImage) -> None:
@@ -351,17 +496,45 @@ class CameraTile(QWidget):
         self.video_label.setText("未接続\n(準備中)")
 
     def _update_status(self, status: str) -> None:
+        if self._last_status == "OK" and status != "OK":
+            self._reconnect_count += 1
+        self._last_status = status
         if status == "OK":
-            self.status_label.setText("OK")
-            self.status_label.setStyleSheet("color: #8fff8f;")
+            self.status_label.setText("ONLINE")
+            self.status_label.setStyleSheet("color: #74ffce;")
             return
 
         if status == "OFF":
-            self.status_label.setText("OFF / 未接続")
-            self.status_label.setStyleSheet("color: #aaaaaa;")
+            self.status_label.setText("OFFLINE / 未接続")
+            self.status_label.setStyleSheet("color: #94a4ad;")
         else:
-            self.status_label.setText("ERROR / 接続失敗")
-            self.status_label.setStyleSheet("color: #ff8888;")
+            self.status_label.setText("RECONNECT / 接続再試行")
+            self.status_label.setStyleSheet("color: #ffb57a;")
+
+    def set_display_mode(self, group_mode: bool) -> None:
+        if group_mode:
+            self.setFixedSize(560, 350)
+            self.video_label.setMinimumHeight(255)
+        else:
+            self.setFixedSize(352, 285)
+            self.video_label.setMinimumHeight(205)
+
+    def _update_info_panel(self) -> None:
+        cam_ip = self.camera_config.get("ip", "-")
+        resolution = "-"
+        if self._last_image is not None:
+            resolution = f"{self._last_image.width()}x{self._last_image.height()}"
+        age_ms = 0.0
+        if self._last_frame_monotonic > 0:
+            age_ms = (time.monotonic() - self._last_frame_monotonic) * 1000.0
+        stability = max(0.0, 100.0 - (self._reconnect_count * 12.5))
+        self.info_label.setText(
+            f"IP: {cam_ip}  |  状態: {self.status_label.text()}  |  STREAM: {self._stream_type}  |  解像度: {resolution}"
+        )
+        self.meter_link.set_value(100.0 if self._last_status == "OK" else 30.0, "ONLINE" if self._last_status == "OK" else "WEAK")
+        self.meter_fps.set_value((self._fps / 15.0) * 100.0, f"{self._fps:0.1f}")
+        self.meter_bitrate.set_value((self._estimated_bitrate_mbps / 8.0) * 100.0, f"{self._estimated_bitrate_mbps:0.2f}M")
+        self.meter_stability.set_value(stability, f"{int(stability)}%/{int(age_ms)}ms")
 
 
 class FullscreenWindow(QWidget):
@@ -378,6 +551,7 @@ class FullscreenWindow(QWidget):
         self.common_auth = common_auth or {}
         self.current_camera: dict | None = None
         self._last_image: QImage | None = None
+        self._pending_switch = False
 
         self.setWindowTitle("拡大表示")
         self.setStyleSheet(
@@ -389,8 +563,10 @@ class FullscreenWindow(QWidget):
             """
         )
 
-        self.video_label = QLabel("カメラを選択してください")
-        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_widget = ZoomPanVideoWidget()
+        self.switching_label = QLabel("")
+        self.switching_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.switching_label.setStyleSheet("color: #7fe8ff; font-size: 18px; font-weight: bold;")
 
         self.open_settings_button = QPushButton("設定画面を開く")
         self.close_button = QPushButton("閉じる")
@@ -408,7 +584,8 @@ class FullscreenWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self.video_label, 1)
+        layout.addWidget(self.video_widget, 1)
+        layout.addWidget(self.switching_label)
         layout.addWidget(control_bar, 0)
 
         self.player = StreamPlayer(self)
@@ -417,11 +594,13 @@ class FullscreenWindow(QWidget):
     def set_camera(self, camera_config: dict) -> None:
         self.current_camera = camera_config
         self.setWindowTitle(f"拡大表示 - {camera_config.get('name', camera_config.get('id', ''))}")
+        self._pending_switch = True
+        self.switching_label.setText("切替中...")
 
         if not camera_config.get("enabled", True):
             self.player.stop()
-            self.video_label.setPixmap(QPixmap())
-            self.video_label.setText("未接続\n(準備中)")
+            self.video_widget.reset_view()
+            self.switching_label.setText("OFFLINE")
             return
 
         rtsp_main = camera_config.get("rtsp_main")
@@ -433,18 +612,14 @@ class FullscreenWindow(QWidget):
 
     def show_on_target(self) -> None:
         if not self.target_screen:
-            self.show()
+            self.showMaximized()
             return
 
         screen_geo = self.target_screen.geometry()
 
         if self.single_display_mode:
-            w = int(screen_geo.width() * 0.72)
-            h = int(screen_geo.height() * 0.72)
-            x = screen_geo.x() + (screen_geo.width() - w) // 2
-            y = screen_geo.y() + (screen_geo.height() - h) // 2
-            self.setGeometry(x, y, w, h)
-            self.show()
+            self.move(screen_geo.topLeft())
+            self.showMaximized()
             return
 
         self.move(screen_geo.topLeft())
@@ -459,18 +634,13 @@ class FullscreenWindow(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
-        if self._last_image:
-            self._set_pixmap(self._last_image)
 
     def _update_frame(self, image: QImage) -> None:
         self._last_image = image
-        self._set_pixmap(image)
-
-    def _set_pixmap(self, image: QImage) -> None:
-        pixmap = QPixmap.fromImage(image)
-        self.video_label.setPixmap(
-            pixmap.scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        )
+        if self._pending_switch:
+            self.switching_label.setText("")
+            self._pending_switch = False
+        self.video_widget.set_image(image)
 
     def _open_settings(self) -> None:
         if not self.current_camera:
@@ -493,13 +663,18 @@ class MainWindow(QMainWindow):
         self.mode_buttons: dict[str, QPushButton] = {}
         self.current_mode = "all"
         self._switching_group = False
+        self.loop_enabled = False
+        self.loop_timer = QTimer(self)
+        self.loop_timer.setInterval(10_000)
+        self.loop_timer.timeout.connect(self._advance_group_loop)
+        self.loop_button: QPushButton | None = None
 
         self.setWindowTitle("IPカメラ一覧表示")
         self.setStyleSheet(
             """
-            QMainWindow { background-color: #0b0b0b; }
-            QPushButton { background-color: #242424; color: #f0f0f0; border: 1px solid #3f3f3f; padding: 8px; }
-            QPushButton:checked { background-color: #1f4d7a; border: 1px solid #3f87c3; }
+            QMainWindow { background-color: #03070d; }
+            QPushButton { background-color: #0e1b27; color: #d8ebf1; border: 1px solid #21455c; padding: 8px; }
+            QPushButton:checked { background-color: #0f4158; border: 1px solid #52cae8; }
             """
         )
 
@@ -515,8 +690,8 @@ class MainWindow(QMainWindow):
 
         self.grid_widget = QWidget()
         self.grid_layout = QGridLayout(self.grid_widget)
-        self.grid_layout.setContentsMargins(5, 5, 5, 5)
-        self.grid_layout.setSpacing(5)
+        self.grid_layout.setContentsMargins(2, 2, 2, 2)
+        self.grid_layout.setSpacing(3)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidget(self.grid_widget)
@@ -535,9 +710,13 @@ class MainWindow(QMainWindow):
         for mode_key, text in modes:
             btn = QPushButton(text)
             btn.setCheckable(True)
-            btn.clicked.connect(lambda checked=False, m=mode_key: self.switch_mode(m))
+            btn.clicked.connect(lambda checked=False, m=mode_key: self._manual_switch_mode(m))
             self.mode_buttons[mode_key] = btn
             self.button_row.addWidget(btn)
+        self.loop_button = QPushButton("ループ表示: OFF")
+        self.loop_button.setCheckable(True)
+        self.loop_button.clicked.connect(self._toggle_loop_mode)
+        self.button_row.addWidget(self.loop_button)
         self.button_row.addStretch(1)
 
     def _build_tiles(self) -> None:
@@ -604,15 +783,51 @@ class MainWindow(QMainWindow):
         return self.groups.get(group_no, [])
 
     def _layout_tiles(self, visible_ids: list[str]) -> None:
-        columns = 3
+        columns = 1 if self.current_mode.startswith("group") else 3
 
         for index, cam_id in enumerate(visible_ids):
             tile = self.tiles_by_camera_id.get(cam_id)
             if not tile:
                 continue
+            tile.set_display_mode(group_mode=self.current_mode.startswith("group"))
             row = index // columns
             col = index % columns
             self.grid_layout.addWidget(tile, row, col)
+
+    def _manual_switch_mode(self, mode: str) -> None:
+        if mode != self.current_mode and self.loop_enabled:
+            self._stop_loop()
+        self.switch_mode(mode)
+
+    def _toggle_loop_mode(self, checked: bool) -> None:
+        if checked:
+            self.loop_enabled = True
+            self.loop_button.setText("ループ表示: ON")
+            self.loop_button.setStyleSheet("background-color: #145d7b; border: 1px solid #7fe8ff;")
+            if self.current_mode == "all":
+                self.switch_mode("group1")
+            self.loop_timer.start()
+        else:
+            self._stop_loop()
+
+    def _stop_loop(self) -> None:
+        self.loop_enabled = False
+        self.loop_timer.stop()
+        if self.loop_button is not None:
+            self.loop_button.blockSignals(True)
+            self.loop_button.setChecked(False)
+            self.loop_button.blockSignals(False)
+            self.loop_button.setText("ループ表示: OFF")
+            self.loop_button.setStyleSheet("")
+
+    def _advance_group_loop(self) -> None:
+        group_modes = [f"group{i}" for i in range(1, 7)]
+        if self.current_mode not in group_modes:
+            self.switch_mode("group1")
+            return
+        current_idx = group_modes.index(self.current_mode)
+        next_mode = group_modes[(current_idx + 1) % len(group_modes)]
+        self.switch_mode(next_mode)
 
     def _update_streams(self, visible_ids: list[str]) -> None:
         visible = set(visible_ids)
@@ -643,6 +858,7 @@ class MainWindow(QMainWindow):
         self.fullscreen_window = None
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.loop_timer.stop()
         for tile in self.tiles_by_camera_id.values():
             tile.stop_stream()
         if self.fullscreen_window:
@@ -685,47 +901,28 @@ def main() -> int:
 
     screens = QGuiApplication.screens()
 
-    vertical_screen = None
-    horizontal_screen = None
-
-    for screen in screens:
-        geo = screen.geometry()
-        if geo.height() > geo.width():
-            vertical_screen = screen
-        else:
-            horizontal_screen = screen
-
     if not screens:
         QMessageBox.critical(None, "ディスプレイエラー", "利用可能なディスプレイが見つかりません")
         return 1
 
-    if vertical_screen is None:
-        vertical_screen = screens[0]
-    if horizontal_screen is None:
-        horizontal_screen = vertical_screen
-
-    single_display_mode = len(screens) < 2 or vertical_screen is horizontal_screen
+    # 一括表示はディスプレイ1(インデックス0)をデフォルトにする
+    grid_screen = screens[0]
+    fullscreen_screen = screens[1] if len(screens) > 1 else screens[0]
+    single_display_mode = len(screens) < 2
 
     main_window = MainWindow(
         config=config,
-        fullscreen_screen=horizontal_screen,
+        fullscreen_screen=fullscreen_screen,
         single_display_mode=single_display_mode,
     )
 
-    if single_display_mode:
-        geo = vertical_screen.geometry()
-        w = int(geo.width() * 0.65)
-        h = int(geo.height() * 0.85)
-        main_window.setGeometry(geo.x(), geo.y(), w, h)
-        main_window.show()
-    else:
-        main_window.move(vertical_screen.geometry().topLeft())
-        main_window.showMaximized()
+    main_window.move(grid_screen.geometry().topLeft())
+    main_window.showMaximized()
 
     logger.info(
-        "Display assignment: vertical=%s horizontal=%s single_display_mode=%s",
-        vertical_screen.name(),
-        horizontal_screen.name(),
+        "Display assignment: grid(default display1)=%s fullscreen=%s single_display_mode=%s",
+        grid_screen.name(),
+        fullscreen_screen.name(),
         single_display_mode,
     )
     logger.info("Application started")
