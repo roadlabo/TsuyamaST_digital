@@ -1,0 +1,10 @@
+{
+  "model_path": "yolo11n.pt",
+  "device_preference": "auto",
+  "target_classes": ["car", "bus", "truck", "motorcycle"],
+  "metrics_save_interval_sec": 5,
+  "ui_refresh_interval_ms": 500,
+  "ai_status_json_path": "app/config/ai_status.json",
+  "status_update_interval_sec": 3,
+  "output_root": "app/ai_monitor/data"
+}
