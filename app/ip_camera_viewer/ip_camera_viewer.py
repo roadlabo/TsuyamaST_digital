@@ -141,11 +141,15 @@ class StreamWorker(QThread):
         self.reconnect_seconds = reconnect_seconds
         self._running = False
         self._mutex = QMutex()
+        self._cap: cv2.VideoCapture | None = None
 
     def stop(self) -> None:
         self._mutex.lock()
         self._running = False
+        cap = self._cap
         self._mutex.unlock()
+        if cap is not None:
+            cap.release()
 
     def _is_running(self) -> bool:
         self._mutex.lock()
@@ -166,10 +170,16 @@ class StreamWorker(QThread):
                 return
 
             cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+            self._mutex.lock()
+            self._cap = cap
+            self._mutex.unlock()
             if not cap.isOpened():
                 self.status_changed.emit("ERROR")
                 logger.warning("Failed to connect stream: %s", self.rtsp_url)
                 cap.release()
+                self._mutex.lock()
+                self._cap = None
+                self._mutex.unlock()
                 self._sleep_with_interrupt(self.reconnect_seconds)
                 continue
 
@@ -195,6 +205,9 @@ class StreamWorker(QThread):
                 self.frame_ready.emit(image)
 
             cap.release()
+            self._mutex.lock()
+            self._cap = None
+            self._mutex.unlock()
             self._sleep_with_interrupt(self.reconnect_seconds)
 
     def _sleep_with_interrupt(self, seconds: float) -> None:
@@ -210,6 +223,7 @@ class StreamPlayer(QObject):
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._worker: Optional[StreamWorker] = None
+        self._stopping = False
 
     def start(self, rtsp_url: str, target_fps: float = 5.0) -> None:
         self.stop()
@@ -222,12 +236,25 @@ class StreamPlayer(QObject):
         self._worker.start()
 
     def stop(self) -> None:
-        if not self._worker:
+        if self._stopping:
             return
-        self._worker.stop()
-        self._worker.wait(3000)
-        self._worker.deleteLater()
-        self._worker = None
+        worker = self._worker
+        if worker is None:
+            return
+
+        self._stopping = True
+        try:
+            worker.stop()
+            worker.quit()
+            finished = worker.wait(3000)
+            if not finished:
+                logger.warning("Stream worker did not finish in timeout. force terminate.")
+                worker.terminate()
+                worker.wait(1000)
+            worker.deleteLater()
+            self._worker = None
+        finally:
+            self._stopping = False
 
 
 class CameraTile(QWidget):
@@ -284,6 +311,13 @@ class CameraTile(QWidget):
 
     def stop_stream(self) -> None:
         self.stream_player.stop()
+
+    def dispose(self) -> None:
+        self.stop_stream()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.stop_stream()
+        super().closeEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -420,6 +454,9 @@ class FullscreenWindow(QWidget):
         self.player.stop()
         super().closeEvent(event)
 
+    def stop_stream(self) -> None:
+        self.player.stop()
+
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
         if self._last_image:
@@ -455,6 +492,7 @@ class MainWindow(QMainWindow):
         self.tiles_by_camera_id: dict[str, CameraTile] = {}
         self.mode_buttons: dict[str, QPushButton] = {}
         self.current_mode = "all"
+        self._switching_group = False
 
         self.setWindowTitle("IPカメラ一覧表示")
         self.setStyleSheet(
@@ -509,23 +547,54 @@ class MainWindow(QMainWindow):
             self.tiles_by_camera_id[cam["id"]] = tile
 
     def switch_mode(self, mode: str) -> None:
+        if self._switching_group:
+            logger.info("group switch skipped (already switching): requested_mode=%s", mode)
+            return
+
+        self._switching_group = True
+        logger.info("group switch start: from=%s to=%s", self.current_mode, mode)
+        try:
+            self._switch_mode_internal(mode)
+        finally:
+            self._switching_group = False
+            logger.info("group switch completed: current=%s", self.current_mode)
+
+    def _switch_mode_internal(self, mode: str) -> None:
         if mode not in self.mode_buttons:
             logger.warning("Unknown startup/mode '%s'. fallback to all", mode)
             mode = "all"
 
+        logger.info("loading new group mode=%s", mode)
         self.current_mode = mode
         for key, button in self.mode_buttons.items():
             button.setChecked(key == mode)
 
+        self._clear_current_group()
+
+        visible_ids = self._visible_camera_ids(mode)
+        self._stop_fullscreen_stream()
+        self._layout_tiles(visible_ids)
+        self._update_streams(visible_ids)
+
+    def _clear_current_group(self) -> None:
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             widget = item.widget()
-            if widget:
-                widget.setParent(None)
+            if widget is None:
+                continue
+            camera_id = getattr(widget, "camera_config", {}).get("id", "unknown")
+            if isinstance(widget, CameraTile):
+                logger.info("stopping tile camera_id=%s", camera_id)
+                widget.stop_stream()
+                logger.info("stream stopped camera_id=%s", camera_id)
+            widget.setParent(None)
+        logger.info("clearing old group completed")
 
-        visible_ids = self._visible_camera_ids(mode)
-        self._layout_tiles(visible_ids)
-        self._update_streams(visible_ids)
+    def _stop_fullscreen_stream(self) -> None:
+        if self.fullscreen_window is None:
+            return
+        logger.info("stopping fullscreen stream before mode switch")
+        self.fullscreen_window.stop_stream()
 
     def _visible_camera_ids(self, mode: str) -> list[str]:
         if mode == "all":
