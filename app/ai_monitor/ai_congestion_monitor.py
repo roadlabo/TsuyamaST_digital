@@ -14,6 +14,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay")
+os.environ.setdefault("OPENCV_VIDEOIO_DEBUG", "0")
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+
 import cv2
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -384,7 +388,7 @@ class ReportWriter:
             total_pass = len(pass_df)
             total_pass_all += total_pass
             max_cong = float(metric_df["congestion_score"].max()) if not metric_df.empty else 0.0
-            over_count = int((metric_df["congestion_score"] > metric_df["threshold"]).sum()) if not metric_df.empty else 0
+            over_count = int((metric_df["congestion_score"] > metric_df["congestion_threshold"]).sum()) if not metric_df.empty else 0
             long_count = len(long_df)
             ws_summary.append([cam["camera_name"], total_pass, round(max_cong, 2), over_count, long_count])
             self._add_camera_sheet(wb, cam, pass_df, metric_df, long_df)
@@ -1128,6 +1132,11 @@ class CameraWorker(QtCore.QObject):
         self._next_infer_retry_time = 0.0
         self._last_warn_emit = 0.0
         self._status_text = "INIT"
+        self.display_scale = max(0.1, min(1.0, float(self.camera_cfg.get("display_scale", 0.8))))
+        self.csv_error_state = {"congestion": False, "pass": False, "long_stay": False}
+        self.read_fail_count = 0
+        self.max_read_fail_before_reconnect = 5
+        self.last_reconnect_at = 0.0
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
@@ -1179,7 +1188,34 @@ class CameraWorker(QtCore.QObject):
 
     def connect(self) -> None:
         self._release_capture()
-        self.cap = cv2.VideoCapture(self._stream_source())
+        src = self._stream_source()
+        try:
+            self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        except Exception:
+            self.cap = cv2.VideoCapture(src)
+        if self.cap is not None:
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+        self.read_fail_count = 0
+
+    def _reconnect_capture(self, reason: str = "") -> None:
+        now_ts = time.time()
+        reconnect_sec = float(self.camera_cfg.get("reconnect_sec", 3))
+        if now_ts - self.last_reconnect_at < reconnect_sec:
+            return
+        self.last_reconnect_at = now_ts
+        self._set_status("RECONNECTING")
+        self.error_occurred.emit(self.camera_id, f"{self.camera_name} 再接続中… ({reason})" if reason else f"{self.camera_name} 再接続中…")
+        self._release_capture()
+        time.sleep(min(1.0, reconnect_sec))
+        try:
+            self.connect()
+            self._set_status("RUNNING")
+            self.error_occurred.emit(self.camera_id, f"{self.camera_name} RUNNING")
+        except Exception as exc:
+            self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} reconnect failed: {exc}")
 
     def _release_capture(self) -> None:
         if self.cap is not None:
@@ -1208,7 +1244,10 @@ class CameraWorker(QtCore.QObject):
         pass_events = self.metrics_dir / f"pass_events_{date_str}.csv"
         long_stay = self.metrics_dir / f"long_stay_events_{date_str}.csv"
 
-        self._ensure_csv_header(congestion_ts, ["timestamp", "camera_id", "camera_name", "congestion_score", "threshold"])
+        self._ensure_csv_header(
+            congestion_ts,
+            ["timestamp", "camera_id", "camera_name", "congestion_score", "congestion_threshold", "threshold_over", "fps"],
+        )
         self._ensure_csv_header(pass_events, ["timestamp", "camera_id", "track_id", "class_name", "direction"])
         self._ensure_csv_header(long_stay, ["first_seen", "detected_at", "camera_id", "track_id", "stay_minutes", "class_name"])
         return congestion_ts, pass_events, long_stay
@@ -1223,6 +1262,22 @@ class CameraWorker(QtCore.QObject):
     def _append_csv(self, path: Path, row: list[Any]) -> None:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(row)
+
+    def _append_csv_safe(self, path: Path, row: list[Any], kind: str) -> None:
+        try:
+            self._append_csv(path, row)
+            self.csv_error_state[kind] = False
+        except PermissionError as exc:
+            if not self.csv_error_state.get(kind, False):
+                self.csv_error_state[kind] = True
+                self.error_occurred.emit(
+                    self.camera_id,
+                    f"[WARN] cam{self.camera_id} {kind} csv is locked. Excel等でCSVが開かれているため書き込めません。閉じると自動で再開します。: {exc}",
+                )
+        except Exception as exc:
+            if not self.csv_error_state.get(kind, False):
+                self.csv_error_state[kind] = True
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} {kind} csv write failed: {exc}")
 
     def _load_previous_day_histogram(self) -> tuple[list[int], list[int]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
@@ -1381,172 +1436,194 @@ class CameraWorker(QtCore.QObject):
         self._release_capture()
 
     def process_once_nonblocking(self) -> dict[str, Any] | None:
-        start = time.time()
-        now_ts = time.time()
-        if now_ts < self._next_reconnect_time or now_ts < self._next_infer_retry_time:
-            return None
-        if self.cap is None or not self.cap.isOpened():
-            self.connect()
-            if self.cap is None or not self.cap.isOpened():
-                reconnect_sec = float(self.camera_cfg.get("reconnect_sec", 3))
-                self._next_reconnect_time = now_ts + reconnect_sec
-                self._set_status("RECONNECT WAIT")
-                if now_ts - self._last_warn_emit > 1.0:
-                    self._last_warn_emit = now_ts
-                    self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} reconnect scheduled in {reconnect_sec:.0f} sec")
+        try:
+            start = time.time()
+            now_ts = time.time()
+            if now_ts < self._next_reconnect_time or now_ts < self._next_infer_retry_time:
                 return None
 
-        ok, frame = self.cap.read()
-        if not ok:
-            reconnect_sec = float(self.camera_cfg.get("reconnect_sec", 3))
-            self._next_reconnect_time = now_ts + reconnect_sec
-            self._set_status("STREAM ERROR")
-            if now_ts - self._last_warn_emit > 1.0:
-                self._last_warn_emit = now_ts
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} reconnect scheduled in {reconnect_sec:.0f} sec")
-            self._release_capture()
-            return None
-
-        self._set_status("RUNNING")
-        self.last_raw_frame = frame.copy()
-        now = datetime.now()
-        self._rollover_if_needed(now)
-
-        self.frame_index += 1
-        frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
-        if self.frame_index % frame_skip != 0:
-            return None
-
-        try:
-            result = self.model.track(
-                source=frame,
-                persist=True,
-                tracker="bytetrack.yaml",
-                verbose=False,
-                device=self.device,
-                conf=float(self.camera_cfg.get("confidence_threshold", 0.25)),
-                iou=float(self.camera_cfg.get("iou_threshold", 0.5)),
-                imgsz=int(self.camera_cfg.get("imgsz", 640)),
-                classes=sorted(self.target_classes) if self.target_classes else None,
-            )[0]
-        except Exception as exc:
-            self._next_infer_retry_time = time.time() + 3.0
-            self._set_status("MODEL ERROR")
-            self.error_occurred.emit(self.camera_id, f"[ERROR] cam{self.camera_id} tracker failed: {exc}")
-            return None
-
-        boxes = result.boxes
-        tracks: list[dict[str, Any]] = []
-        raw_items: list[dict[str, Any]] = []
-        pass_events: list[dict[str, Any]] = []
-        long_stay_events: list[dict[str, Any]] = []
-        long_stay_list: list[tuple[int, float]] = []
-        exclude_polygon = self.camera_cfg.get("exclude_polygon", [])
-        stay_zone = self.camera_cfg.get("stay_zone_polygon", []) or exclude_polygon
-
-        if boxes is not None and boxes.id is not None:
-            cls_array = boxes.cls.cpu().numpy() if boxes.cls is not None else []
-            conf_array = boxes.conf.cpu().numpy() if boxes.conf is not None else []
-            for i, (box, tid) in enumerate(zip(boxes.xyxy.cpu().numpy(), boxes.id.cpu().numpy())):
-                cls_idx = int(cls_array[i]) if len(cls_array) > i else -1
-                if self.target_classes and cls_idx not in self.target_classes:
-                    continue
-                cls_name = self.model.names.get(cls_idx, str(cls_idx)) if isinstance(self.model.names, dict) else str(cls_idx)
-                conf = float(conf_array[i]) if len(conf_array) > i else 0.0
-
-                x1, y1, x2, y2 = box.tolist()
-                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-                if self._in_polygon((cx, cy), exclude_polygon):
-                    continue
-
-                track_id = int(tid)
-                raw_items.append({
-                    "track_id": track_id,
-                    "cls_idx": cls_idx,
-                    "cls_name": cls_name,
-                    "conf": conf,
-                    "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                    "center": (cx, cy),
-                })
-
-            for item in self._deduplicate_overlapping_detections(raw_items):
-                track_id = int(item["track_id"])
-                cls_name = item["cls_name"]
-                cx, cy = item["center"]
-                tracks.append({"track_id": track_id, "center": (cx, cy), "bbox": item["bbox"], "class_name": cls_name})
-
-                event = self.counter.update(track_id, (cx, cy), cls_name, now)
-                if event:
-                    pass_events.append(event)
-
-                if track_id not in self.track_state.first_seen:
-                    self.track_state.first_seen[track_id] = now
-
-                if self._in_polygon((cx, cy), stay_zone):
-                    stay_mins = (now - self.track_state.first_seen[track_id]).total_seconds() / 60.0
-                    if stay_mins >= float(self.camera_cfg.get("long_stay_minutes", 15)):
-                        long_stay_list.append((track_id, stay_mins))
-                        if track_id not in self.track_state.long_stay_emitted:
-                            self.track_state.long_stay_emitted.add(track_id)
-                            long_stay_events.append({
-                                "first_seen": self.track_state.first_seen[track_id].strftime("%Y-%m-%d %H:%M:%S"),
-                                "detected_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-                                "camera_id": self.camera_id,
-                                "track_id": track_id,
-                                "stay_minutes": round(stay_mins, 1),
-                                "class_name": cls_name,
-                            })
-
-        frame_width = int(frame.shape[1]) if frame is not None else 1920
-        congestion_score = self.congestion.update(tracks, now, frame_width) if self.camera_cfg.get("enable_congestion", True) else 0.0
-        threshold = float(self.camera_cfg.get("congestion_threshold", 5))
-        threshold_over = congestion_score >= threshold
-
-        elapsed = max(1e-6, time.time() - start)
-        self.fps = 1.0 / elapsed
-
-        for pe in pass_events:
             try:
-                self._append_csv(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]])
-            except Exception as exc:
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} pass csv write failed: {exc}")
+                if self.cap is None or not self.cap.isOpened():
+                    self._reconnect_capture("cap not opened")
+                    return None
 
-        for le in long_stay_events:
+                ok, frame = self.cap.read()
+                if not ok or frame is None:
+                    self.read_fail_count += 1
+                    if self.read_fail_count >= self.max_read_fail_before_reconnect:
+                        self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} frame read failed repeatedly. reconnecting.")
+                        self._reconnect_capture("read failed")
+                    return None
+                self.read_fail_count = 0
+            except cv2.error as exc:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} OpenCV error: {exc}")
+                self._reconnect_capture("cv2.error")
+                return None
+            except Exception as exc:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} capture exception: {exc}")
+                self._reconnect_capture("generic exception")
+                return None
+
+            self._set_status("RUNNING")
+            self.last_raw_frame = self._resize_for_display(frame.copy())
+            now = datetime.now()
+            self._rollover_if_needed(now)
+
+            self.frame_index += 1
+            frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
+            if self.frame_index % frame_skip != 0:
+                return None
+
             try:
-                self._append_csv(self.long_stay_csv, [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]])
+                result = self.model.track(
+                    source=frame,
+                    persist=True,
+                    tracker="bytetrack.yaml",
+                    verbose=False,
+                    device=self.device,
+                    conf=float(self.camera_cfg.get("confidence_threshold", 0.25)),
+                    iou=float(self.camera_cfg.get("iou_threshold", 0.5)),
+                    imgsz=int(self.camera_cfg.get("imgsz", 640)),
+                    classes=sorted(self.target_classes) if self.target_classes else None,
+                )[0]
             except Exception as exc:
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} long_stay csv write failed: {exc}")
+                self._next_infer_retry_time = time.time() + 3.0
+                self._set_status("MODEL ERROR")
+                self.error_occurred.emit(self.camera_id, f"[ERROR] cam{self.camera_id} tracker failed: {exc}")
+                return None
 
-        try:
-            self._append_csv(self.congestion_csv, [
-                now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_id, self.camera_name, round(congestion_score, 2), round(threshold, 2),
-            ])
+            boxes = result.boxes
+            tracks: list[dict[str, Any]] = []
+            raw_items: list[dict[str, Any]] = []
+            pass_events: list[dict[str, Any]] = []
+            long_stay_events: list[dict[str, Any]] = []
+            long_stay_list: list[tuple[int, float]] = []
+            exclude_polygon = self.camera_cfg.get("exclude_polygon", [])
+            stay_zone = self.camera_cfg.get("stay_zone_polygon", []) or exclude_polygon
+
+            if boxes is not None and boxes.id is not None:
+                cls_array = boxes.cls.cpu().numpy() if boxes.cls is not None else []
+                conf_array = boxes.conf.cpu().numpy() if boxes.conf is not None else []
+                for i, (box, tid) in enumerate(zip(boxes.xyxy.cpu().numpy(), boxes.id.cpu().numpy())):
+                    cls_idx = int(cls_array[i]) if len(cls_array) > i else -1
+                    if self.target_classes and cls_idx not in self.target_classes:
+                        continue
+                    cls_name = self.model.names.get(cls_idx, str(cls_idx)) if isinstance(self.model.names, dict) else str(cls_idx)
+                    conf = float(conf_array[i]) if len(conf_array) > i else 0.0
+
+                    x1, y1, x2, y2 = box.tolist()
+                    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                    if self._in_polygon((cx, cy), exclude_polygon):
+                        continue
+
+                    track_id = int(tid)
+                    raw_items.append({
+                        "track_id": track_id,
+                        "cls_idx": cls_idx,
+                        "cls_name": cls_name,
+                        "conf": conf,
+                        "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                        "center": (cx, cy),
+                    })
+
+                for item in self._deduplicate_overlapping_detections(raw_items):
+                    track_id = int(item["track_id"])
+                    cls_name = item["cls_name"]
+                    cx, cy = item["center"]
+                    tracks.append({"track_id": track_id, "center": (cx, cy), "bbox": item["bbox"], "class_name": cls_name})
+
+                    event = self.counter.update(track_id, (cx, cy), cls_name, now)
+                    if event:
+                        pass_events.append(event)
+
+                    if track_id not in self.track_state.first_seen:
+                        self.track_state.first_seen[track_id] = now
+
+                    if self._in_polygon((cx, cy), stay_zone):
+                        stay_mins = (now - self.track_state.first_seen[track_id]).total_seconds() / 60.0
+                        if stay_mins >= float(self.camera_cfg.get("long_stay_minutes", 15)):
+                            long_stay_list.append((track_id, stay_mins))
+                            if track_id not in self.track_state.long_stay_emitted:
+                                self.track_state.long_stay_emitted.add(track_id)
+                                long_stay_events.append({
+                                    "first_seen": self.track_state.first_seen[track_id].strftime("%Y-%m-%d %H:%M:%S"),
+                                    "detected_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "camera_id": self.camera_id,
+                                    "track_id": track_id,
+                                    "stay_minutes": round(stay_mins, 1),
+                                    "class_name": cls_name,
+                                })
+
+            frame_width = int(frame.shape[1]) if frame is not None else 1920
+            prev_points_len = len(self.congestion.state.frame_time_stamps)
+            congestion_score = self.congestion.update(tracks, now, frame_width) if self.camera_cfg.get("enable_congestion", True) else 0.0
+            threshold = float(self.camera_cfg.get("congestion_threshold", 5))
+            threshold_over = congestion_score >= threshold
+
+            elapsed = max(1e-6, time.time() - start)
+            self.fps = 1.0 / elapsed
+
+            for pe in pass_events:
+                self._append_csv_safe(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]], kind="pass")
+            for le in long_stay_events:
+                self._append_csv_safe(
+                    self.long_stay_csv,
+                    [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]],
+                    kind="long_stay",
+                )
+
+            if len(self.congestion.state.frame_time_stamps) > prev_points_len:
+                self._append_csv_safe(
+                    self.congestion_csv,
+                    [
+                        now.strftime("%Y-%m-%d %H:%M:%S"),
+                        self.camera_id,
+                        self.camera_name,
+                        round(congestion_score, 2),
+                        round(threshold, 2),
+                        bool(threshold_over),
+                        round(self.fps, 2),
+                    ],
+                    kind="congestion",
+                )
+
+            self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks, long_stay_list))
+            long_stay_list.sort(key=lambda x: x[1], reverse=True)
+
+            return {
+                "camera_id": self.camera_id,
+                "camera_name": self.camera_name,
+                "frame": self.last_frame,
+                "congestion_score": congestion_score,
+                "threshold": threshold,
+                "threshold_over": threshold_over,
+                "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
+                "prev_congestion_points": self.previous_day_congestion_points,
+                "pass_bins_ltor": self.counter.state.pass_bins_ltor,
+                "pass_bins_rtol": self.counter.state.pass_bins_rtol,
+                "hist_prev_ltor": self.previous_day_hist_ltor,
+                "hist_prev_rtol": self.previous_day_hist_rtol,
+                "long_stays": long_stay_list[:10],
+                "long_stay_count": len(long_stay_list),
+                "fps": self.fps,
+                "status": self._status_text,
+                "device": self.device,
+                "gpu_name": self.gpu_name,
+            }
         except Exception as exc:
-            self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} congestion csv write failed: {exc}")
+            self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} loop exception: {exc}")
+            self._reconnect_capture("loop exception")
+            return None
 
-        self.last_frame = self._draw_overlay(frame.copy(), tracks, long_stay_list)
-        long_stay_list.sort(key=lambda x: x[1], reverse=True)
-
-        return {
-            "camera_id": self.camera_id,
-            "camera_name": self.camera_name,
-            "frame": self.last_frame,
-            "congestion_score": congestion_score,
-            "threshold": threshold,
-            "threshold_over": threshold_over,
-            "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
-            "prev_congestion_points": self.previous_day_congestion_points,
-            "pass_bins_ltor": self.counter.state.pass_bins_ltor,
-            "pass_bins_rtol": self.counter.state.pass_bins_rtol,
-            "hist_prev_ltor": self.previous_day_hist_ltor,
-            "hist_prev_rtol": self.previous_day_hist_rtol,
-            "long_stays": long_stay_list[:10],
-            "long_stay_count": len(long_stay_list),
-            "fps": self.fps,
-            "status": self._status_text,
-            "device": self.device,
-            "gpu_name": self.gpu_name,
-        }
+    def _resize_for_display(self, frame: np.ndarray) -> np.ndarray:
+        if frame is None:
+            return frame
+        if self.display_scale >= 0.999:
+            return frame
+        h, w = frame.shape[:2]
+        new_w = max(1, int(w * self.display_scale))
+        new_h = max(1, int(h * self.display_scale))
+        return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     def _draw_overlay(self, frame: np.ndarray, tracks: list[dict[str, Any]], long_stays: list[tuple[int, float]]) -> np.ndarray:
         line = [self.camera_cfg.get("line_start", [10, 10]), self.camera_cfg.get("line_end", [100, 10])]
