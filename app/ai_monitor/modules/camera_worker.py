@@ -23,14 +23,7 @@ class TrackState:
 
 
 class CameraWorker:
-    """カメラ単位で独立運用する処理クラス（将来拡張前提）。"""
-
-    def __init__(
-        self,
-        camera_cfg: dict[str, Any],
-        system_cfg: dict[str, Any],
-        root_dir: Path,
-    ):
+    def __init__(self, camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path):
         self.camera_cfg = camera_cfg
         self.system_cfg = system_cfg
         self.root_dir = root_dir
@@ -40,22 +33,39 @@ class CameraWorker:
         self.device = self._resolve_device(system_cfg.get("device_preference", "auto"))
         self.gpu_name = torch.cuda.get_device_name(0) if self.device.startswith("cuda") else "CPU"
 
-        self.model = YOLO(system_cfg.get("model_path", "yolo11n.pt"))
-        self.target_classes = set(system_cfg.get("target_classes", ["car", "bus", "truck", "motorcycle"]))
+        self.model = YOLO(self.camera_cfg.get("yolo_model") or system_cfg.get("model_path", "yolo11n.pt"))
+        self.target_classes = set(int(x) for x in self.camera_cfg.get("target_classes", [2, 3, 5, 7]))
 
-        self.counter = LineCounter(camera_cfg.get("direction", "LtoR"), camera_cfg.get("line_points", [[0, 0], [100, 0]]))
-        self.congestion = CongestionScorer()
+        line = [self.camera_cfg.get("line_start", [0, 0]), self.camera_cfg.get("line_end", [100, 0])]
+        self.counter = LineCounter(line)
+        self.congestion = CongestionScorer(int(self.camera_cfg.get("congestion_calculation_interval", 10)))
         self.track_state = TrackState()
 
         self.cap = None
         self.last_frame = None
+        self.last_raw_frame = None
         self.fps = 0.0
+        self.frame_index = 0
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
-        self.previous_day_hist = self._load_previous_day_histogram()
+        self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
+
+    def get_latest_raw_frame(self):
+        return None if self.last_raw_frame is None else self.last_raw_frame.copy()
+
+    def update_camera_config(self, new_cfg: dict[str, Any]) -> None:
+        old_model = self.camera_cfg.get("yolo_model")
+        self.camera_cfg = new_cfg
+        self.camera_name = new_cfg.get("camera_name", self.camera_name)
+        self.target_classes = set(int(x) for x in new_cfg.get("target_classes", [2, 3, 5, 7]))
+        self.counter.update_line([new_cfg.get("line_start", [0, 0]), new_cfg.get("line_end", [100, 0])])
+        self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 10)))
+
+        if new_cfg.get("yolo_model") and new_cfg.get("yolo_model") != old_model:
+            self.model = YOLO(new_cfg["yolo_model"])
 
     def _resolve_device(self, preference: str) -> str:
         if preference == "cpu":
@@ -87,12 +97,8 @@ class CameraWorker:
             "timestamp", "camera_id", "camera_name", "active_tracks", "congestion_score",
             "congestion_threshold", "threshold_over", "long_stay_count", "fps",
         ])
-        self._ensure_csv_header(pass_events, [
-            "timestamp", "camera_id", "track_id", "class_name", "direction",
-        ])
-        self._ensure_csv_header(long_stay, [
-            "first_seen", "detected_at", "camera_id", "track_id", "stay_minutes", "class_name",
-        ])
+        self._ensure_csv_header(pass_events, ["timestamp", "camera_id", "track_id", "class_name", "direction"])
+        self._ensure_csv_header(long_stay, ["first_seen", "detected_at", "camera_id", "track_id", "stay_minutes", "class_name"])
         return realtime, pass_events, long_stay
 
     @staticmethod
@@ -106,28 +112,33 @@ class CameraWorker:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(row)
 
-    def _load_previous_day_histogram(self) -> list[int]:
+    def _load_previous_day_histogram(self) -> tuple[list[int], list[int]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
         prev_file = self.metrics_dir / f"pass_events_{prev.strftime('%Y-%m-%d')}.csv"
-        hist = [0] * 144
+        ltor = [0] * 144
+        rtol = [0] * 144
         if not prev_file.exists():
-            return hist
+            return ltor, rtol
         with prev_file.open("r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 dt = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
                 idx = (dt.hour * 60 + dt.minute) // 10
                 if 0 <= idx < 144:
-                    hist[idx] += 1
-        return hist
+                    if row.get("direction") == "LtoR":
+                        ltor[idx] += 1
+                    else:
+                        rtol[idx] += 1
+        return ltor, rtol
 
     def _rollover_if_needed(self, now: datetime) -> None:
         if now.date() == self.today:
             return
         self.today = now.date()
         self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
-        self.previous_day_hist = self._load_previous_day_histogram()
-        self.counter.state.histogram_10min = [0] * 144
+        self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
+        self.counter.state.pass_bins_ltor = [0] * 144
+        self.counter.state.pass_bins_rtol = [0] * 144
 
     def process_once(self) -> dict[str, Any]:
         start = time.time()
@@ -139,8 +150,14 @@ class CameraWorker:
             self.connect()
             return self._empty_payload()
 
+        self.last_raw_frame = frame.copy()
         now = datetime.now()
         self._rollover_if_needed(now)
+
+        self.frame_index += 1
+        frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
+        if self.frame_index % frame_skip != 0 and self.last_frame is not None:
+            return self._empty_payload()
 
         result = self.model.track(
             source=frame,
@@ -148,8 +165,10 @@ class CameraWorker:
             tracker="bytetrack.yaml",
             verbose=False,
             device=self.device,
-            conf=0.25,
-            classes=None,
+            conf=float(self.camera_cfg.get("confidence_threshold", 0.25)),
+            iou=float(self.camera_cfg.get("iou_threshold", 0.5)),
+            imgsz=int(self.camera_cfg.get("imgsz", 640)),
+            classes=sorted(self.target_classes) if self.target_classes else None,
         )[0]
 
         boxes = result.boxes
@@ -164,23 +183,17 @@ class CameraWorker:
             cls_array = boxes.cls.cpu().numpy() if boxes.cls is not None else []
             for i, (box, tid) in enumerate(zip(boxes.xyxy.cpu().numpy(), boxes.id.cpu().numpy())):
                 cls_idx = int(cls_array[i]) if len(cls_array) > i else -1
-                cls_name = self.model.names.get(cls_idx, str(cls_idx)) if isinstance(self.model.names, dict) else str(cls_idx)
-                if cls_name not in self.target_classes:
+                if self.target_classes and cls_idx not in self.target_classes:
                     continue
+                cls_name = self.model.names.get(cls_idx, str(cls_idx)) if isinstance(self.model.names, dict) else str(cls_idx)
 
                 x1, y1, x2, y2 = box.tolist()
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
+                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
                 if self._in_polygon((cx, cy), exclude_polygon):
                     continue
 
                 track_id = int(tid)
-                tracks.append({
-                    "track_id": track_id,
-                    "center": (cx, cy),
-                    "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                    "class_name": cls_name,
-                })
+                tracks.append({"track_id": track_id, "center": (cx, cy), "bbox": (int(x1), int(y1), int(x2), int(y2)), "class_name": cls_name})
 
                 event = self.counter.update(track_id, (cx, cy), cls_name, now)
                 if event:
@@ -204,7 +217,8 @@ class CameraWorker:
                                 "class_name": cls_name,
                             })
 
-        congestion_score = self.congestion.update(tracks)
+        frame_width = int(frame.shape[1]) if frame is not None else 1920
+        congestion_score = self.congestion.update(tracks, now, frame_width) if self.camera_cfg.get("enable_congestion", True) else 0.0
         threshold = float(self.camera_cfg.get("congestion_threshold", 60))
         threshold_over = congestion_score >= threshold
 
@@ -212,14 +226,10 @@ class CameraWorker:
         self.fps = 1.0 / elapsed
 
         for pe in pass_events:
-            self._append_csv(self.pass_csv, [
-                pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"],
-            ])
+            self._append_csv(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]])
 
         for le in long_stay_events:
-            self._append_csv(self.long_stay_csv, [
-                le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"],
-            ])
+            self._append_csv(self.long_stay_csv, [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]])
 
         self._append_csv(self.realtime_csv, [
             now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_id, self.camera_name, len(tracks),
@@ -236,8 +246,11 @@ class CameraWorker:
             "congestion_score": congestion_score,
             "threshold": threshold,
             "threshold_over": threshold_over,
-            "hist_today": self.counter.state.histogram_10min,
-            "hist_prev": self.previous_day_hist,
+            "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
+            "pass_bins_ltor": self.counter.state.pass_bins_ltor,
+            "pass_bins_rtol": self.counter.state.pass_bins_rtol,
+            "hist_prev_ltor": self.previous_day_hist_ltor,
+            "hist_prev_rtol": self.previous_day_hist_rtol,
             "long_stays": long_stay_list[:10],
             "long_stay_count": len(long_stay_list),
             "fps": self.fps,
@@ -246,7 +259,7 @@ class CameraWorker:
         }
 
     def _draw_overlay(self, frame: np.ndarray, tracks: list[dict[str, Any]], long_stays: list[tuple[int, float]]) -> np.ndarray:
-        line = self.camera_cfg.get("line_points", [[10, 10], [100, 10]])
+        line = [self.camera_cfg.get("line_start", [10, 10]), self.camera_cfg.get("line_end", [100, 10])]
         cv2.line(frame, tuple(line[0]), tuple(line[1]), (0, 255, 255), 2)
 
         poly = self.camera_cfg.get("exclude_polygon", [])
@@ -256,20 +269,10 @@ class CameraWorker:
         for tr in tracks:
             x1, y1, x2, y2 = tr["bbox"]
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
-            cv2.putText(
-                frame,
-                f"ID:{tr['track_id']} {tr['class_name']}",
-                (x1, max(20, y1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
+            cv2.putText(frame, f"ID:{tr['track_id']} {tr['class_name']}", (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
 
-        for tid, mins in long_stays:
-            cv2.putText(frame, f"LONG STAY ID:{tid} {mins:.1f}m", (20, 40 + 22 * (tid % 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        for i, (tid, mins) in enumerate(long_stays[:5]):
+            cv2.putText(frame, f"LONG STAY ID:{tid} {mins:.1f}m", (20, 40 + 22 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return frame
 
     def _empty_payload(self) -> dict[str, Any]:
@@ -277,11 +280,14 @@ class CameraWorker:
             "camera_id": self.camera_id,
             "camera_name": self.camera_name,
             "frame": self.last_frame,
-            "congestion_score": 0.0,
+            "congestion_score": self.congestion.state.current_congestion_index,
             "threshold": float(self.camera_cfg.get("congestion_threshold", 60)),
             "threshold_over": False,
-            "hist_today": self.counter.state.histogram_10min,
-            "hist_prev": self.previous_day_hist,
+            "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
+            "pass_bins_ltor": self.counter.state.pass_bins_ltor,
+            "pass_bins_rtol": self.counter.state.pass_bins_rtol,
+            "hist_prev_ltor": self.previous_day_hist_ltor,
+            "hist_prev_rtol": self.previous_day_hist_rtol,
             "long_stays": [],
             "long_stay_count": 0,
             "fps": self.fps,

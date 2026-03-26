@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -38,15 +39,18 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(central)
 
         toolbar = QtWidgets.QHBoxLayout()
-        btn_setting = QtWidgets.QPushButton("設定")
+        btn_setting = QtWidgets.QPushButton("解析条件")
         btn_setting.clicked.connect(self.open_settings)
+        btn_save = QtWidgets.QPushButton("保存")
+        btn_save.clicked.connect(self.save_current_settings)
+        btn_load = QtWidgets.QPushButton("読込")
+        btn_load.clicked.connect(self.load_settings_from_json)
         btn_daily = QtWidgets.QPushButton("日次Excel出力")
         btn_daily.clicked.connect(self.export_daily)
         btn_monthly = QtWidgets.QPushButton("月次Excel出力")
         btn_monthly.clicked.connect(self.export_monthly)
-        toolbar.addWidget(btn_setting)
-        toolbar.addWidget(btn_daily)
-        toolbar.addWidget(btn_monthly)
+        for btn in (btn_setting, btn_save, btn_load, btn_daily, btn_monthly):
+            toolbar.addWidget(btn)
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
@@ -60,7 +64,7 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(int(self.app_cfg.system.get("ui_refresh_interval_ms", 500)))
+        self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 500)))
 
         self.setWindowState(QtCore.Qt.WindowState.WindowMaximized)
 
@@ -94,11 +98,36 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
             return
         camera_id = int(selected.split(":", 1)[0])
         idx = next(i for i, c in enumerate(cams) if c["camera_id"] == camera_id)
-        dlg = CameraSettingsDialog(cams[idx], self)
+        live = self.workers[camera_id].get_latest_raw_frame() if camera_id in self.workers else None
+        dlg = CameraSettingsDialog(cams[idx], live, self)
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             cams[idx] = dlg.get_updated_config()
             self.cfg_mgr.save_camera_settings(cams)
-            QtWidgets.QMessageBox.information(self, "保存", "設定を保存しました。再起動で完全反映されます。")
+            self.workers[camera_id].update_camera_config(cams[idx])
+            QtWidgets.QMessageBox.information(self, "保存", "設定を保存し、次フレームから反映しました。")
+
+    def save_current_settings(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "設定保存", str(self.root_dir / "config" / "monitor_config.json"), "JSON (*.json)")
+        if not path:
+            return
+        data = {"system": self.app_cfg.system, "cameras": self.app_cfg.cameras}
+        Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        QtWidgets.QMessageBox.information(self, "保存", f"保存しました: {path}")
+
+    def load_settings_from_json(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "設定読込", str(self.root_dir / "config"), "JSON (*.json)")
+        if not path:
+            return
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.app_cfg.system.update(data.get("system", {}))
+        self.app_cfg.cameras = data.get("cameras", self.app_cfg.cameras)
+        self.cfg_mgr.save_system_settings(self.app_cfg.system)
+        self.cfg_mgr.save_camera_settings(self.app_cfg.cameras)
+        for cam in self.app_cfg.cameras:
+            cid = cam["camera_id"]
+            if cid in self.workers:
+                self.workers[cid].update_camera_config(cam)
+        QtWidgets.QMessageBox.information(self, "読込", "設定を反映しました。")
 
     def export_daily(self) -> None:
         path = self.reporter.write_daily_report(date.today(), self.app_cfg.cameras, self.root_dir / "data" / "metrics")

@@ -10,12 +10,13 @@ from typing import Any
 DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "model_path": "yolo11n.pt",
     "device_preference": "auto",
-    "target_classes": ["car", "bus", "truck", "motorcycle"],
     "metrics_save_interval_sec": 5,
     "ui_refresh_interval_ms": 500,
     "ai_status_json_path": "app/config/ai_status.json",
     "status_update_interval_sec": 3,
     "output_root": "app/ai_monitor/data",
+    "display_update_interval_ms": 500,
+    "graph_update_interval_sec": 10,
 }
 
 DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
@@ -25,42 +26,90 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "camera_name": "Camera1",
             "stream_url": "0",
             "enabled": True,
-            "direction": "LtoR",
-            "line_points": [[100, 300], [1000, 300]],
+            "line_start": [100, 300],
+            "line_end": [1000, 300],
             "exclude_polygon": [],
             "congestion_threshold": 60,
             "long_stay_minutes": 15,
             "long_stay_trigger_count": 1,
             "stay_zone_polygon": [],
             "reconnect_sec": 3,
+            "tracking_method": "bytetrack",
+            "yolo_model": "yolo11n.pt",
+            "confidence_threshold": 0.25,
+            "iou_threshold": 0.5,
+            "frame_skip": 1,
+            "imgsz": 640,
+            "target_classes": [2, 3, 5, 7],
+            "bt_track_high_thresh": 0.3,
+            "bt_track_low_thresh": 0.1,
+            "bt_match_thresh": 0.8,
+            "bt_track_buffer": 30,
+            "crossing_judgment_pattern": "line_cross",
+            "distance_threshold": 25.0,
+            "congestion_calculation_interval": 10,
+            "enable_congestion": True,
+            "line_direction_mode": "line_vector",
         },
         {
             "camera_id": 2,
             "camera_name": "Camera2",
             "stream_url": "1",
             "enabled": True,
-            "direction": "LtoR",
-            "line_points": [[100, 300], [1000, 300]],
+            "line_start": [100, 300],
+            "line_end": [1000, 300],
             "exclude_polygon": [],
             "congestion_threshold": 60,
             "long_stay_minutes": 15,
             "long_stay_trigger_count": 1,
             "stay_zone_polygon": [],
             "reconnect_sec": 3,
+            "tracking_method": "bytetrack",
+            "yolo_model": "yolo11n.pt",
+            "confidence_threshold": 0.25,
+            "iou_threshold": 0.5,
+            "frame_skip": 1,
+            "imgsz": 640,
+            "target_classes": [2, 3, 5, 7],
+            "bt_track_high_thresh": 0.3,
+            "bt_track_low_thresh": 0.1,
+            "bt_match_thresh": 0.8,
+            "bt_track_buffer": 30,
+            "crossing_judgment_pattern": "line_cross",
+            "distance_threshold": 25.0,
+            "congestion_calculation_interval": 10,
+            "enable_congestion": True,
+            "line_direction_mode": "line_vector",
         },
         {
             "camera_id": 3,
             "camera_name": "Camera3",
             "stream_url": "2",
             "enabled": True,
-            "direction": "LtoR",
-            "line_points": [[100, 300], [1000, 300]],
+            "line_start": [100, 300],
+            "line_end": [1000, 300],
             "exclude_polygon": [],
             "congestion_threshold": 65,
             "long_stay_minutes": 15,
             "long_stay_trigger_count": 1,
             "stay_zone_polygon": [],
             "reconnect_sec": 3,
+            "tracking_method": "bytetrack",
+            "yolo_model": "yolo11n.pt",
+            "confidence_threshold": 0.25,
+            "iou_threshold": 0.5,
+            "frame_skip": 1,
+            "imgsz": 640,
+            "target_classes": [2, 3, 5, 7],
+            "bt_track_high_thresh": 0.3,
+            "bt_track_low_thresh": 0.1,
+            "bt_match_thresh": 0.8,
+            "bt_track_buffer": 30,
+            "crossing_judgment_pattern": "line_cross",
+            "distance_threshold": 25.0,
+            "congestion_calculation_interval": 10,
+            "enable_congestion": True,
+            "line_direction_mode": "line_vector",
         },
     ]
 }
@@ -76,13 +125,10 @@ class AppConfig:
 
 
 class ConfigManager:
-    """config.py の設定管理スタイルを参考に、JSON管理を一元化する。"""
-
     def __init__(self, root_dir: Path):
         self.root_dir = root_dir
         self.config_dir = root_dir / "config"
         self.config_dir.mkdir(parents=True, exist_ok=True)
-
         self.system_config_path = self.config_dir / "system_config.json"
         self.camera_settings_path = self.config_dir / "camera_settings.json"
 
@@ -97,16 +143,13 @@ class ConfigManager:
         system = json.loads(self.system_config_path.read_text(encoding="utf-8"))
         camera_dict = json.loads(self.camera_settings_path.read_text(encoding="utf-8"))
         cameras = camera_dict.get("cameras", [])
-        return AppConfig(
-            root_dir=self.root_dir,
-            system_config_path=self.system_config_path,
-            camera_settings_path=self.camera_settings_path,
-            system=system,
-            cameras=cameras,
-        )
+        return AppConfig(self.root_dir, self.system_config_path, self.camera_settings_path, system, cameras)
 
     def save_camera_settings(self, cameras: list[dict[str, Any]]) -> None:
         self._atomic_write_json(self.camera_settings_path, {"cameras": cameras})
+
+    def save_system_settings(self, system: dict[str, Any]) -> None:
+        self._atomic_write_json(self.system_config_path, system)
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
