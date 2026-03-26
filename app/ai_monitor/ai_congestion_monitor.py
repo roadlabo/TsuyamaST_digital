@@ -158,6 +158,18 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
     ]
 }
 
+KEEP_CAMERA_KEYS = [
+    "camera_id",
+    "camera_name",
+    "stream_url",
+    "enabled",
+    "line_start",
+    "line_end",
+    "exclude_polygon",
+    "congestion_threshold",
+    "long_stay_minutes",
+]
+
 # =========================================
 # Dataclasses
 # =========================================
@@ -208,17 +220,34 @@ class ConfigManager:
         if not self.system_config_path.exists():
             self._atomic_write_json(self.system_config_path, DEFAULT_SYSTEM_CONFIG)
         if not self.camera_settings_path.exists():
-            self._atomic_write_json(self.camera_settings_path, DEFAULT_CAMERA_SETTINGS)
+            slim_defaults = [self._to_slim_camera_settings(cam) for cam in DEFAULT_CAMERA_SETTINGS.get("cameras", [])]
+            self._atomic_write_json(self.camera_settings_path, {"cameras": slim_defaults})
 
     def load(self) -> AppConfig:
         self.ensure_defaults()
         system = json.loads(self.system_config_path.read_text(encoding="utf-8"))
         camera_dict = json.loads(self.camera_settings_path.read_text(encoding="utf-8"))
-        cameras = camera_dict.get("cameras", [])
+        loaded_cameras = camera_dict.get("cameras", [])
+        default_map = {int(c["camera_id"]): dict(c) for c in DEFAULT_CAMERA_SETTINGS.get("cameras", [])}
+        cameras: list[dict[str, Any]] = []
+        for cam in loaded_cameras:
+            raw = dict(cam)
+            if "line_points" in raw and "line_start" not in raw and "line_end" not in raw:
+                points = raw.get("line_points") or []
+                if isinstance(points, list) and len(points) >= 2:
+                    raw["line_start"] = points[0]
+                    raw["line_end"] = points[1]
+            cid = int(raw.get("camera_id", -1))
+            base = dict(default_map.get(cid, {}))
+            base.update(raw)
+            base.pop("line_points", None)
+            base.pop("direction", None)
+            cameras.append(base)
         return AppConfig(self.root_dir, self.system_config_path, self.camera_settings_path, system, cameras)
 
     def save_camera_settings(self, cameras: list[dict[str, Any]]) -> None:
-        self._atomic_write_json(self.camera_settings_path, {"cameras": cameras})
+        slim = [self._to_slim_camera_settings(cam) for cam in cameras]
+        self._atomic_write_json(self.camera_settings_path, {"cameras": slim})
 
     def save_system_settings(self, system: dict[str, Any]) -> None:
         self._atomic_write_json(self.system_config_path, system)
@@ -229,6 +258,10 @@ class ConfigManager:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, path)
+
+    @staticmethod
+    def _to_slim_camera_settings(camera: dict[str, Any]) -> dict[str, Any]:
+        return {k: camera[k] for k in KEEP_CAMERA_KEYS if k in camera}
 
 
 # =========================================
@@ -636,12 +669,8 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout(basic)
         self.name_edit = QtWidgets.QLineEdit(camera_cfg.get("camera_name", ""))
         self.url_edit = QtWidgets.QLineEdit(str(camera_cfg.get("stream_url", "")))
-        self.dir_combo = QtWidgets.QComboBox()
-        self.dir_combo.addItems(["line_vector", "legacy_x"])
-        self.dir_combo.setCurrentText(camera_cfg.get("line_direction_mode", "line_vector"))
         form.addRow("カメラ名", self.name_edit)
         form.addRow("stream_url", self.url_edit)
-        form.addRow("line direction mode", self.dir_combo)
 
         ai_tab = QtWidgets.QWidget()
         tabs.addTab(ai_tab, "解析条件")
@@ -660,6 +689,8 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         self.distance_th = QtWidgets.QDoubleSpinBox(); self.distance_th.setRange(1, 1000); self.distance_th.setValue(float(camera_cfg.get("distance_threshold", 25.0)))
         self.cong_interval = QtWidgets.QSpinBox(); self.cong_interval.setRange(1, 60); self.cong_interval.setValue(int(camera_cfg.get("congestion_calculation_interval", 10)))
         self.enable_cong = QtWidgets.QCheckBox("enable_congestion"); self.enable_cong.setChecked(bool(camera_cfg.get("enable_congestion", True)))
+        self.spin_threshold = QtWidgets.QDoubleSpinBox(); self.spin_threshold.setRange(0.0, 50.0); self.spin_threshold.setDecimals(2); self.spin_threshold.setSingleStep(0.1); self.spin_threshold.setValue(float(camera_cfg.get("congestion_threshold", 5)))
+        self.spin_stay = QtWidgets.QSpinBox(); self.spin_stay.setRange(1, 120); self.spin_stay.setValue(int(camera_cfg.get("long_stay_minutes", 15)))
 
         ai_form.addRow("yolo_model", self.yolo_model)
         ai_form.addRow("confidence_threshold", self.conf)
@@ -674,6 +705,8 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         ai_form.addRow("distance_threshold", self.distance_th)
         ai_form.addRow("congestion_calculation_interval", self.cong_interval)
         ai_form.addRow(self.enable_cong)
+        ai_form.addRow("渋滞指数閾値", self.spin_threshold)
+        ai_form.addRow("長時間滞在(分)", self.spin_stay)
 
         class_group = QtWidgets.QGroupBox("対象クラス (0-7)")
         class_layout = QtWidgets.QGridLayout(class_group)
@@ -794,7 +827,6 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         cfg["line_start"] = self.line_points[0]
         cfg["line_end"] = self.line_points[1]
         cfg["exclude_polygon"] = self.exclude_polygon
-        cfg["line_direction_mode"] = self.dir_combo.currentText()
         cfg["yolo_model"] = self.yolo_model.text().strip() or "yolo11n.pt"
         cfg["confidence_threshold"] = float(self.conf.value())
         cfg["iou_threshold"] = float(self.iou.value())
@@ -809,6 +841,8 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         cfg["distance_threshold"] = float(self.distance_th.value())
         cfg["congestion_calculation_interval"] = int(self.cong_interval.value())
         cfg["enable_congestion"] = bool(self.enable_cong.isChecked())
+        cfg["congestion_threshold"] = float(self.spin_threshold.value())
+        cfg["long_stay_minutes"] = int(self.spin_stay.value())
         return cfg
 
 
@@ -977,18 +1011,20 @@ class CameraPanel(QtWidgets.QFrame):
         self.title.setStyleSheet("font-size:14px;color:#00D7FF;font-weight:bold;")
         right.addWidget(self.title)
 
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.setSpacing(4)
-        btn_line = QtWidgets.QPushButton("ライン設定")
-        btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
-        btn_excl = QtWidgets.QPushButton("除外エリア")
-        btn_excl.clicked.connect(lambda: self.exclude_setting_requested.emit(self.camera_id))
-        btn_cfg = QtWidgets.QPushButton("解析条件")
-        btn_cfg.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
-        for btn in (btn_line, btn_excl, btn_cfg):
-            btn.setStyleSheet("font-size:11px;padding:3px;")
-            btn_row.addWidget(btn)
-        right.addLayout(btn_row)
+        btn_col = QtWidgets.QVBoxLayout()
+        btn_col.setSpacing(6)
+        self.btn_line = QtWidgets.QPushButton("ライン設定")
+        self.btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
+        self.btn_exclude = QtWidgets.QPushButton("除外エリア")
+        self.btn_exclude.clicked.connect(lambda: self.exclude_setting_requested.emit(self.camera_id))
+        self.btn_ai = QtWidgets.QPushButton("解析条件")
+        self.btn_ai.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
+        for btn in (self.btn_line, self.btn_exclude, self.btn_ai):
+            btn.setMinimumHeight(30)
+            btn.setStyleSheet("font-size:12px;padding:4px;")
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+            btn_col.addWidget(btn)
+        right.addLayout(btn_col)
 
         self.status_label = QtWidgets.QLabel("IDLE")
         self.status_label.setStyleSheet("font-size:12px;font-weight:bold;color:#ffd166;")
@@ -997,6 +1033,12 @@ class CameraPanel(QtWidgets.QFrame):
         self.summary = QtWidgets.QLabel("LtoR=0 / RtoL=0")
         self.summary.setStyleSheet("font-size:12px;")
         right.addWidget(self.summary)
+        self.label_threshold = QtWidgets.QLabel(f"閾値: {float(camera_cfg.get('congestion_threshold', 5)):.2f}")
+        self.label_stay = QtWidgets.QLabel(f"滞在: {int(camera_cfg.get('long_stay_minutes', 15))}分")
+        self.label_threshold.setStyleSheet("font-size:12px;color:#ffd166;")
+        self.label_stay.setStyleSheet("font-size:12px;color:#ff9fb0;")
+        right.addWidget(self.label_threshold)
+        right.addWidget(self.label_stay)
 
         long_stay_title = QtWidgets.QLabel("15分以上滞在")
         long_stay_title.setStyleSheet("color:#ff8893;font-weight:bold;")
@@ -1039,6 +1081,8 @@ class CameraPanel(QtWidgets.QFrame):
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
         self.summary.setText(f"LtoR 合計={sum(ltor)} / RtoL 合計={sum(rtol)} | 渋滞指数={score:.2f} / 閾値={threshold:.2f}")
+        self.label_threshold.setText(f"閾値: {threshold:.2f}")
+        self.label_stay.setText(f"滞在: {int(payload.get('long_stay_minutes', 15))}分")
         self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
         self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
         self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
@@ -1163,7 +1207,7 @@ class CameraWorker(QtCore.QObject):
     def update_camera_config(self, new_cfg: dict[str, Any]) -> None:
         prev_cfg = dict(self.camera_cfg)
         old_model = self.camera_cfg.get("yolo_model")
-        self.camera_cfg = new_cfg
+        self.camera_cfg.update(new_cfg)
         self.camera_name = new_cfg.get("camera_name", self.camera_name)
         self.target_classes = set(int(x) for x in new_cfg.get("target_classes", [2, 3, 5, 7]))
         self.counter.update_line([new_cfg.get("line_start", [0, 0]), new_cfg.get("line_end", [100, 0])])
@@ -1609,6 +1653,7 @@ class CameraWorker(QtCore.QObject):
                 "hist_prev_rtol": self.previous_day_hist_rtol,
                 "long_stays": long_stay_list[:10],
                 "long_stay_count": len(long_stay_list),
+                "long_stay_minutes": int(self.camera_cfg.get("long_stay_minutes", 15)),
                 "fps": self.fps,
                 "status": self._status_text,
                 "device": self.device,
