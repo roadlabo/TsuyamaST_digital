@@ -1,22 +1,1207 @@
 from __future__ import annotations
 
+# =========================================
+# Imports
+# =========================================
 import argparse
+import csv
 import json
+import os
 import sys
-from datetime import date, datetime
+import time
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
-from PyQt6 import QtCore, QtWidgets
+import cv2
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+from openpyxl import Workbook
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.page import PageMargins
+from PyQt6 import QtCore, QtGui, QtWidgets
+from ultralytics import YOLO
 
-from modules.camera_worker import CameraWorker
-from modules.config_manager import ConfigManager
-from modules.plot_utils import save_multi_day_trend_plot
-from modules.report_writer import ReportWriter
-from modules.status_manager import StatusManager
-from modules.ui_panels import CameraPanel, CameraSettingsDialog
+# =========================================
+# Constants / CLASS_MAP
+# =========================================
+CLASS_MAP = {
+    0: "人",
+    1: "自転車",
+    2: "車",
+    3: "オートバイ",
+    4: "飛行機",
+    5: "バス",
+    6: "電車",
+    7: "トラック",
+}
+
+# =========================================
+# Default Settings
+# =========================================
+DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
+    "model_path": "yolo11n.pt",
+    "device_preference": "auto",
+    "metrics_save_interval_sec": 5,
+    "ui_refresh_interval_ms": 500,
+    "ai_status_json_path": "app/config/ai_status.json",
+    "status_update_interval_sec": 3,
+    "output_root": "app/ai_monitor/data",
+    "display_update_interval_ms": 500,
+    "graph_update_interval_sec": 10,
+}
+
+DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
+    "cameras": [
+        {
+            "camera_id": 1,
+            "camera_name": "Camera1",
+            "stream_url": "0",
+            "enabled": True,
+            "line_start": [100, 300],
+            "line_end": [1000, 300],
+            "exclude_polygon": [],
+            "congestion_threshold": 60,
+            "long_stay_minutes": 15,
+            "long_stay_trigger_count": 1,
+            "stay_zone_polygon": [],
+            "reconnect_sec": 3,
+            "tracking_method": "bytetrack",
+            "yolo_model": "yolo11n.pt",
+            "confidence_threshold": 0.25,
+            "iou_threshold": 0.5,
+            "frame_skip": 1,
+            "imgsz": 640,
+            "target_classes": [2, 3, 5, 7],
+            "bt_track_high_thresh": 0.3,
+            "bt_track_low_thresh": 0.1,
+            "bt_match_thresh": 0.8,
+            "bt_track_buffer": 30,
+            "crossing_judgment_pattern": "line_cross",
+            "distance_threshold": 25.0,
+            "congestion_calculation_interval": 10,
+            "enable_congestion": True,
+            "line_direction_mode": "line_vector",
+        },
+        {
+            "camera_id": 2,
+            "camera_name": "Camera2",
+            "stream_url": "1",
+            "enabled": True,
+            "line_start": [100, 300],
+            "line_end": [1000, 300],
+            "exclude_polygon": [],
+            "congestion_threshold": 60,
+            "long_stay_minutes": 15,
+            "long_stay_trigger_count": 1,
+            "stay_zone_polygon": [],
+            "reconnect_sec": 3,
+            "tracking_method": "bytetrack",
+            "yolo_model": "yolo11n.pt",
+            "confidence_threshold": 0.25,
+            "iou_threshold": 0.5,
+            "frame_skip": 1,
+            "imgsz": 640,
+            "target_classes": [2, 3, 5, 7],
+            "bt_track_high_thresh": 0.3,
+            "bt_track_low_thresh": 0.1,
+            "bt_match_thresh": 0.8,
+            "bt_track_buffer": 30,
+            "crossing_judgment_pattern": "line_cross",
+            "distance_threshold": 25.0,
+            "congestion_calculation_interval": 10,
+            "enable_congestion": True,
+            "line_direction_mode": "line_vector",
+        },
+        {
+            "camera_id": 3,
+            "camera_name": "Camera3",
+            "stream_url": "2",
+            "enabled": True,
+            "line_start": [100, 300],
+            "line_end": [1000, 300],
+            "exclude_polygon": [],
+            "congestion_threshold": 65,
+            "long_stay_minutes": 15,
+            "long_stay_trigger_count": 1,
+            "stay_zone_polygon": [],
+            "reconnect_sec": 3,
+            "tracking_method": "bytetrack",
+            "yolo_model": "yolo11n.pt",
+            "confidence_threshold": 0.25,
+            "iou_threshold": 0.5,
+            "frame_skip": 1,
+            "imgsz": 640,
+            "target_classes": [2, 3, 5, 7],
+            "bt_track_high_thresh": 0.3,
+            "bt_track_low_thresh": 0.1,
+            "bt_match_thresh": 0.8,
+            "bt_track_buffer": 30,
+            "crossing_judgment_pattern": "line_cross",
+            "distance_threshold": 25.0,
+            "congestion_calculation_interval": 10,
+            "enable_congestion": True,
+            "line_direction_mode": "line_vector",
+        },
+    ]
+}
+
+# =========================================
+# Dataclasses
+# =========================================
+@dataclass
+class AppConfig:
+    root_dir: Path
+    system_config_path: Path
+    camera_settings_path: Path
+    system: dict[str, Any]
+    cameras: list[dict[str, Any]]
 
 
-class MonitorMainWindow(QtWidgets.QMainWindow):
+@dataclass
+class CongestionState:
+    frame_inverse_distances: list[float] = field(default_factory=list)
+    frame_time_stamps: list[datetime] = field(default_factory=list)
+    frame_cumulative_inverse_distance: float = 0.0
+    current_congestion_index: float = 0.0
+    window_start: datetime | None = None
+
+
+@dataclass
+class CounterState:
+    counted_track_ids: set[int] = field(default_factory=set)
+    previous_side: dict[int, float] = field(default_factory=dict)
+    pass_bins_ltor: list[int] = field(default_factory=lambda: [0] * 144)
+    pass_bins_rtol: list[int] = field(default_factory=lambda: [0] * 144)
+
+
+@dataclass
+class TrackState:
+    first_seen: dict[int, datetime] = field(default_factory=dict)
+    long_stay_emitted: set[int] = field(default_factory=set)
+
+
+# =========================================
+# Config Manager
+# =========================================
+class ConfigManager:
+    def __init__(self, root_dir: Path):
+        self.root_dir = root_dir
+        self.config_dir = root_dir / "config"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.system_config_path = self.config_dir / "system_config.json"
+        self.camera_settings_path = self.config_dir / "camera_settings.json"
+
+    def ensure_defaults(self) -> None:
+        if not self.system_config_path.exists():
+            self._atomic_write_json(self.system_config_path, DEFAULT_SYSTEM_CONFIG)
+        if not self.camera_settings_path.exists():
+            self._atomic_write_json(self.camera_settings_path, DEFAULT_CAMERA_SETTINGS)
+
+    def load(self) -> AppConfig:
+        self.ensure_defaults()
+        system = json.loads(self.system_config_path.read_text(encoding="utf-8"))
+        camera_dict = json.loads(self.camera_settings_path.read_text(encoding="utf-8"))
+        cameras = camera_dict.get("cameras", [])
+        return AppConfig(self.root_dir, self.system_config_path, self.camera_settings_path, system, cameras)
+
+    def save_camera_settings(self, cameras: list[dict[str, Any]]) -> None:
+        self._atomic_write_json(self.camera_settings_path, {"cameras": cameras})
+
+    def save_system_settings(self, system: dict[str, Any]) -> None:
+        self._atomic_write_json(self.system_config_path, system)
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+
+# =========================================
+# Congestion Logic
+# =========================================
+class CongestionScorer:
+    """AICount11.py の congestion 算出式を監視向けに時間窓化して適用。"""
+
+    def __init__(self, interval_sec: int = 10, day_keep: int = 1):
+        self.interval_sec = max(1, int(interval_sec))
+        self.day_keep = max(1, day_keep)
+        self.state = CongestionState()
+
+    def update_interval(self, interval_sec: int) -> None:
+        self.interval_sec = max(1, int(interval_sec))
+
+    def _compute_frame_inverse_distance(self, tracks: list[dict], frame_width: int) -> float:
+        if len(tracks) < 2 or frame_width <= 0:
+            return 0.0
+        total = 0.0
+        for i in range(len(tracks)):
+            x1, y1 = tracks[i]["center"]
+            for j in range(i + 1, len(tracks)):
+                x2, y2 = tracks[j]["center"]
+                distance = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+                total += 1 / (1 + (distance / frame_width) * 500)
+        return total
+
+    def update(self, tracks: list[dict], now: datetime, frame_width: int) -> float:
+        if self.state.window_start is None:
+            self.state.window_start = now
+        self.state.frame_cumulative_inverse_distance += self._compute_frame_inverse_distance(tracks, frame_width)
+        elapsed = (now - self.state.window_start).total_seconds()
+        if elapsed < self.interval_sec:
+            return self.state.current_congestion_index
+
+        value = round(self.state.frame_cumulative_inverse_distance / self.interval_sec, 3)
+        self.state.frame_inverse_distances.append(value)
+        self.state.frame_time_stamps.append(now)
+        self.state.current_congestion_index = value
+        self.state.frame_cumulative_inverse_distance = 0.0
+        self.state.window_start = now
+
+        day_ago = now - timedelta(days=self.day_keep)
+        while self.state.frame_time_stamps and self.state.frame_time_stamps[0] < day_ago:
+            self.state.frame_time_stamps.pop(0)
+            self.state.frame_inverse_distances.pop(0)
+        return value
+
+
+# =========================================
+# Line Counter Logic
+# =========================================
+class LineCounter:
+    def __init__(self, line_points: list[list[int]]):
+        self.line_points = line_points
+        self.state = CounterState()
+
+    def update_line(self, line_points: list[list[int]]) -> None:
+        self.line_points = line_points
+        self.state.previous_side.clear()
+        self.state.counted_track_ids.clear()
+
+    def _signed_side(self, center: tuple[float, float]) -> float:
+        p1, p2 = self.line_points
+        vx, vy = p2[0] - p1[0], p2[1] - p1[1]
+        wx, wy = center[0] - p1[0], center[1] - p1[1]
+        return vx * wy - vy * wx
+
+    def update(self, track_id: int, center: tuple[float, float], class_name: str, now: datetime):
+        if len(self.line_points) != 2:
+            return None
+        current_side = self._signed_side(center)
+        prev_side = self.state.previous_side.get(track_id)
+        self.state.previous_side[track_id] = current_side
+        if prev_side is None or track_id in self.state.counted_track_ids:
+            return None
+
+        crossed = (prev_side < 0 <= current_side) or (prev_side > 0 >= current_side)
+        if not crossed:
+            return None
+
+        direction = "LtoR" if prev_side < current_side else "RtoL"
+        self.state.counted_track_ids.add(track_id)
+        bin_index = (now.hour * 60 + now.minute) // 10
+        if 0 <= bin_index < 144:
+            if direction == "LtoR":
+                self.state.pass_bins_ltor[bin_index] += 1
+            else:
+                self.state.pass_bins_rtol[bin_index] += 1
+
+        return {
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "track_id": track_id,
+            "class_name": class_name,
+            "direction": direction,
+        }
+
+
+# =========================================
+# Status Manager
+# =========================================
+class StatusManager:
+    def __init__(self, ai_status_path: Path):
+        self.ai_status_path = ai_status_path
+        self.last_level = None
+
+    def decide_level(self, cam1_over: bool, cam2_long_stay_count: int, cam2_long_stay_trigger_count: int, cam3_over: bool) -> str:
+        if cam3_over:
+            return "LEVEL3"
+        if cam1_over:
+            return "LEVEL1"
+        if cam2_long_stay_count >= cam2_long_stay_trigger_count:
+            return "LEVEL2"
+        return "LEVEL0"
+
+    def update_if_needed(self, level: str) -> None:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload = {"congestion_level": level, "updated_at": now_str}
+        if self.last_level == level and self.ai_status_path.exists():
+            return
+        self._atomic_write_json(self.ai_status_path, payload)
+        self.last_level = level
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp_path, path)
+
+
+# =========================================
+# Report Writer
+# =========================================
+class ReportWriter:
+    def __init__(self, output_root: Path):
+        self.output_root = output_root
+
+    def write_daily_report(self, target_date: date, cameras: list[dict], metrics_root: Path) -> Path:
+        wb = Workbook()
+        ws_summary = wb.active
+        ws_summary.title = "summary"
+        self._style_sheet(ws_summary)
+
+        ws_summary["A1"] = f"Daily Report {target_date.isoformat()}"
+        ws_summary["A1"].font = Font(bold=True, size=16, color="00D7FF")
+        headers = ["camera", "total_pass", "max_congestion", "over_threshold_points", "long_stay_events"]
+        ws_summary.append(headers)
+
+        total_pass_all = 0
+        for cam in cameras:
+            cid = cam["camera_id"]
+            date_str = target_date.isoformat()
+            cam_dir = metrics_root / f"cam{cid}"
+            pass_df = self._safe_read(cam_dir / f"pass_events_{date_str}.csv")
+            metric_df = self._safe_read(cam_dir / f"realtime_metrics_{date_str}.csv")
+            long_df = self._safe_read(cam_dir / f"long_stay_events_{date_str}.csv")
+
+            total_pass = len(pass_df)
+            total_pass_all += total_pass
+            max_cong = float(metric_df["congestion_score"].max()) if not metric_df.empty else 0.0
+            over_count = int(metric_df["threshold_over"].sum()) if "threshold_over" in metric_df.columns else 0
+            long_count = len(long_df)
+            ws_summary.append([cam["camera_name"], total_pass, round(max_cong, 1), over_count, long_count])
+            self._add_camera_sheet(wb, cam, pass_df, metric_df, long_df)
+
+        ws_summary["A2"] = "date"
+        ws_summary["B2"] = target_date.isoformat()
+        ws_summary["A3"] = "all_cameras_total_pass"
+        ws_summary["B3"] = total_pass_all
+
+        out_path = self.output_root / "reports" / "daily" / f"daily_report_{target_date.isoformat()}.xlsx"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(out_path)
+        return out_path
+
+    def write_monthly_report(self, target_month: str, metrics_root: Path, cameras: list[dict]) -> Path:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "monthly"
+        self._style_sheet(ws)
+        ws.append(["date", "total_pass", "max_congestion", "long_stay_events"])
+
+        daily_map: dict[str, dict[str, float]] = {}
+        for cam in cameras:
+            cam_dir = metrics_root / f"cam{cam['camera_id']}"
+            for file in cam_dir.glob(f"realtime_metrics_{target_month}-*.csv"):
+                date_str = file.stem.split("_")[-1]
+                d = daily_map.setdefault(date_str, {"pass": 0, "max": 0, "long": 0})
+                metric_df = self._safe_read(file)
+                pass_df = self._safe_read(cam_dir / f"pass_events_{date_str}.csv")
+                long_df = self._safe_read(cam_dir / f"long_stay_events_{date_str}.csv")
+                d["pass"] += len(pass_df)
+                if not metric_df.empty:
+                    d["max"] = max(d["max"], float(metric_df["congestion_score"].max()))
+                d["long"] += len(long_df)
+
+        for key in sorted(daily_map.keys()):
+            d = daily_map[key]
+            ws.append([key, int(d["pass"]), round(d["max"], 1), int(d["long"])])
+
+        out_path = self.output_root / "reports" / "monthly" / f"monthly_report_{target_month}.xlsx"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(out_path)
+        return out_path
+
+    def _add_camera_sheet(self, wb: Workbook, cam: dict, pass_df: pd.DataFrame, metric_df: pd.DataFrame, long_df: pd.DataFrame) -> None:
+        ws = wb.create_sheet(f"cam{cam['camera_id']}")
+        self._style_sheet(ws)
+        ws["A1"] = f"{cam['camera_name']} Detail"
+        ws["A1"].font = Font(bold=True, size=14, color="00D7FF")
+
+        hist = [0] * 144
+        if not pass_df.empty:
+            pass_df["timestamp"] = pd.to_datetime(pass_df["timestamp"])
+            for ts in pass_df["timestamp"]:
+                hist[(ts.hour * 60 + ts.minute) // 10] += 1
+
+        ws.append(["bin", "pass_count"])
+        for i, v in enumerate(hist):
+            ws.append([i, v])
+
+        bar = BarChart()
+        bar.title = "Pass Histogram"
+        data = Reference(ws, min_col=2, min_row=3, max_row=146)
+        cats = Reference(ws, min_col=1, min_row=3, max_row=146)
+        bar.add_data(data, titles_from_data=False)
+        bar.set_categories(cats)
+        bar.height = 6
+        bar.width = 13
+        ws.add_chart(bar, "D3")
+
+        start_row = 150
+        ws[f"A{start_row}"] = "congestion_time_series"
+        ws.append(["timestamp", "congestion_score"])
+        for _, r in metric_df[["timestamp", "congestion_score"]].iterrows() if not metric_df.empty else []:
+            ws.append([r["timestamp"], float(r["congestion_score"])])
+
+        if len(metric_df) > 2:
+            line = LineChart()
+            line.title = "Congestion Score"
+            dref = Reference(ws, min_col=2, min_row=start_row + 1, max_row=start_row + len(metric_df))
+            cref = Reference(ws, min_col=1, min_row=start_row + 1, max_row=start_row + len(metric_df))
+            line.add_data(dref, titles_from_data=False)
+            line.set_categories(cref)
+            line.height = 5
+            line.width = 13
+            ws.add_chart(line, "D18")
+
+        ls_row = 18
+        ws[f"A{ls_row}"] = "long_stay_list"
+        ws[f"A{ls_row+1}"] = "track_id"
+        ws[f"B{ls_row+1}"] = "stay_minutes"
+        for i, (_, r) in enumerate(long_df.iterrows() if not long_df.empty else []):
+            ws[f"A{ls_row+2+i}"] = int(r["track_id"])
+            ws[f"B{ls_row+2+i}"] = float(r["stay_minutes"])
+
+    def _style_sheet(self, ws):
+        fill = PatternFill("solid", fgColor="101922")
+        thin = Side(style="thin", color="1A9FB6")
+        for col in ["A", "B", "C", "D", "E", "F", "G"]:
+            ws.column_dimensions[col].width = 22
+        for row in range(1, 220):
+            for col in range(1, 8):
+                c = ws.cell(row=row, column=col)
+                c.fill = fill
+                c.font = Font(color="FFFFFF", size=10)
+                c.alignment = Alignment(vertical="center")
+                c.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
+        ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5)
+
+    @staticmethod
+    def _safe_read(path: Path) -> pd.DataFrame:
+        if not path.exists():
+            return pd.DataFrame()
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            return pd.DataFrame()
+
+
+# =========================================
+# Graph Utilities
+# =========================================
+def _normalize_time(ts: pd.Timestamp) -> pd.Timestamp:
+    return pd.Timestamp(year=1900, month=1, day=1, hour=ts.hour, minute=ts.minute, second=ts.second)
+
+
+def build_multi_day_trend(metrics_files: list[Path], metric_col: str) -> pd.DataFrame:
+    frames = []
+    for path in metrics_files:
+        if not path.exists():
+            continue
+        df = pd.read_csv(path)
+        if "timestamp" not in df.columns or metric_col not in df.columns:
+            continue
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["time_normalized"] = df["timestamp"].apply(_normalize_time)
+        frames.append(df[["time_normalized", metric_col]])
+
+    if not frames:
+        return pd.DataFrame(columns=["time_normalized", "avg", "median"])
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged["time_rounded"] = merged["time_normalized"].dt.floor("1min")
+    grouped = merged.groupby("time_rounded")[metric_col]
+    out = grouped.mean().rename("avg").to_frame()
+    out["median"] = grouped.median()
+    return out.reset_index().rename(columns={"time_rounded": "time_normalized"})
+
+
+def save_multi_day_trend_plot(metrics_files: list[Path], metric_col: str, output_png: Path) -> None:
+    trend = build_multi_day_trend(metrics_files, metric_col)
+    if trend.empty:
+        return
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    plt.figure(figsize=(12, 4.5))
+    plt.plot(trend["time_normalized"], trend["avg"], label="Average", linewidth=2)
+    plt.plot(trend["time_normalized"], trend["median"], label="Median", linewidth=2)
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=1))
+    plt.xticks(rotation=45)
+    plt.grid(alpha=0.3)
+    plt.title(f"Multi-day trend: {metric_col}")
+    plt.tight_layout()
+    plt.legend()
+    plt.savefig(output_png, dpi=150)
+    plt.close()
+
+
+# =========================================
+# UI Panels
+# =========================================
+class ClickableImageLabel(QtWidgets.QLabel):
+    point_clicked = QtCore.pyqtSignal(int, int)
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.source_size = (1, 1)
+
+    def set_source_size(self, width: int, height: int) -> None:
+        self.source_size = (max(1, width), max(1, height))
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        pix = self.pixmap()
+        if pix is None:
+            return
+        scaled = pix.size()
+        off_x = (self.width() - scaled.width()) // 2
+        off_y = (self.height() - scaled.height()) // 2
+        local_x = event.pos().x() - off_x
+        local_y = event.pos().y() - off_y
+        if local_x < 0 or local_y < 0 or local_x >= scaled.width() or local_y >= scaled.height():
+            return
+        src_w, src_h = self.source_size
+        x = int(local_x * src_w / max(1, scaled.width()))
+        y = int(local_y * src_h / max(1, scaled.height()))
+        self.point_clicked.emit(x, y)
+        super().mousePressEvent(event)
+
+
+def _segments_intersect(p1, p2, p3, p4) -> bool:
+    def ccw(a, b, c):
+        return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+    return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
+
+
+def has_self_intersection(points: list[list[int]]) -> bool:
+    if len(points) < 4:
+        return False
+    n = len(points)
+    for i in range(n):
+        a1 = points[i]
+        a2 = points[(i + 1) % n]
+        for j in range(i + 1, n):
+            if abs(i - j) <= 1 or (i == 0 and j == n - 1):
+                continue
+            b1 = points[j]
+            b2 = points[(j + 1) % n]
+            if _segments_intersect(a1, a2, b1, b2):
+                return True
+    return False
+
+
+class CameraSettingsDialog(QtWidgets.QDialog):
+    def __init__(self, camera_cfg: dict[str, Any], latest_frame=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"設定: {camera_cfg['camera_name']}")
+        self.resize(1000, 780)
+        self.camera_cfg = dict(camera_cfg)
+        self.line_points = [camera_cfg.get("line_start", [100, 100])[:], camera_cfg.get("line_end", [400, 100])[:]]
+        self.exclude_polygon: list[list[int]] = [p[:] for p in camera_cfg.get("exclude_polygon", [])]
+        self.mode = "line"
+
+        root = QtWidgets.QVBoxLayout(self)
+        tabs = QtWidgets.QTabWidget()
+        root.addWidget(tabs)
+
+        basic = QtWidgets.QWidget()
+        tabs.addTab(basic, "基本")
+        form = QtWidgets.QFormLayout(basic)
+        self.name_edit = QtWidgets.QLineEdit(camera_cfg.get("camera_name", ""))
+        self.url_edit = QtWidgets.QLineEdit(str(camera_cfg.get("stream_url", "")))
+        self.dir_combo = QtWidgets.QComboBox()
+        self.dir_combo.addItems(["line_vector", "legacy_x"])
+        self.dir_combo.setCurrentText(camera_cfg.get("line_direction_mode", "line_vector"))
+        form.addRow("カメラ名", self.name_edit)
+        form.addRow("stream_url", self.url_edit)
+        form.addRow("line direction mode", self.dir_combo)
+
+        ai_tab = QtWidgets.QWidget()
+        tabs.addTab(ai_tab, "解析条件")
+        ai_form = QtWidgets.QFormLayout(ai_tab)
+
+        self.yolo_model = QtWidgets.QLineEdit(str(camera_cfg.get("yolo_model", "yolo11n.pt")))
+        self.conf = QtWidgets.QDoubleSpinBox(); self.conf.setRange(0, 1); self.conf.setSingleStep(0.01); self.conf.setValue(float(camera_cfg.get("confidence_threshold", 0.25)))
+        self.iou = QtWidgets.QDoubleSpinBox(); self.iou.setRange(0, 1); self.iou.setSingleStep(0.01); self.iou.setValue(float(camera_cfg.get("iou_threshold", 0.5)))
+        self.frame_skip = QtWidgets.QSpinBox(); self.frame_skip.setRange(1, 30); self.frame_skip.setValue(int(camera_cfg.get("frame_skip", 1)))
+        self.imgsz = QtWidgets.QSpinBox(); self.imgsz.setRange(320, 2048); self.imgsz.setSingleStep(32); self.imgsz.setValue(int(camera_cfg.get("imgsz", 640)))
+        self.bt_hi = QtWidgets.QDoubleSpinBox(); self.bt_hi.setRange(0, 1); self.bt_hi.setValue(float(camera_cfg.get("bt_track_high_thresh", 0.3)))
+        self.bt_lo = QtWidgets.QDoubleSpinBox(); self.bt_lo.setRange(0, 1); self.bt_lo.setValue(float(camera_cfg.get("bt_track_low_thresh", 0.1)))
+        self.bt_match = QtWidgets.QDoubleSpinBox(); self.bt_match.setRange(0, 1); self.bt_match.setValue(float(camera_cfg.get("bt_match_thresh", 0.8)))
+        self.bt_buffer = QtWidgets.QSpinBox(); self.bt_buffer.setRange(1, 1000); self.bt_buffer.setValue(int(camera_cfg.get("bt_track_buffer", 30)))
+        self.crossing = QtWidgets.QLineEdit(str(camera_cfg.get("crossing_judgment_pattern", "line_cross")))
+        self.distance_th = QtWidgets.QDoubleSpinBox(); self.distance_th.setRange(1, 1000); self.distance_th.setValue(float(camera_cfg.get("distance_threshold", 25.0)))
+        self.cong_interval = QtWidgets.QSpinBox(); self.cong_interval.setRange(1, 60); self.cong_interval.setValue(int(camera_cfg.get("congestion_calculation_interval", 10)))
+        self.enable_cong = QtWidgets.QCheckBox("enable_congestion"); self.enable_cong.setChecked(bool(camera_cfg.get("enable_congestion", True)))
+
+        ai_form.addRow("yolo_model", self.yolo_model)
+        ai_form.addRow("confidence_threshold", self.conf)
+        ai_form.addRow("iou_threshold", self.iou)
+        ai_form.addRow("frame_skip", self.frame_skip)
+        ai_form.addRow("imgsz", self.imgsz)
+        ai_form.addRow("bt_track_high_thresh", self.bt_hi)
+        ai_form.addRow("bt_track_low_thresh", self.bt_lo)
+        ai_form.addRow("bt_match_thresh", self.bt_match)
+        ai_form.addRow("bt_track_buffer", self.bt_buffer)
+        ai_form.addRow("crossing_judgment_pattern", self.crossing)
+        ai_form.addRow("distance_threshold", self.distance_th)
+        ai_form.addRow("congestion_calculation_interval", self.cong_interval)
+        ai_form.addRow(self.enable_cong)
+
+        class_group = QtWidgets.QGroupBox("対象クラス (0-7)")
+        class_layout = QtWidgets.QGridLayout(class_group)
+        self.class_checks: dict[int, QtWidgets.QCheckBox] = {}
+        selected = set(int(x) for x in camera_cfg.get("target_classes", [2, 3, 5, 7]))
+        for i in range(8):
+            cb = QtWidgets.QCheckBox(f"{CLASS_MAP[i]}({i})")
+            cb.setChecked(i in selected)
+            self.class_checks[i] = cb
+            class_layout.addWidget(cb, i // 4, i % 4)
+        ai_form.addRow(class_group)
+
+        self.image = ClickableImageLabel("snapshot")
+        self.image.setMinimumHeight(340)
+        self.image.setStyleSheet("background:#0c0f16;border:1px solid #00D7FF;")
+        self.image.point_clicked.connect(self._on_click)
+        root.addWidget(self.image)
+
+        row = QtWidgets.QHBoxLayout()
+        btn_line = QtWidgets.QPushButton("ライン設定")
+        btn_line.clicked.connect(lambda: self._set_mode("line"))
+        btn_poly = QtWidgets.QPushButton("除外エリア設定")
+        btn_poly.clicked.connect(lambda: self._set_mode("poly"))
+        btn_finish_poly = QtWidgets.QPushButton("指定終了")
+        btn_finish_poly.clicked.connect(self._finish_polygon)
+        btn_reset = QtWidgets.QPushButton("やり直し")
+        btn_reset.clicked.connect(self._reset_mode)
+        row.addWidget(btn_line); row.addWidget(btn_poly); row.addWidget(btn_finish_poly); row.addWidget(btn_reset)
+        root.addLayout(row)
+
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self._validate_and_accept)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+        self.snapshot = latest_frame
+        if self.snapshot is None:
+            self.snapshot = np.zeros((360, 640, 3), dtype=np.uint8)
+            cv2.putText(self.snapshot, "No live frame", (30, 180), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        self._render_snapshot()
+
+    def _set_mode(self, mode: str) -> None:
+        self.mode = mode
+
+    def _on_click(self, x: int, y: int) -> None:
+        if self.mode == "line":
+            if len(self.line_points) >= 2:
+                self.line_points = []
+            self.line_points.append([x, y])
+        else:
+            self.exclude_polygon.append([x, y])
+        self._render_snapshot()
+
+    def _finish_polygon(self) -> None:
+        if len(self.exclude_polygon) < 3:
+            QtWidgets.QMessageBox.warning(self, "警告", "除外エリアは3点以上必要です。")
+            return
+        if has_self_intersection(self.exclude_polygon):
+            QtWidgets.QMessageBox.warning(self, "警告", "自己交差ポリゴンは設定できません。やり直してください。")
+            self.exclude_polygon = []
+        self._render_snapshot()
+
+    def _reset_mode(self) -> None:
+        if self.mode == "line":
+            self.line_points = []
+        else:
+            self.exclude_polygon = []
+        self._render_snapshot()
+
+    def _render_snapshot(self) -> None:
+        frame = self.snapshot.copy()
+        if len(self.line_points) == 2:
+            cv2.line(frame, tuple(self.line_points[0]), tuple(self.line_points[1]), (0, 255, 255), 2)
+            for p in self.line_points:
+                cv2.circle(frame, tuple(p), 4, (0, 255, 255), -1)
+                cv2.putText(frame, f"{p[0]},{p[1]}", (p[0] + 5, p[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        for i, p in enumerate(self.exclude_polygon):
+            cv2.circle(frame, tuple(p), 4, (255, 0, 255), -1)
+            cv2.putText(frame, str(i + 1), (p[0] + 5, p[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        if len(self.exclude_polygon) >= 2:
+            cv2.polylines(frame, [np.array(self.exclude_polygon, np.int32)], len(self.exclude_polygon) >= 3, (255, 0, 255), 2)
+
+        h, w, _ = frame.shape
+        self.image.set_source_size(w, h)
+        qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
+        self.image.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.image.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio))
+
+    def _validate_and_accept(self) -> None:
+        selected_classes = [i for i, cb in self.class_checks.items() if cb.isChecked()]
+        if not selected_classes:
+            QtWidgets.QMessageBox.warning(self, "警告", "対象クラスを1つ以上選択してください。")
+            return
+        if len(self.line_points) != 2:
+            QtWidgets.QMessageBox.warning(self, "警告", "ラインは2点指定してください。")
+            return
+        self.accept()
+
+    def get_updated_config(self) -> dict[str, Any]:
+        cfg = dict(self.camera_cfg)
+        cfg["camera_name"] = self.name_edit.text().strip() or cfg["camera_name"]
+        cfg["stream_url"] = self.url_edit.text().strip()
+        cfg["line_start"] = self.line_points[0]
+        cfg["line_end"] = self.line_points[1]
+        cfg["exclude_polygon"] = self.exclude_polygon
+        cfg["line_direction_mode"] = self.dir_combo.currentText()
+        cfg["yolo_model"] = self.yolo_model.text().strip() or "yolo11n.pt"
+        cfg["confidence_threshold"] = float(self.conf.value())
+        cfg["iou_threshold"] = float(self.iou.value())
+        cfg["frame_skip"] = int(self.frame_skip.value())
+        cfg["imgsz"] = int(self.imgsz.value())
+        cfg["target_classes"] = [i for i, cb in self.class_checks.items() if cb.isChecked()]
+        cfg["bt_track_high_thresh"] = float(self.bt_hi.value())
+        cfg["bt_track_low_thresh"] = float(self.bt_lo.value())
+        cfg["bt_match_thresh"] = float(self.bt_match.value())
+        cfg["bt_track_buffer"] = int(self.bt_buffer.value())
+        cfg["crossing_judgment_pattern"] = self.crossing.text().strip() or "line_cross"
+        cfg["distance_threshold"] = float(self.distance_th.value())
+        cfg["congestion_calculation_interval"] = int(self.cong_interval.value())
+        cfg["enable_congestion"] = bool(self.enable_cong.isChecked())
+        return cfg
+
+
+class TimeSeriesGraph(QtWidgets.QLabel):
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.title = title
+        self.setMinimumHeight(140)
+        self.setStyleSheet("background:#0f1620;border:1px solid #1d6f8b;color:#cfefff;")
+
+    def draw_line_series(self, points: list[tuple[datetime, float]]) -> None:
+        w, h = max(300, self.width()), max(120, self.height())
+        pix = QtGui.QPixmap(w, h)
+        pix.fill(QtGui.QColor("#0f1620"))
+        painter = QtGui.QPainter(pix)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+
+        margin = 28
+        plot = QtCore.QRectF(margin, 16, w - margin - 10, h - 40)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#35516b"), 1))
+        painter.drawRect(plot)
+        painter.setPen(QtGui.QColor("#cfefff"))
+        painter.drawText(8, 14, self.title)
+
+        if points:
+            ys = [v for _, v in points]
+            ymin, ymax = min(ys), max(ys)
+            if abs(ymax - ymin) < 1e-9:
+                ymax = ymin + 1.0
+            path = QtGui.QPainterPath()
+            for i, (ts, value) in enumerate(points):
+                sec = ts.hour * 3600 + ts.minute * 60 + ts.second
+                x = plot.left() + (sec / 86400.0) * plot.width()
+                y = plot.bottom() - ((value - ymin) / (ymax - ymin)) * plot.height()
+                if i == 0:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
+            painter.setPen(QtGui.QPen(QtGui.QColor("#00D7FF"), 2))
+            painter.drawPath(path)
+        painter.drawText(int(plot.left()), h - 10, "0:00")
+        painter.drawText(int(plot.right()) - 40, h - 10, "24:00")
+        painter.end()
+        self.setPixmap(pix)
+
+    def draw_bars(self, ltor: list[int], rtol: list[int]) -> None:
+        w, h = max(300, self.width()), max(120, self.height())
+        pix = QtGui.QPixmap(w, h)
+        pix.fill(QtGui.QColor("#0f1620"))
+        painter = QtGui.QPainter(pix)
+        margin = 28
+        plot = QtCore.QRectF(margin, 16, w - margin - 10, h - 40)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#35516b"), 1))
+        painter.drawRect(plot)
+        painter.setPen(QtGui.QColor("#cfefff"))
+        painter.drawText(8, 14, self.title)
+
+        maxv = max(1, max(ltor) if ltor else 0, max(rtol) if rtol else 0)
+        bin_w = plot.width() / 144.0
+        for i in range(144):
+            l = ltor[i] if i < len(ltor) else 0
+            r = rtol[i] if i < len(rtol) else 0
+            x0 = plot.left() + i * bin_w
+            h_l = (l / maxv) * plot.height()
+            h_r = (r / maxv) * plot.height()
+            painter.fillRect(QtCore.QRectF(x0, plot.bottom() - h_l, bin_w * 0.45, h_l), QtGui.QColor("#00D7FF"))
+            painter.fillRect(QtCore.QRectF(x0 + bin_w * 0.5, plot.bottom() - h_r, bin_w * 0.45, h_r), QtGui.QColor("#ff8f66"))
+
+        painter.drawText(int(plot.left()), h - 10, "0:00")
+        painter.drawText(int(plot.right()) - 40, h - 10, "24:00")
+        painter.end()
+        self.setPixmap(pix)
+
+
+class CameraPanel(QtWidgets.QFrame):
+    def __init__(self, camera_cfg: dict[str, Any], parent=None):
+        super().__init__(parent)
+        self.camera_id = camera_cfg["camera_id"]
+        self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
+        root = QtWidgets.QHBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+
+        self.video = QtWidgets.QLabel("video")
+        self.video.setMinimumSize(540, 280)
+        self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
+        root.addWidget(self.video, 3)
+
+        right = QtWidgets.QVBoxLayout()
+        self.title = QtWidgets.QLabel(camera_cfg["camera_name"])
+        self.title.setStyleSheet("font-size:15px;color:#00D7FF;font-weight:bold;")
+        right.addWidget(self.title)
+
+        self.meter = QtWidgets.QProgressBar()
+        self.meter.setRange(0, 100)
+        self.meter.setFormat("Congestion %p")
+        right.addWidget(self.meter)
+
+        self.meta = QtWidgets.QLabel("time / gpu / fps")
+        right.addWidget(self.meta)
+
+        self.summary = QtWidgets.QLabel("LtoR=0 / RtoL=0")
+        right.addWidget(self.summary)
+
+        self.congestion_graph = TimeSeriesGraph("渋滞指数(10秒更新)")
+        right.addWidget(self.congestion_graph)
+        self.pass_graph = TimeSeriesGraph("通過台数(台/10分) LtoR/RtoL")
+        right.addWidget(self.pass_graph)
+
+        self.long_stay = QtWidgets.QTextEdit()
+        self.long_stay.setReadOnly(True)
+        self.long_stay.setMinimumHeight(90)
+        self.long_stay.setStyleSheet("background:#0f1620;border:1px solid #1d6f8b;color:#ffaeae;")
+        right.addWidget(self.long_stay)
+
+        root.addLayout(right, 2)
+
+    def update_view(self, payload: dict[str, Any]) -> None:
+        frame = payload.get("frame")
+        if frame is not None:
+            h, w, _ = frame.shape
+            qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
+            self.video.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.video.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio))
+
+        score = int(payload.get("congestion_score", 0))
+        threshold = int(payload.get("threshold", 60))
+        self.meter.setValue(max(0, min(100, score)))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.meta.setText(f"{now} | device={payload.get('device')} | GPU={payload.get('gpu_name')} | FPS={payload.get('fps',0):.1f} | TH={threshold}")
+
+        ltor = payload.get("pass_bins_ltor", [0] * 144)
+        rtol = payload.get("pass_bins_rtol", [0] * 144)
+        self.summary.setText(f"LtoR 合計={sum(ltor)} / RtoL 合計={sum(rtol)}")
+        self.congestion_graph.draw_line_series(payload.get("congestion_points", []))
+        self.pass_graph.draw_bars(ltor, rtol)
+
+        lines = [f"ID {tid}: {mins:.1f} min" for tid, mins in payload.get("long_stays", [])]
+        self.long_stay.setText("\n".join(lines) if lines else "No long stay")
+
+
+# =========================================
+# Camera Worker
+# =========================================
+class CameraWorker:
+    def __init__(self, camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path):
+        self.camera_cfg = camera_cfg
+        self.system_cfg = system_cfg
+        self.root_dir = root_dir
+        self.camera_id = int(camera_cfg["camera_id"])
+        self.camera_name = camera_cfg["camera_name"]
+
+        self.device = self._resolve_device(system_cfg.get("device_preference", "auto"))
+        self.gpu_name = torch.cuda.get_device_name(0) if self.device.startswith("cuda") else "CPU"
+
+        self.model = YOLO(self.camera_cfg.get("yolo_model") or system_cfg.get("model_path", "yolo11n.pt"))
+        self.target_classes = set(int(x) for x in self.camera_cfg.get("target_classes", [2, 3, 5, 7]))
+
+        line = [self.camera_cfg.get("line_start", [0, 0]), self.camera_cfg.get("line_end", [100, 0])]
+        self.counter = LineCounter(line)
+        self.congestion = CongestionScorer(int(self.camera_cfg.get("congestion_calculation_interval", 10)))
+        self.track_state = TrackState()
+
+        self.cap = None
+        self.last_frame = None
+        self.last_raw_frame = None
+        self.fps = 0.0
+        self.frame_index = 0
+
+        self.today = datetime.now().date()
+        self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
+        self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
+
+    def get_latest_raw_frame(self):
+        return None if self.last_raw_frame is None else self.last_raw_frame.copy()
+
+    def update_camera_config(self, new_cfg: dict[str, Any]) -> None:
+        old_model = self.camera_cfg.get("yolo_model")
+        self.camera_cfg = new_cfg
+        self.camera_name = new_cfg.get("camera_name", self.camera_name)
+        self.target_classes = set(int(x) for x in new_cfg.get("target_classes", [2, 3, 5, 7]))
+        self.counter.update_line([new_cfg.get("line_start", [0, 0]), new_cfg.get("line_end", [100, 0])])
+        self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 10)))
+
+        if new_cfg.get("yolo_model") and new_cfg.get("yolo_model") != old_model:
+            self.model = YOLO(new_cfg["yolo_model"])
+
+    def _resolve_device(self, preference: str) -> str:
+        if preference == "cpu":
+            return "cpu"
+        if torch.cuda.is_available():
+            return "cuda:0"
+        return "cpu"
+
+    def _stream_source(self):
+        stream_url = str(self.camera_cfg.get("stream_url", "0"))
+        return int(stream_url) if stream_url.isdigit() else stream_url
+
+    def connect(self) -> None:
+        self.cap = cv2.VideoCapture(self._stream_source())
+
+    def _in_polygon(self, point: tuple[float, float], polygon_points: list[list[int]]) -> bool:
+        if not polygon_points:
+            return False
+        poly = np.array(polygon_points, np.int32)
+        return cv2.pointPolygonTest(poly, point, False) >= 0
+
+    def _ensure_daily_csvs(self):
+        date_str = self.today.strftime("%Y-%m-%d")
+        realtime = self.metrics_dir / f"realtime_metrics_{date_str}.csv"
+        pass_events = self.metrics_dir / f"pass_events_{date_str}.csv"
+        long_stay = self.metrics_dir / f"long_stay_events_{date_str}.csv"
+
+        self._ensure_csv_header(realtime, ["timestamp", "camera_id", "camera_name", "active_tracks", "congestion_score", "congestion_threshold", "threshold_over", "long_stay_count", "fps"])
+        self._ensure_csv_header(pass_events, ["timestamp", "camera_id", "track_id", "class_name", "direction"])
+        self._ensure_csv_header(long_stay, ["first_seen", "detected_at", "camera_id", "track_id", "stay_minutes", "class_name"])
+        return realtime, pass_events, long_stay
+
+    @staticmethod
+    def _ensure_csv_header(path: Path, header: list[str]) -> None:
+        if path.exists():
+            return
+        with path.open("w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(header)
+
+    def _append_csv(self, path: Path, row: list[Any]) -> None:
+        with path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(row)
+
+    def _load_previous_day_histogram(self) -> tuple[list[int], list[int]]:
+        prev = self.today.fromordinal(self.today.toordinal() - 1)
+        prev_file = self.metrics_dir / f"pass_events_{prev.strftime('%Y-%m-%d')}.csv"
+        ltor = [0] * 144
+        rtol = [0] * 144
+        if not prev_file.exists():
+            return ltor, rtol
+        with prev_file.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                dt = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
+                idx = (dt.hour * 60 + dt.minute) // 10
+                if 0 <= idx < 144:
+                    if row.get("direction") == "LtoR":
+                        ltor[idx] += 1
+                    else:
+                        rtol[idx] += 1
+        return ltor, rtol
+
+    def _rollover_if_needed(self, now: datetime) -> None:
+        if now.date() == self.today:
+            return
+        self.today = now.date()
+        self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
+        self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
+        self.counter.state.pass_bins_ltor = [0] * 144
+        self.counter.state.pass_bins_rtol = [0] * 144
+
+    def process_once(self) -> dict[str, Any]:
+        start = time.time()
+        if self.cap is None or not self.cap.isOpened():
+            self.connect()
+        ok, frame = self.cap.read()
+        if not ok:
+            time.sleep(float(self.camera_cfg.get("reconnect_sec", 3)))
+            self.connect()
+            return self._empty_payload()
+
+        self.last_raw_frame = frame.copy()
+        now = datetime.now()
+        self._rollover_if_needed(now)
+
+        self.frame_index += 1
+        frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
+        if self.frame_index % frame_skip != 0 and self.last_frame is not None:
+            return self._empty_payload()
+
+        result = self.model.track(
+            source=frame,
+            persist=True,
+            tracker="bytetrack.yaml",
+            verbose=False,
+            device=self.device,
+            conf=float(self.camera_cfg.get("confidence_threshold", 0.25)),
+            iou=float(self.camera_cfg.get("iou_threshold", 0.5)),
+            imgsz=int(self.camera_cfg.get("imgsz", 640)),
+            classes=sorted(self.target_classes) if self.target_classes else None,
+        )[0]
+
+        boxes = result.boxes
+        tracks: list[dict[str, Any]] = []
+        pass_events: list[dict[str, Any]] = []
+        long_stay_events: list[dict[str, Any]] = []
+        long_stay_list: list[tuple[int, float]] = []
+        exclude_polygon = self.camera_cfg.get("exclude_polygon", [])
+        stay_zone = self.camera_cfg.get("stay_zone_polygon", []) or exclude_polygon
+
+        if boxes is not None and boxes.id is not None:
+            cls_array = boxes.cls.cpu().numpy() if boxes.cls is not None else []
+            for i, (box, tid) in enumerate(zip(boxes.xyxy.cpu().numpy(), boxes.id.cpu().numpy())):
+                cls_idx = int(cls_array[i]) if len(cls_array) > i else -1
+                if self.target_classes and cls_idx not in self.target_classes:
+                    continue
+                cls_name = self.model.names.get(cls_idx, str(cls_idx)) if isinstance(self.model.names, dict) else str(cls_idx)
+
+                x1, y1, x2, y2 = box.tolist()
+                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                if self._in_polygon((cx, cy), exclude_polygon):
+                    continue
+
+                track_id = int(tid)
+                tracks.append({"track_id": track_id, "center": (cx, cy), "bbox": (int(x1), int(y1), int(x2), int(y2)), "class_name": cls_name})
+
+                event = self.counter.update(track_id, (cx, cy), cls_name, now)
+                if event:
+                    pass_events.append(event)
+
+                if track_id not in self.track_state.first_seen:
+                    self.track_state.first_seen[track_id] = now
+
+                if self._in_polygon((cx, cy), stay_zone):
+                    stay_mins = (now - self.track_state.first_seen[track_id]).total_seconds() / 60.0
+                    if stay_mins >= float(self.camera_cfg.get("long_stay_minutes", 15)):
+                        long_stay_list.append((track_id, stay_mins))
+                        if track_id not in self.track_state.long_stay_emitted:
+                            self.track_state.long_stay_emitted.add(track_id)
+                            long_stay_events.append({
+                                "first_seen": self.track_state.first_seen[track_id].strftime("%Y-%m-%d %H:%M:%S"),
+                                "detected_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                                "camera_id": self.camera_id,
+                                "track_id": track_id,
+                                "stay_minutes": round(stay_mins, 1),
+                                "class_name": cls_name,
+                            })
+
+        frame_width = int(frame.shape[1]) if frame is not None else 1920
+        congestion_score = self.congestion.update(tracks, now, frame_width) if self.camera_cfg.get("enable_congestion", True) else 0.0
+        threshold = float(self.camera_cfg.get("congestion_threshold", 60))
+        threshold_over = congestion_score >= threshold
+
+        elapsed = max(1e-6, time.time() - start)
+        self.fps = 1.0 / elapsed
+
+        for pe in pass_events:
+            self._append_csv(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]])
+
+        for le in long_stay_events:
+            self._append_csv(self.long_stay_csv, [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]])
+
+        self._append_csv(self.realtime_csv, [
+            now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_id, self.camera_name, len(tracks), round(congestion_score, 2), threshold, int(threshold_over), len(long_stay_list), round(self.fps, 2),
+        ])
+
+        self.last_frame = self._draw_overlay(frame.copy(), tracks, long_stay_list)
+        long_stay_list.sort(key=lambda x: x[1], reverse=True)
+
+        return {
+            "camera_id": self.camera_id,
+            "camera_name": self.camera_name,
+            "frame": self.last_frame,
+            "congestion_score": congestion_score,
+            "threshold": threshold,
+            "threshold_over": threshold_over,
+            "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
+            "pass_bins_ltor": self.counter.state.pass_bins_ltor,
+            "pass_bins_rtol": self.counter.state.pass_bins_rtol,
+            "hist_prev_ltor": self.previous_day_hist_ltor,
+            "hist_prev_rtol": self.previous_day_hist_rtol,
+            "long_stays": long_stay_list[:10],
+            "long_stay_count": len(long_stay_list),
+            "fps": self.fps,
+            "device": self.device,
+            "gpu_name": self.gpu_name,
+        }
+
+    def _draw_overlay(self, frame: np.ndarray, tracks: list[dict[str, Any]], long_stays: list[tuple[int, float]]) -> np.ndarray:
+        line = [self.camera_cfg.get("line_start", [10, 10]), self.camera_cfg.get("line_end", [100, 10])]
+        cv2.line(frame, tuple(line[0]), tuple(line[1]), (0, 255, 255), 2)
+
+        poly = self.camera_cfg.get("exclude_polygon", [])
+        if len(poly) >= 3:
+            cv2.polylines(frame, [np.array(poly, np.int32)], isClosed=True, color=(255, 0, 255), thickness=2)
+
+        for tr in tracks:
+            x1, y1, x2, y2 = tr["bbox"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
+            cv2.putText(frame, f"ID:{tr['track_id']} {tr['class_name']}", (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
+
+        for i, (tid, mins) in enumerate(long_stays[:5]):
+            cv2.putText(frame, f"LONG STAY ID:{tid} {mins:.1f}m", (20, 40 + 22 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        return frame
+
+    def _empty_payload(self) -> dict[str, Any]:
+        return {
+            "camera_id": self.camera_id,
+            "camera_name": self.camera_name,
+            "frame": self.last_frame,
+            "congestion_score": self.congestion.state.current_congestion_index,
+            "threshold": float(self.camera_cfg.get("congestion_threshold", 60)),
+            "threshold_over": False,
+            "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
+            "pass_bins_ltor": self.counter.state.pass_bins_ltor,
+            "pass_bins_rtol": self.counter.state.pass_bins_rtol,
+            "hist_prev_ltor": self.previous_day_hist_ltor,
+            "hist_prev_rtol": self.previous_day_hist_rtol,
+            "long_stays": [],
+            "long_stay_count": 0,
+            "fps": self.fps,
+            "device": self.device,
+            "gpu_name": self.gpu_name,
+        }
+
+
+# =========================================
+# Main Window
+# =========================================
+class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, root_dir: Path):
         super().__init__()
         self.root_dir = root_dir
@@ -65,7 +1250,6 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 500)))
-
         self.setWindowState(QtCore.Qt.WindowState.WindowMaximized)
 
     def tick(self) -> None:
@@ -149,6 +1333,12 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
         save_multi_day_trend_plot(metrics_files, "congestion_score", out)
 
 
+MonitorMainWindow = MainWindow
+
+
+# =========================================
+# parse_args / main
+# =========================================
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="3-camera AI congestion monitor")
     p.add_argument("--root", default=str(Path(__file__).resolve().parent), help="ai_monitor root directory")
@@ -159,7 +1349,7 @@ def main() -> int:
     args = parse_args()
     root_dir = Path(args.root)
     app = QtWidgets.QApplication(sys.argv)
-    win = MonitorMainWindow(root_dir)
+    win = MainWindow(root_dir)
     win.show()
     return app.exec()
 
