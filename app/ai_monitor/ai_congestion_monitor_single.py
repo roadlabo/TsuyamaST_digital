@@ -11,6 +11,7 @@ import os
 import platform
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -111,6 +112,11 @@ STAY_DISPLAY_THRESHOLD_SEC = 60
 TRACK_LOST_GRACE_SEC = 2
 CONGESTION_LEVELS = [(0, 2), (3, 5), (6, 999)]
 UI_INFO_UPDATE_INTERVAL_SEC = 1.0
+CAMERA_BUFFER_MODE = "latest_only"
+INFERENCE_MIN_INTERVAL_SEC = 0.0
+MAX_FRAME_STALENESS_MS = 300
+CAP_PROP_BUFFERSIZE_VALUE = 1
+YOLO_IMGSZ = 640
 
 
 def lazy_import_torch() -> Any:
@@ -183,6 +189,11 @@ DEFAULT_CONFIG = {
         "stay_display_threshold_sec": STAY_DISPLAY_THRESHOLD_SEC,
         "track_lost_grace_sec": TRACK_LOST_GRACE_SEC,
         "ui_info_update_interval_sec": UI_INFO_UPDATE_INTERVAL_SEC,
+        "camera_buffer_mode": CAMERA_BUFFER_MODE,
+        "inference_min_interval_sec": INFERENCE_MIN_INTERVAL_SEC,
+        "max_frame_staleness_ms": MAX_FRAME_STALENESS_MS,
+        "cap_prop_buffersize_value": CAP_PROP_BUFFERSIZE_VALUE,
+        "yolo_imgsz": YOLO_IMGSZ,
     },
     "camera_settings": {
         "cameras": [
@@ -199,6 +210,7 @@ DEFAULT_CONFIG = {
                 "congestion_display_max": 7,
                 "long_stay_minutes": 15,
                 "long_stay_trigger_count": 1,
+                "inference_min_interval_sec": INFERENCE_MIN_INTERVAL_SEC,
             },
             {
                 "camera_id": 2,
@@ -213,6 +225,7 @@ DEFAULT_CONFIG = {
                 "congestion_display_max": 7,
                 "long_stay_minutes": 15,
                 "long_stay_trigger_count": 1,
+                "inference_min_interval_sec": INFERENCE_MIN_INTERVAL_SEC,
             },
             {
                 "camera_id": 3,
@@ -227,6 +240,7 @@ DEFAULT_CONFIG = {
                 "congestion_display_max": 7,
                 "long_stay_minutes": 15,
                 "long_stay_trigger_count": 1,
+                "inference_min_interval_sec": INFERENCE_MIN_INTERVAL_SEC,
             },
         ]
     },
@@ -554,19 +568,19 @@ class CameraPanel(QtWidgets.QFrame):
             self._update_scaled_frame()
 
         current_in_roi = int(payload.get("current_in_roi", 0))
-        level_name = str(payload.get("congestion_label", "LOW"))
-        level_color = str(payload.get("congestion_color", "#00e5ff"))
-        display_max = int(payload.get("congestion_display_max", 7))
-        gauge_max = max(1, max(display_max, current_in_roi))
-        self.gauge.setRange(0, gauge_max)
-        self.gauge.setValue(current_in_roi)
-        self.gauge.setFormat(f"Congestion {current_in_roi}/{display_max} ({level_name})")
-        self.gauge.setStyleSheet(f"QProgressBar::chunk{{background:{level_color};}}")
-
         now_ts = float(payload.get("now_ts", time.time()))
         self._info_update_interval_sec = float(payload.get("ui_info_update_interval_sec", self._info_update_interval_sec))
         if now_ts - self._last_info_update >= self._info_update_interval_sec:
             self._last_info_update = now_ts
+            level_name = str(payload.get("congestion_label", "LOW"))
+            level_color = str(payload.get("congestion_color", "#00e5ff"))
+            display_max = int(payload.get("congestion_display_max", 7))
+            gauge_max = max(1, max(display_max, current_in_roi))
+            self.gauge.setRange(0, gauge_max)
+            self.gauge.setValue(current_in_roi)
+            self.gauge.setFormat(f"Congestion {current_in_roi}/{display_max} ({level_name})")
+            self.gauge.setStyleSheet(f"QProgressBar::chunk{{background:{level_color};}}")
+
             today_total = int(payload.get("today_total", 0))
             staying_over = int(payload.get("staying_over_threshold", 0))
             threshold_min = float(payload.get("stay_display_threshold_sec", STAY_DISPLAY_THRESHOLD_SEC)) / 60.0
@@ -589,10 +603,12 @@ class CameraPanel(QtWidgets.QFrame):
                     self.long_stay.setItem(r, 0, QtWidgets.QTableWidgetItem(str(tid)))
                     self.long_stay.setItem(r, 1, QtWidgets.QTableWidgetItem(f"{minutes:.1f}"))
 
-        self.meta.setText(
-            f"{payload.get('camera_name','')} | {datetime.now().strftime('%H:%M:%S')} | "
-            f"device: {payload.get('device','cpu')} | gpu: {payload.get('gpu_name','CPU')} | fps: {payload.get('fps',0):.1f}"
-        )
+            self.meta.setText(
+                f"{payload.get('camera_name','')} | {datetime.now().strftime('%H:%M:%S')} | "
+                f"cap:{payload.get('capture_fps',0):.1f} infer:{payload.get('infer_fps',0):.1f} disp:{payload.get('display_fps',0):.1f} | "
+                f"drop:{payload.get('dropped_frames',0)} age:{payload.get('last_frame_age_ms',0):.0f}ms | "
+                f"device: {payload.get('device','cpu')} | gpu: {payload.get('gpu_name','CPU')}"
+            )
 
 
 class CameraSettingsDialog(QtWidgets.QDialog):
@@ -681,6 +697,33 @@ class CameraEngine:
             self.camera_cfg.get("track_lost_grace_sec", self.system_cfg.get("track_lost_grace_sec", TRACK_LOST_GRACE_SEC))
         )
         self.congestion_levels = self.camera_cfg.get("congestion_levels", CONGESTION_LEVELS)
+        self.camera_buffer_mode = str(self.system_cfg.get("camera_buffer_mode", CAMERA_BUFFER_MODE))
+        self.inference_min_interval_sec = float(
+            self.camera_cfg.get("inference_min_interval_sec", self.system_cfg.get("inference_min_interval_sec", INFERENCE_MIN_INTERVAL_SEC))
+        )
+        self.max_frame_staleness_ms = float(self.system_cfg.get("max_frame_staleness_ms", MAX_FRAME_STALENESS_MS))
+        self.cap_prop_buffersize_value = int(self.system_cfg.get("cap_prop_buffersize_value", CAP_PROP_BUFFERSIZE_VALUE))
+        self.yolo_imgsz = int(self.system_cfg.get("yolo_imgsz", YOLO_IMGSZ))
+
+        self._state_lock = threading.Lock()
+        self._running = False
+        self._capture_thread: Optional[threading.Thread] = None
+        self._infer_thread: Optional[threading.Thread] = None
+        self._latest_frame: Optional[np.ndarray] = None
+        self._latest_frame_id = 0
+        self._latest_frame_ts = 0.0
+        self._processed_frame_id = 0
+        self._display_payload: dict[str, Any] = self.empty_payload("initializing")
+        self._last_drawn_frame_id = 0
+        self._last_drawn_pixmap: Optional[QtGui.QPixmap] = None
+        self._last_display_time = 0.0
+
+        self._capture_last_ts = 0.0
+        self._infer_last_ts = 0.0
+        self._capture_fps = 0.0
+        self._infer_fps = 0.0
+        self._display_fps = 0.0
+        self._dropped_frames = 0
 
     def is_in_roi(self, center: tuple[float, float], frame_shape: tuple[int, ...]) -> bool:
         h, w = frame_shape[:2]
@@ -735,6 +778,11 @@ class CameraEngine:
         src = str(self.camera_cfg.get("stream_url", "0"))
         source = int(src) if src.isdigit() else src
         self.cap = cv2.VideoCapture(source)
+        if self.cap is not None:
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.cap_prop_buffersize_value)
+            except Exception:
+                pass
 
     def ensure_backend(self) -> Optional[str]:
         if self.no_ai:
@@ -750,26 +798,98 @@ class CameraEngine:
             self.backend = None
             return str(exc)
 
-    def process_once(self) -> dict[str, Any]:
-        st = time.time()
-        if self.cap is None or not self.cap.isOpened():
-            self.connect()
-        if self.cap is None:
-            return self.empty_payload("camera not initialized")
-        ok, frame = self.cap.read()
-        if not ok:
-            time.sleep(0.2)
-            self.connect()
-            return self.empty_payload("camera reconnecting")
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True, name=f"cam{self.camera_cfg['camera_id']}_capture")
+        self._infer_thread = threading.Thread(target=self._infer_loop, daemon=True, name=f"cam{self.camera_cfg['camera_id']}_infer")
+        self._capture_thread.start()
+        self._infer_thread.start()
 
-        err = self.ensure_backend()
-        if err:
-            return self.empty_payload(f"AI disabled: {err}", frame)
+    def stop(self) -> None:
+        self._running = False
+        if self._capture_thread:
+            self._capture_thread.join(timeout=1.0)
+        if self._infer_thread:
+            self._infer_thread.join(timeout=1.0)
+        if self.cap is not None:
+            self.cap.release()
 
+    def _capture_loop(self) -> None:
+        while self._running:
+            if self.cap is None or not self.cap.isOpened():
+                self.connect()
+                if self.cap is None or not self.cap.isOpened():
+                    time.sleep(0.2)
+                    continue
+            ok, frame = self.cap.read()
+            now_ts = time.time()
+            if not ok:
+                time.sleep(0.1)
+                self.connect()
+                continue
+            with self._state_lock:
+                previous_id = self._latest_frame_id
+                self._latest_frame = frame
+                self._latest_frame_id += 1
+                self._latest_frame_ts = now_ts
+                if previous_id > self._processed_frame_id:
+                    self._dropped_frames += 1
+            if self._capture_last_ts > 0:
+                self._capture_fps = 1.0 / max(1e-6, now_ts - self._capture_last_ts)
+            self._capture_last_ts = now_ts
+
+    def _infer_loop(self) -> None:
+        while self._running:
+            err = self.ensure_backend()
+            if err:
+                with self._state_lock:
+                    self._display_payload = self.empty_payload(f"AI disabled: {err}")
+                time.sleep(0.5)
+                continue
+            snapshot = self._get_latest_frame_snapshot()
+            if snapshot is None:
+                time.sleep(0.005)
+                continue
+            frame_id, frame_ts, frame = snapshot
+            if frame_id <= self._processed_frame_id:
+                time.sleep(0.002)
+                continue
+            if self.inference_min_interval_sec > 0 and (time.time() - self._infer_last_ts) < self.inference_min_interval_sec:
+                time.sleep(0.001)
+                continue
+            age_ms = (time.time() - frame_ts) * 1000.0
+            if self.max_frame_staleness_ms > 0 and age_ms > self.max_frame_staleness_ms:
+                self._processed_frame_id = frame_id
+                continue
+            self._processed_frame_id = frame_id
+            payload = self._infer_on_frame(frame, frame_id, frame_ts)
+            with self._state_lock:
+                self._display_payload = payload
+            if self._infer_last_ts > 0:
+                self._infer_fps = 1.0 / max(1e-6, time.time() - self._infer_last_ts)
+            self._infer_last_ts = time.time()
+
+    def _get_latest_frame_snapshot(self) -> Optional[tuple[int, float, np.ndarray]]:
+        with self._state_lock:
+            if self._latest_frame is None:
+                return None
+            return self._latest_frame_id, self._latest_frame_ts, self._latest_frame.copy()
+
+    def _infer_on_frame(self, frame: np.ndarray, frame_id: int, frame_ts: float) -> dict[str, Any]:
+        infer_started = time.time()
         tracks: list[dict[str, Any]] = []
         if self.backend and self.backend.model is not None:
             try:
-                result = self.backend.model.track(frame, persist=True, verbose=False, device=self.backend.device, tracker="bytetrack.yaml")[0]
+                result = self.backend.model.track(
+                    frame,
+                    persist=True,
+                    verbose=False,
+                    device=self.backend.device,
+                    tracker="bytetrack.yaml",
+                    imgsz=self.yolo_imgsz,
+                )[0]
                 boxes = getattr(result, "boxes", None)
                 if boxes is not None and boxes.id is not None:
                     ids = boxes.id.cpu().numpy()
@@ -783,7 +903,7 @@ class CameraEngine:
                         cls_name = name_map.get(cls_idx, str(cls_idx)) if isinstance(name_map, dict) else str(cls_idx)
                         tracks.append({"track_id": int(tid), "center": center, "bbox": (x1, y1, x2, y2), "class_name": cls_name})
             except Exception as exc:
-                return self.empty_payload(f"AI process failed: {exc}", frame)
+                return self.empty_payload(f"AI process failed: {exc}", frame, frame_id, frame_ts)
 
         now = datetime.now()
         pass_events = []
@@ -846,7 +966,7 @@ class CameraEngine:
         score = compute_congestion_score(current_in_roi, avg_move, len(long_stays))
         threshold = float(self.camera_cfg.get("congestion_threshold", 60))
         over = score >= threshold
-        self.last_fps = 1.0 / max(1e-6, time.time() - st)
+        self.last_fps = 1.0 / max(1e-6, time.time() - infer_started)
         congestion_label, congestion_color = self.summarize_congestion(current_in_roi)
         today_total = int(sum(self.counter.hist_10min))
 
@@ -880,11 +1000,43 @@ class CameraEngine:
             "stay_display_threshold_sec": self.stay_display_threshold_sec,
             "ui_info_update_interval_sec": float(self.system_cfg.get("ui_info_update_interval_sec", UI_INFO_UPDATE_INTERVAL_SEC)),
             "fps": self.last_fps,
+            "capture_fps": self._capture_fps,
+            "infer_fps": self._infer_fps,
+            "display_fps": self._display_fps,
+            "dropped_frames": self._dropped_frames,
+            "last_frame_age_ms": max(0.0, (time.time() - frame_ts) * 1000.0),
+            "frame_id": frame_id,
             "device": self.backend.device if self.backend else "cpu",
             "gpu_name": self.backend.gpu_name if self.backend else "CPU",
             "now_ts": now.timestamp(),
             "error": "",
         }
+
+    def process_once(self) -> dict[str, Any]:
+        with self._state_lock:
+            payload = dict(self._display_payload)
+            latest_frame_id = self._latest_frame_id
+            latest_frame = self._latest_frame.copy() if self._latest_frame is not None else None
+            latest_frame_ts = self._latest_frame_ts
+        if latest_frame is not None and latest_frame_id != self._last_drawn_frame_id:
+            frame_to_draw = latest_frame
+            if payload.get("frame") is None:
+                frame_to_draw = self.draw(frame_to_draw, [])
+            self._last_drawn_pixmap = self.to_pixmap(frame_to_draw)
+            self._last_drawn_frame_id = latest_frame_id
+        payload["frame"] = self._last_drawn_pixmap
+        now_ts = time.time()
+        if self._last_display_time > 0:
+            self._display_fps = 1.0 / max(1e-6, now_ts - self._last_display_time)
+        self._last_display_time = now_ts
+        payload["display_fps"] = self._display_fps
+        payload["capture_fps"] = self._capture_fps
+        payload["infer_fps"] = self._infer_fps
+        payload["dropped_frames"] = self._dropped_frames
+        payload["last_frame_age_ms"] = max(0.0, (now_ts - latest_frame_ts) * 1000.0) if latest_frame_ts else 0.0
+        payload["camera_buffer_mode"] = self.camera_buffer_mode
+        payload["now_ts"] = now_ts
+        return payload
 
     def append_rows(self, path: Path, rows: list[list[Any]]) -> None:
         if not rows:
@@ -910,7 +1062,13 @@ class CameraEngine:
         qimg = QtGui.QImage(rgb.data, w, h, ch * w, QtGui.QImage.Format.Format_RGB888)
         return QtGui.QPixmap.fromImage(qimg)
 
-    def empty_payload(self, reason: str, frame: Optional[np.ndarray] = None) -> dict[str, Any]:
+    def empty_payload(
+        self,
+        reason: str,
+        frame: Optional[np.ndarray] = None,
+        frame_id: int = 0,
+        frame_ts: float = 0.0,
+    ) -> dict[str, Any]:
         pix = None
         if frame is not None:
             pix = self.to_pixmap(frame)
@@ -934,6 +1092,12 @@ class CameraEngine:
             "stay_display_threshold_sec": self.stay_display_threshold_sec,
             "ui_info_update_interval_sec": float(self.system_cfg.get("ui_info_update_interval_sec", UI_INFO_UPDATE_INTERVAL_SEC)),
             "fps": 0.0,
+            "capture_fps": self._capture_fps,
+            "infer_fps": self._infer_fps,
+            "display_fps": self._display_fps,
+            "dropped_frames": self._dropped_frames,
+            "last_frame_age_ms": max(0.0, (time.time() - frame_ts) * 1000.0) if frame_ts else 0.0,
+            "frame_id": frame_id,
             "device": "cpu",
             "gpu_name": "CPU",
             "now_ts": time.time(),
@@ -989,7 +1153,9 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
             layout.addWidget(panel, 1)
             self.panels[int(cam["camera_id"])] = panel
             if cam.get("enabled", True):
-                self.engines[int(cam["camera_id"])] = CameraEngine(cam, self.system_cfg, self.data_root, no_ai, force_cpu, safe_mode)
+                engine = CameraEngine(cam, self.system_cfg, self.data_root, no_ai, force_cpu, safe_mode)
+                engine.start()
+                self.engines[int(cam["camera_id"])] = engine
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -1054,6 +1220,14 @@ class MonitorMainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "plot", f"保存: {r}")
         else:
             QtWidgets.QMessageBox.warning(self, "plot", "plot 出力に必要なデータが不足")
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        for engine in self.engines.values():
+            try:
+                engine.stop()
+            except Exception as exc:
+                log(f"engine stop failed: {exc}")
+        super().closeEvent(event)
 
 
 # ================== entry point ==================
