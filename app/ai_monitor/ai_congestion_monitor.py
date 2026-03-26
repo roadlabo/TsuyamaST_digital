@@ -1655,9 +1655,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
         self.reporter = ReportWriter(root_dir / "data")
-        ai_status_path = Path(self.app_cfg.system.get("ai_status_json_path", "app/config/ai_status.json"))
-        if not ai_status_path.is_absolute():
-            ai_status_path = Path.cwd() / ai_status_path
+        raw_ai_status = Path(self.app_cfg.system.get("ai_status_json_path", "app/config/ai_status.json"))
+        script_base = Path(__file__).resolve().parents[2]
+        if raw_ai_status.is_absolute():
+            ai_status_path = raw_ai_status
+        else:
+            ai_status_path = script_base / raw_ai_status
+        ai_status_path.parent.mkdir(parents=True, exist_ok=True)
         self.status_mgr = StatusManager(ai_status_path)
 
         self.threads: dict[int, QtCore.QThread] = {}
@@ -1868,6 +1872,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     "Excel更新保留",
                     "Excelレポートが開かれているため更新できません。Excelを閉じてください。閉じられ次第、自動で再更新します。",
                 )
+        except Exception as exc:
+            self.pending_report_update = True
+            print(f"[WARN] report update skipped: {exc}")
 
     def _retry_pending_report_update(self) -> None:
         if self.pending_report_update:
