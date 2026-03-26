@@ -1,0 +1,50 @@
+{
+  "system_config": {
+    "model_path": "yolo11n.pt",
+    "device_preference": "auto",
+    "target_classes": ["car", "bus", "truck", "motorcycle"],
+    "metrics_save_interval_sec": 5,
+    "ui_refresh_interval_ms": 500,
+    "ai_status_json_path": "app/config/ai_status.json"
+  },
+  "camera_settings": {
+    "cameras": [
+      {
+        "camera_id": 1,
+        "camera_name": "Camera1",
+        "stream_url": "rtsp://user:pass@192.168.1.10/stream1",
+        "enabled": true,
+        "direction": "LtoR",
+        "line_points": [[80, 200], [520, 200]],
+        "exclude_polygon": [[20, 20], [120, 20], [120, 80], [20, 80]],
+        "congestion_threshold": 60,
+        "long_stay_minutes": 15,
+        "long_stay_trigger_count": 1
+      },
+      {
+        "camera_id": 2,
+        "camera_name": "Camera2",
+        "stream_url": "rtsp://user:pass@192.168.1.11/stream1",
+        "enabled": true,
+        "direction": "LtoR",
+        "line_points": [[80, 220], [520, 220]],
+        "exclude_polygon": [],
+        "congestion_threshold": 60,
+        "long_stay_minutes": 15,
+        "long_stay_trigger_count": 1
+      },
+      {
+        "camera_id": 3,
+        "camera_name": "Camera3",
+        "stream_url": "rtsp://user:pass@192.168.1.12/stream1",
+        "enabled": true,
+        "direction": "RtoL",
+        "line_points": [[520, 240], [80, 240]],
+        "exclude_polygon": [],
+        "congestion_threshold": 60,
+        "long_stay_minutes": 15,
+        "long_stay_trigger_count": 1
+      }
+    ]
+  }
+}
