@@ -1,6 +1,6 @@
 {
   "system_config": {
-    "model_path": "yolo11n.pt",
+    "model_path": "yolo11l.pt",
     "device_preference": "auto",
     "target_classes": ["car", "bus", "truck", "motorcycle"],
     "metrics_save_interval_sec": 5,
