@@ -885,6 +885,9 @@ class CameraPanel(QtWidgets.QFrame):
 
         self.meta = QtWidgets.QLabel("time / gpu / fps")
         right.addWidget(self.meta)
+        self.status_label = QtWidgets.QLabel("IDLE")
+        self.status_label.setStyleSheet("font-size:13px;font-weight:bold;color:#ffd166;")
+        right.addWidget(self.status_label)
 
         self.summary = QtWidgets.QLabel("LtoR=0 / RtoL=0")
         right.addWidget(self.summary)
@@ -924,12 +927,38 @@ class CameraPanel(QtWidgets.QFrame):
         lines = [f"ID {tid}: {mins:.1f} min" for tid, mins in payload.get("long_stays", [])]
         self.long_stay.setText("\n".join(lines) if lines else "No long stay")
 
+    def set_status(self, status_text: str) -> None:
+        self.status_label.setText(status_text)
+
+
+def resolve_model_path(camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path) -> Path:
+    raw = camera_cfg.get("yolo_model") or system_cfg.get("model_path", "yolo11n.pt")
+    p = Path(str(raw))
+    if not p.is_absolute():
+        candidates = [root_dir / p, root_dir / "models" / p, Path.cwd() / p]
+        for c in candidates:
+            if c.exists():
+                return c
+        raise FileNotFoundError(
+            f"YOLO model file not found: {raw}. "
+            "Place the model locally under ai_monitor or ai_monitor/models."
+        )
+    if not p.exists():
+        raise FileNotFoundError(f"YOLO model file not found: {p}")
+    return p
+
 
 # =========================================
 # Camera Worker
 # =========================================
-class CameraWorker:
+class CameraWorker(QtCore.QObject):
+    frame_ready = QtCore.pyqtSignal(dict)
+    status_changed = QtCore.pyqtSignal(int, str)
+    error_occurred = QtCore.pyqtSignal(int, str)
+    finished = QtCore.pyqtSignal(int)
+
     def __init__(self, camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path):
+        super().__init__()
         self.camera_cfg = camera_cfg
         self.system_cfg = system_cfg
         self.root_dir = root_dir
@@ -939,7 +968,11 @@ class CameraWorker:
         self.device = self._resolve_device(system_cfg.get("device_preference", "auto"))
         self.gpu_name = torch.cuda.get_device_name(0) if self.device.startswith("cuda") else "CPU"
 
-        self.model = YOLO(self.camera_cfg.get("yolo_model") or system_cfg.get("model_path", "yolo11n.pt"))
+        self.model_path = resolve_model_path(self.camera_cfg, self.system_cfg, self.root_dir)
+        try:
+            self.model = YOLO(str(self.model_path))
+        except Exception as exc:
+            raise RuntimeError(f"[ERROR] cam{self.camera_id} model load failed: {exc}") from exc
         self.target_classes = set(int(x) for x in self.camera_cfg.get("target_classes", [2, 3, 5, 7]))
 
         line = [self.camera_cfg.get("line_start", [0, 0]), self.camera_cfg.get("line_end", [100, 0])]
@@ -952,6 +985,11 @@ class CameraWorker:
         self.last_raw_frame = None
         self.fps = 0.0
         self.frame_index = 0
+        self._running = True
+        self._next_reconnect_time = 0.0
+        self._next_infer_retry_time = 0.0
+        self._last_warn_emit = 0.0
+        self._status_text = "INIT"
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
@@ -963,6 +1001,7 @@ class CameraWorker:
         return None if self.last_raw_frame is None else self.last_raw_frame.copy()
 
     def update_camera_config(self, new_cfg: dict[str, Any]) -> None:
+        prev_cfg = dict(self.camera_cfg)
         old_model = self.camera_cfg.get("yolo_model")
         self.camera_cfg = new_cfg
         self.camera_name = new_cfg.get("camera_name", self.camera_name)
@@ -971,7 +1010,14 @@ class CameraWorker:
         self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 10)))
 
         if new_cfg.get("yolo_model") and new_cfg.get("yolo_model") != old_model:
-            self.model = YOLO(new_cfg["yolo_model"])
+            try:
+                new_model_path = resolve_model_path(new_cfg, self.system_cfg, self.root_dir)
+                new_model = YOLO(str(new_model_path))
+                self.model = new_model
+                self.model_path = new_model_path
+            except Exception as exc:
+                self.camera_cfg = prev_cfg
+                raise RuntimeError(f"[ERROR] cam{self.camera_id} model load failed: {exc}") from exc
 
     def _resolve_device(self, preference: str) -> str:
         if preference == "cpu":
@@ -985,7 +1031,23 @@ class CameraWorker:
         return int(stream_url) if stream_url.isdigit() else stream_url
 
     def connect(self) -> None:
+        self._release_capture()
         self.cap = cv2.VideoCapture(self._stream_source())
+
+    def _release_capture(self) -> None:
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            finally:
+                self.cap = None
+
+    def _set_status(self, text: str) -> None:
+        if self._status_text == text:
+            return
+        self._status_text = text
+        self.status_changed.emit(self.camera_id, text)
 
     def _in_polygon(self, point: tuple[float, float], polygon_points: list[list[int]]) -> bool:
         if not polygon_points:
@@ -1043,36 +1105,79 @@ class CameraWorker:
         self.counter.state.pass_bins_ltor = [0] * 144
         self.counter.state.pass_bins_rtol = [0] * 144
 
-    def process_once(self) -> dict[str, Any]:
+    @QtCore.pyqtSlot()
+    def run(self) -> None:
+        self._set_status("RUNNING")
+        while self._running:
+            try:
+                payload = self.process_once_nonblocking()
+                if payload is not None:
+                    self.frame_ready.emit(payload)
+            except Exception as exc:
+                self.error_occurred.emit(self.camera_id, str(exc))
+            QtCore.QThread.msleep(5)
+        self._release_capture()
+        self.finished.emit(self.camera_id)
+
+    @QtCore.pyqtSlot()
+    def stop(self) -> None:
+        self._running = False
+        self._release_capture()
+
+    def process_once_nonblocking(self) -> dict[str, Any] | None:
         start = time.time()
+        now_ts = time.time()
+        if now_ts < self._next_reconnect_time or now_ts < self._next_infer_retry_time:
+            return None
         if self.cap is None or not self.cap.isOpened():
             self.connect()
+            if self.cap is None or not self.cap.isOpened():
+                reconnect_sec = float(self.camera_cfg.get("reconnect_sec", 3))
+                self._next_reconnect_time = now_ts + reconnect_sec
+                self._set_status("RECONNECT WAIT")
+                if now_ts - self._last_warn_emit > 1.0:
+                    self._last_warn_emit = now_ts
+                    self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} reconnect scheduled in {reconnect_sec:.0f} sec")
+                return None
+
         ok, frame = self.cap.read()
         if not ok:
-            time.sleep(float(self.camera_cfg.get("reconnect_sec", 3)))
-            self.connect()
-            return self._empty_payload()
+            reconnect_sec = float(self.camera_cfg.get("reconnect_sec", 3))
+            self._next_reconnect_time = now_ts + reconnect_sec
+            self._set_status("STREAM ERROR")
+            if now_ts - self._last_warn_emit > 1.0:
+                self._last_warn_emit = now_ts
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} reconnect scheduled in {reconnect_sec:.0f} sec")
+            self._release_capture()
+            return None
 
+        self._set_status("RUNNING")
         self.last_raw_frame = frame.copy()
         now = datetime.now()
         self._rollover_if_needed(now)
 
         self.frame_index += 1
         frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
-        if self.frame_index % frame_skip != 0 and self.last_frame is not None:
-            return self._empty_payload()
+        if self.frame_index % frame_skip != 0:
+            return None
 
-        result = self.model.track(
-            source=frame,
-            persist=True,
-            tracker="bytetrack.yaml",
-            verbose=False,
-            device=self.device,
-            conf=float(self.camera_cfg.get("confidence_threshold", 0.25)),
-            iou=float(self.camera_cfg.get("iou_threshold", 0.5)),
-            imgsz=int(self.camera_cfg.get("imgsz", 640)),
-            classes=sorted(self.target_classes) if self.target_classes else None,
-        )[0]
+        try:
+            result = self.model.track(
+                source=frame,
+                persist=True,
+                tracker="bytetrack.yaml",
+                verbose=False,
+                device=self.device,
+                conf=float(self.camera_cfg.get("confidence_threshold", 0.25)),
+                iou=float(self.camera_cfg.get("iou_threshold", 0.5)),
+                imgsz=int(self.camera_cfg.get("imgsz", 640)),
+                classes=sorted(self.target_classes) if self.target_classes else None,
+            )[0]
+        except Exception as exc:
+            self._next_infer_retry_time = time.time() + 3.0
+            self._set_status("MODEL ERROR")
+            self.error_occurred.emit(self.camera_id, f"[ERROR] cam{self.camera_id} tracker failed: {exc}")
+            return None
 
         boxes = result.boxes
         tracks: list[dict[str, Any]] = []
@@ -1129,14 +1234,23 @@ class CameraWorker:
         self.fps = 1.0 / elapsed
 
         for pe in pass_events:
-            self._append_csv(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]])
+            try:
+                self._append_csv(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]])
+            except Exception as exc:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} pass csv write failed: {exc}")
 
         for le in long_stay_events:
-            self._append_csv(self.long_stay_csv, [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]])
+            try:
+                self._append_csv(self.long_stay_csv, [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]])
+            except Exception as exc:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} long_stay csv write failed: {exc}")
 
-        self._append_csv(self.realtime_csv, [
-            now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_id, self.camera_name, len(tracks), round(congestion_score, 2), threshold, int(threshold_over), len(long_stay_list), round(self.fps, 2),
-        ])
+        try:
+            self._append_csv(self.realtime_csv, [
+                now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_id, self.camera_name, len(tracks), round(congestion_score, 2), threshold, int(threshold_over), len(long_stay_list), round(self.fps, 2),
+            ])
+        except Exception as exc:
+            self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} realtime csv write failed: {exc}")
 
         self.last_frame = self._draw_overlay(frame.copy(), tracks, long_stay_list)
         long_stay_list.sort(key=lambda x: x[1], reverse=True)
@@ -1158,6 +1272,7 @@ class CameraWorker:
             "fps": self.fps,
             "device": self.device,
             "gpu_name": self.gpu_name,
+            "status": self._status_text,
         }
 
     def _draw_overlay(self, frame: np.ndarray, tracks: list[dict[str, Any]], long_stays: list[tuple[int, float]]) -> np.ndarray:
@@ -1177,27 +1292,6 @@ class CameraWorker:
             cv2.putText(frame, f"LONG STAY ID:{tid} {mins:.1f}m", (20, 40 + 22 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return frame
 
-    def _empty_payload(self) -> dict[str, Any]:
-        return {
-            "camera_id": self.camera_id,
-            "camera_name": self.camera_name,
-            "frame": self.last_frame,
-            "congestion_score": self.congestion.state.current_congestion_index,
-            "threshold": float(self.camera_cfg.get("congestion_threshold", 60)),
-            "threshold_over": False,
-            "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
-            "pass_bins_ltor": self.counter.state.pass_bins_ltor,
-            "pass_bins_rtol": self.counter.state.pass_bins_rtol,
-            "hist_prev_ltor": self.previous_day_hist_ltor,
-            "hist_prev_rtol": self.previous_day_hist_rtol,
-            "long_stays": [],
-            "long_stay_count": 0,
-            "fps": self.fps,
-            "device": self.device,
-            "gpu_name": self.gpu_name,
-        }
-
-
 # =========================================
 # Main Window
 # =========================================
@@ -1216,8 +1310,10 @@ class MainWindow(QtWidgets.QMainWindow):
             ai_status_path = Path.cwd() / ai_status_path
         self.status_mgr = StatusManager(ai_status_path)
 
+        self.threads: dict[int, QtCore.QThread] = {}
         self.workers: dict[int, CameraWorker] = {}
         self.panels: dict[int, CameraPanel] = {}
+        self.latest_payloads: dict[int, dict[str, Any]] = {}
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -1245,7 +1341,26 @@ class MainWindow(QtWidgets.QMainWindow):
             panel = CameraPanel(cam)
             layout.addWidget(panel, 1)
             self.panels[cam["camera_id"]] = panel
-            self.workers[cam["camera_id"]] = CameraWorker(cam, self.app_cfg.system, self.root_dir)
+            try:
+                worker = CameraWorker(cam, self.app_cfg.system, self.root_dir)
+            except Exception as exc:
+                panel.set_status("MODEL ERROR")
+                print(exc)
+                continue
+            thread = QtCore.QThread(self)
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run)
+            worker.frame_ready.connect(self.on_camera_payload)
+            worker.error_occurred.connect(self.on_camera_error)
+            worker.status_changed.connect(self.on_camera_status_changed)
+            worker.finished.connect(thread.quit)
+            worker.finished.connect(worker.deleteLater)
+            thread.finished.connect(thread.deleteLater)
+
+            cid = cam["camera_id"]
+            self.workers[cid] = worker
+            self.threads[cid] = thread
+            thread.start()
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -1253,18 +1368,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowState(QtCore.Qt.WindowState.WindowMaximized)
 
     def tick(self) -> None:
-        payloads = {}
-        for cid, worker in self.workers.items():
-            try:
-                p = worker.process_once()
-                payloads[cid] = p
-                self.panels[cid].update_view(p)
-            except Exception as exc:
-                print(f"[WARN] camera {cid} failed: {exc}")
+        self._update_status_level()
 
-        cam1 = payloads.get(1, {})
-        cam2 = payloads.get(2, {})
-        cam3 = payloads.get(3, {})
+    @QtCore.pyqtSlot(dict)
+    def on_camera_payload(self, payload: dict[str, Any]) -> None:
+        cid = int(payload.get("camera_id", -1))
+        if cid in self.panels:
+            self.panels[cid].update_view(payload)
+        self.latest_payloads[cid] = payload
+        self._update_status_level()
+
+    @QtCore.pyqtSlot(int, str)
+    def on_camera_error(self, camera_id: int, message: str) -> None:
+        print(f"[WARN] camera {camera_id}: {message}")
+
+    @QtCore.pyqtSlot(int, str)
+    def on_camera_status_changed(self, camera_id: int, status_text: str) -> None:
+        panel = self.panels.get(camera_id)
+        if panel is not None:
+            panel.set_status(status_text)
+
+    def _update_status_level(self) -> None:
+        cam1 = self.latest_payloads.get(1, {})
+        cam2 = self.latest_payloads.get(2, {})
+        cam3 = self.latest_payloads.get(3, {})
         cam2_cfg = next((c for c in self.app_cfg.cameras if c.get("camera_id") == 2), {})
         level = self.status_mgr.decide_level(
             cam1_over=bool(cam1.get("threshold_over", False)),
@@ -1287,7 +1414,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             cams[idx] = dlg.get_updated_config()
             self.cfg_mgr.save_camera_settings(cams)
-            self.workers[camera_id].update_camera_config(cams[idx])
+            try:
+                self.workers[camera_id].update_camera_config(cams[idx])
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(self, "モデル更新失敗", str(exc))
+                return
             QtWidgets.QMessageBox.information(self, "保存", "設定を保存し、次フレームから反映しました。")
 
     def save_current_settings(self) -> None:
@@ -1310,7 +1441,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for cam in self.app_cfg.cameras:
             cid = cam["camera_id"]
             if cid in self.workers:
-                self.workers[cid].update_camera_config(cam)
+                try:
+                    self.workers[cid].update_camera_config(cam)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.critical(self, "設定反映失敗", str(exc))
         QtWidgets.QMessageBox.information(self, "読込", "設定を反映しました。")
 
     def export_daily(self) -> None:
@@ -1331,6 +1465,19 @@ class MainWindow(QtWidgets.QMainWindow):
             metrics_files.extend(sorted(cam_dir.glob("realtime_metrics_*.csv"))[-7:])
         out = self.root_dir / "data" / "reports" / "daily" / f"multi_day_trend_{date.today().isoformat()}.png"
         save_multi_day_trend_plot(metrics_files, "congestion_score", out)
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        for worker in self.workers.values():
+            try:
+                worker.stop()
+            except Exception:
+                pass
+
+        for thread in self.threads.values():
+            thread.quit()
+            thread.wait(3000)
+
+        super().closeEvent(event)
 
 
 MonitorMainWindow = MainWindow
