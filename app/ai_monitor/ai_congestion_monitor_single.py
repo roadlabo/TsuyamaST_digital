@@ -106,6 +106,12 @@ safe_preload_torch()
 from PyQt6 import QtCore, QtGui, QtWidgets
 import cv2
 
+# ================== UI / stay tuning constants ==================
+STAY_DISPLAY_THRESHOLD_SEC = 60
+TRACK_LOST_GRACE_SEC = 2
+CONGESTION_LEVELS = [(0, 2), (3, 5), (6, 999)]
+UI_INFO_UPDATE_INTERVAL_SEC = 1.0
+
 
 def lazy_import_torch() -> Any:
     preloaded = safe_preload_torch()
@@ -174,6 +180,9 @@ DEFAULT_CONFIG = {
         "metrics_save_interval_sec": 5,
         "ui_refresh_interval_ms": 500,
         "ai_status_json_path": "app/config/ai_status.json",
+        "stay_display_threshold_sec": STAY_DISPLAY_THRESHOLD_SEC,
+        "track_lost_grace_sec": TRACK_LOST_GRACE_SEC,
+        "ui_info_update_interval_sec": UI_INFO_UPDATE_INTERVAL_SEC,
     },
     "camera_settings": {
         "cameras": [
@@ -186,6 +195,8 @@ DEFAULT_CONFIG = {
                 "line_points": [[80, 200], [520, 200]],
                 "exclude_polygon": [],
                 "congestion_threshold": 60,
+                "congestion_levels": CONGESTION_LEVELS,
+                "congestion_display_max": 7,
                 "long_stay_minutes": 15,
                 "long_stay_trigger_count": 1,
             },
@@ -198,6 +209,8 @@ DEFAULT_CONFIG = {
                 "line_points": [[80, 200], [520, 200]],
                 "exclude_polygon": [],
                 "congestion_threshold": 60,
+                "congestion_levels": CONGESTION_LEVELS,
+                "congestion_display_max": 7,
                 "long_stay_minutes": 15,
                 "long_stay_trigger_count": 1,
             },
@@ -210,6 +223,8 @@ DEFAULT_CONFIG = {
                 "line_points": [[80, 200], [520, 200]],
                 "exclude_polygon": [],
                 "congestion_threshold": 60,
+                "congestion_levels": CONGESTION_LEVELS,
+                "congestion_display_max": 7,
                 "long_stay_minutes": 15,
                 "long_stay_trigger_count": 1,
             },
@@ -310,6 +325,9 @@ class AIBackendLoader:
 class TrackMemory:
     centers: dict[int, tuple[float, float]] = field(default_factory=dict)
     first_seen: dict[int, datetime] = field(default_factory=dict)
+    stay_started_at: dict[int, datetime] = field(default_factory=dict)
+    last_seen_at: dict[int, datetime] = field(default_factory=dict)
+    last_in_roi: dict[int, bool] = field(default_factory=dict)
     count_once: set[int] = field(default_factory=set)
     long_stay_emitted: set[int] = field(default_factory=set)
 
@@ -466,55 +484,110 @@ class CameraPanel(QtWidgets.QFrame):
         self.camera_cfg = camera_cfg
         self.setStyleSheet("QFrame {background:#050b12; border:1px solid #00bcd4; color:#c8f8ff;}")
         root = QtWidgets.QHBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
         self.video_label = QtWidgets.QLabel("No Signal")
         self.video_label.setMinimumSize(640, 240)
         self.video_label.setStyleSheet("background:#000; color:#88ddee; font-size:20px;")
         self.video_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(self.video_label, 3)
+        root.addWidget(self.video_label, 65)
 
         right = QtWidgets.QVBoxLayout()
+        right.setSpacing(6)
         self.cam_title = QtWidgets.QLabel(camera_cfg.get("camera_name", "camera"))
         self.cam_title.setStyleSheet("color:#00e5ff; font-weight:bold; font-size:16px;")
         right.addWidget(self.cam_title)
 
+        self.summary = QtWidgets.QLabel("Now: 0 | Staying: 0 | Today: 0")
+        self.summary.setStyleSheet("color:#80deea; font-size:12px;")
+        right.addWidget(self.summary)
+
         self.gauge = QtWidgets.QProgressBar()
         self.gauge.setRange(0, 100)
-        self.gauge.setFormat("Congestion %p")
+        self.gauge.setFormat("Congestion 0/7")
         right.addWidget(self.gauge)
 
-        self.hist_text = QtWidgets.QLabel("10min pass histogram (prev/today)")
-        self.hist_text.setStyleSheet("color:#8cf;")
-        right.addWidget(self.hist_text)
+        self.current_roi_text = QtWidgets.QLabel("Current in ROI: 0")
+        self.today_total_text = QtWidgets.QLabel("Today total: 0")
+        self.staying_over_text = QtWidgets.QLabel("Staying over 1 min: 0")
+        for info_lbl in [self.current_roi_text, self.today_total_text, self.staying_over_text]:
+            info_lbl.setStyleSheet("color:#8cf; font-size:12px;")
+            right.addWidget(info_lbl)
 
         self.long_stay = QtWidgets.QTableWidget(0, 2)
         self.long_stay.setHorizontalHeaderLabels(["track_id", "stay_min"])
+        self.long_stay.verticalHeader().setVisible(False)
+        self.long_stay.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.long_stay.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
         self.long_stay.horizontalHeader().setStretchLastSection(True)
+        self.long_stay.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.long_stay.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         right.addWidget(self.long_stay, 1)
 
         self.meta = QtWidgets.QLabel("device: cpu | gpu: CPU | fps: 0")
         self.meta.setStyleSheet("color:#ffe082;")
         right.addWidget(self.meta)
-        root.addLayout(right, 2)
+        root.addLayout(right, 35)
+
+        self._latest_frame: Optional[QtGui.QPixmap] = None
+        self._last_info_update = 0.0
+        self._info_update_interval_sec = UI_INFO_UPDATE_INTERVAL_SEC
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_scaled_frame()
+
+    def _update_scaled_frame(self) -> None:
+        if self._latest_frame is None:
+            return
+        scaled = self._latest_frame.scaled(
+            self.video_label.size(),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        self.video_label.setPixmap(scaled)
 
     def update_payload(self, payload: dict[str, Any]) -> None:
-        score = int(payload.get("congestion_score", 0))
-        th = int(payload.get("threshold", 60))
-        self.gauge.setValue(score)
-        chunk = "#ff1744" if score >= th else "#00e5ff"
-        self.gauge.setStyleSheet(f"QProgressBar::chunk{{background:{chunk};}}")
         if payload.get("frame") is not None:
-            self.video_label.setPixmap(payload["frame"])
+            self._latest_frame = payload["frame"]
+            self._update_scaled_frame()
 
-        prev_hist = payload.get("hist_prev", [0] * 144)
-        today_hist = payload.get("hist_today", [0] * 144)
-        self.hist_text.setText(f"Prev total: {sum(prev_hist)} / Today total: {sum(today_hist)}")
+        current_in_roi = int(payload.get("current_in_roi", 0))
+        level_name = str(payload.get("congestion_label", "LOW"))
+        level_color = str(payload.get("congestion_color", "#00e5ff"))
+        display_max = int(payload.get("congestion_display_max", 7))
+        gauge_max = max(1, max(display_max, current_in_roi))
+        self.gauge.setRange(0, gauge_max)
+        self.gauge.setValue(current_in_roi)
+        self.gauge.setFormat(f"Congestion {current_in_roi}/{display_max} ({level_name})")
+        self.gauge.setStyleSheet(f"QProgressBar::chunk{{background:{level_color};}}")
 
-        items = payload.get("long_stays", [])
-        self.long_stay.setRowCount(len(items))
-        for r, (tid, minutes) in enumerate(items):
-            self.long_stay.setItem(r, 0, QtWidgets.QTableWidgetItem(str(tid)))
-            self.long_stay.setItem(r, 1, QtWidgets.QTableWidgetItem(f"{minutes:.1f}"))
+        now_ts = float(payload.get("now_ts", time.time()))
+        self._info_update_interval_sec = float(payload.get("ui_info_update_interval_sec", self._info_update_interval_sec))
+        if now_ts - self._last_info_update >= self._info_update_interval_sec:
+            self._last_info_update = now_ts
+            today_total = int(payload.get("today_total", 0))
+            staying_over = int(payload.get("staying_over_threshold", 0))
+            threshold_min = float(payload.get("stay_display_threshold_sec", STAY_DISPLAY_THRESHOLD_SEC)) / 60.0
+            self.summary.setText(f"Now: {current_in_roi} | Staying: {staying_over} | Today: {today_total}")
+            self.current_roi_text.setText(f"Current in ROI: {current_in_roi}")
+            self.today_total_text.setText(f"Today total: {today_total}")
+            self.staying_over_text.setText(f"Staying over {threshold_min:.0f} min: {staying_over}")
+
+            items = payload.get("long_stays", [])
+            self.long_stay.clearSpans()
+            if not items:
+                self.long_stay.setRowCount(1)
+                no_item = QtWidgets.QTableWidgetItem("No staying objects")
+                no_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                self.long_stay.setItem(0, 0, no_item)
+                self.long_stay.setSpan(0, 0, 1, 2)
+            else:
+                self.long_stay.setRowCount(len(items))
+                for r, (tid, minutes) in enumerate(items):
+                    self.long_stay.setItem(r, 0, QtWidgets.QTableWidgetItem(str(tid)))
+                    self.long_stay.setItem(r, 1, QtWidgets.QTableWidgetItem(f"{minutes:.1f}"))
 
         self.meta.setText(
             f"{payload.get('camera_name','')} | {datetime.now().strftime('%H:%M:%S')} | "
@@ -601,6 +674,35 @@ class CameraEngine:
         self.last_fps = 0.0
         self.load_prev_hist()
         self.realtime_csv, self.pass_csv, self.long_csv = self.ensure_daily_csvs()
+        self.stay_display_threshold_sec = int(
+            self.camera_cfg.get("stay_display_threshold_sec", self.system_cfg.get("stay_display_threshold_sec", STAY_DISPLAY_THRESHOLD_SEC))
+        )
+        self.track_lost_grace_sec = float(
+            self.camera_cfg.get("track_lost_grace_sec", self.system_cfg.get("track_lost_grace_sec", TRACK_LOST_GRACE_SEC))
+        )
+        self.congestion_levels = self.camera_cfg.get("congestion_levels", CONGESTION_LEVELS)
+
+    def is_in_roi(self, center: tuple[float, float], frame_shape: tuple[int, ...]) -> bool:
+        h, w = frame_shape[:2]
+        cx, cy = center
+        if cx < 0 or cy < 0 or cx >= w or cy >= h:
+            return False
+        poly = self.camera_cfg.get("exclude_polygon", [])
+        if len(poly) >= 3:
+            inside_excluded = cv2.pointPolygonTest(np.array(poly, np.int32), (float(cx), float(cy)), False) >= 0
+            if inside_excluded:
+                return False
+        return True
+
+    def summarize_congestion(self, current_in_roi: int) -> tuple[str, str]:
+        levels = self.congestion_levels if isinstance(self.congestion_levels, list) else CONGESTION_LEVELS
+        low_rng = tuple(levels[0]) if len(levels) > 0 else (0, 2)
+        mid_rng = tuple(levels[1]) if len(levels) > 1 else (3, 5)
+        if low_rng[0] <= current_in_roi <= low_rng[1]:
+            return "LOW", "#00e5ff"
+        if mid_rng[0] <= current_in_roi <= mid_rng[1]:
+            return "MID", "#fdd835"
+        return "HIGH", "#ff1744"
 
     def ensure_daily_csvs(self) -> tuple[Path, Path, Path]:
         today = date.today().strftime("%Y-%m-%d")
@@ -686,9 +788,11 @@ class CameraEngine:
         now = datetime.now()
         pass_events = []
         long_stays = []
+        seen_ids: set[int] = set()
         move_values = []
         for tr in tracks:
             tid = tr["track_id"]
+            seen_ids.add(tid)
             center = tr["center"]
             prev = self.track_memory.centers.get(tid)
             if prev:
@@ -700,10 +804,30 @@ class CameraEngine:
                     pass_events.append([now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_cfg["camera_id"], tid, tr["class_name"], self.camera_cfg.get("direction", "LtoR")])
             self.track_memory.centers[tid] = center
             self.track_memory.first_seen.setdefault(tid, now)
+            self.track_memory.last_seen_at[tid] = now
+            in_roi = self.is_in_roi(center, frame.shape)
+            was_in_roi = self.track_memory.last_in_roi.get(tid, False)
+            if in_roi and not was_in_roi:
+                self.track_memory.stay_started_at[tid] = now
+            self.track_memory.last_in_roi[tid] = in_roi
 
-            stay_min = (now - self.track_memory.first_seen[tid]).total_seconds() / 60.0
-            if stay_min >= float(self.camera_cfg.get("long_stay_minutes", 15)):
-                long_stays.append((tid, stay_min))
+        for tid in list(self.track_memory.last_seen_at.keys()):
+            last_seen = self.track_memory.last_seen_at.get(tid, now)
+            lost_sec = (now - last_seen).total_seconds()
+            if tid not in seen_ids and lost_sec > self.track_lost_grace_sec:
+                self.track_memory.centers.pop(tid, None)
+                self.track_memory.last_seen_at.pop(tid, None)
+                self.track_memory.last_in_roi.pop(tid, None)
+                self.track_memory.stay_started_at.pop(tid, None)
+                self.track_memory.first_seen.pop(tid, None)
+                self.track_memory.long_stay_emitted.discard(tid)
+                continue
+            if self.track_memory.last_in_roi.get(tid, False) and lost_sec <= self.track_lost_grace_sec:
+                stay_start = self.track_memory.stay_started_at.get(tid)
+                if stay_start:
+                    stay_sec = (now - stay_start).total_seconds()
+                    if stay_sec >= self.stay_display_threshold_sec:
+                        long_stays.append((tid, stay_sec / 60.0))
 
         long_stay_events = []
         for tid, stay_min in long_stays:
@@ -714,16 +838,23 @@ class CameraEngine:
             long_stay_events.append([first_seen, now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_cfg["camera_id"], tid, round(stay_min, 1), "vehicle"])
 
         avg_move = float(np.mean(move_values)) if move_values else 0.0
-        score = compute_congestion_score(len(tracks), avg_move, len(long_stays))
+        current_in_roi = sum(
+            1
+            for tid, in_roi in self.track_memory.last_in_roi.items()
+            if in_roi and (now - self.track_memory.last_seen_at.get(tid, now)).total_seconds() <= self.track_lost_grace_sec
+        )
+        score = compute_congestion_score(current_in_roi, avg_move, len(long_stays))
         threshold = float(self.camera_cfg.get("congestion_threshold", 60))
         over = score >= threshold
         self.last_fps = 1.0 / max(1e-6, time.time() - st)
+        congestion_label, congestion_color = self.summarize_congestion(current_in_roi)
+        today_total = int(sum(self.counter.hist_10min))
 
         self.append_rows(self.pass_csv, pass_events)
         self.append_rows(self.long_csv, long_stay_events)
         self.append_rows(self.realtime_csv, [[
             now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_cfg["camera_id"], self.camera_cfg.get("camera_name", ""),
-            len(tracks), round(score, 2), threshold, int(over), len(long_stays), round(self.last_fps, 2),
+            current_in_roi, round(score, 2), threshold, int(over), len(long_stays), round(self.last_fps, 2),
             self.backend.device if self.backend else "cpu", self.backend.gpu_name if self.backend else "CPU",
         ]])
 
@@ -734,15 +865,24 @@ class CameraEngine:
             "camera_name": self.camera_cfg.get("camera_name", ""),
             "frame": pix,
             "congestion_score": score,
+            "current_in_roi": current_in_roi,
+            "today_total": today_total,
+            "staying_over_threshold": len(long_stays),
+            "congestion_label": congestion_label,
+            "congestion_color": congestion_color,
+            "congestion_display_max": int(self.camera_cfg.get("congestion_display_max", 7)),
             "threshold": threshold,
             "threshold_over": over,
             "hist_today": self.counter.hist_10min,
             "hist_prev": self.prev_hist,
             "long_stays": sorted(long_stays, key=lambda x: x[1], reverse=True)[:10],
             "long_stay_count": len(long_stays),
+            "stay_display_threshold_sec": self.stay_display_threshold_sec,
+            "ui_info_update_interval_sec": float(self.system_cfg.get("ui_info_update_interval_sec", UI_INFO_UPDATE_INTERVAL_SEC)),
             "fps": self.last_fps,
             "device": self.backend.device if self.backend else "cpu",
             "gpu_name": self.backend.gpu_name if self.backend else "CPU",
+            "now_ts": now.timestamp(),
             "error": "",
         }
 
@@ -768,7 +908,7 @@ class CameraEngine:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QtGui.QImage(rgb.data, w, h, ch * w, QtGui.QImage.Format.Format_RGB888)
-        return QtGui.QPixmap.fromImage(qimg).scaled(640, 240, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        return QtGui.QPixmap.fromImage(qimg)
 
     def empty_payload(self, reason: str, frame: Optional[np.ndarray] = None) -> dict[str, Any]:
         pix = None
@@ -779,15 +919,24 @@ class CameraEngine:
             "camera_name": self.camera_cfg.get("camera_name", ""),
             "frame": pix,
             "congestion_score": 0,
+            "current_in_roi": 0,
+            "today_total": int(sum(self.counter.hist_10min)),
+            "staying_over_threshold": 0,
+            "congestion_label": "LOW",
+            "congestion_color": "#00e5ff",
+            "congestion_display_max": int(self.camera_cfg.get("congestion_display_max", 7)),
             "threshold": float(self.camera_cfg.get("congestion_threshold", 60)),
             "threshold_over": False,
             "hist_today": self.counter.hist_10min,
             "hist_prev": self.prev_hist,
             "long_stays": [],
             "long_stay_count": 0,
+            "stay_display_threshold_sec": self.stay_display_threshold_sec,
+            "ui_info_update_interval_sec": float(self.system_cfg.get("ui_info_update_interval_sec", UI_INFO_UPDATE_INTERVAL_SEC)),
             "fps": 0.0,
             "device": "cpu",
             "gpu_name": "CPU",
+            "now_ts": time.time(),
             "error": reason,
         }
 
