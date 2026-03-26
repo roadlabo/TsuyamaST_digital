@@ -56,7 +56,7 @@ DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "ai_status_json_path": "app/config/ai_status.json",
     "status_update_interval_sec": 3,
     "output_root": "app/ai_monitor/data",
-    "display_update_interval_ms": 500,
+    "display_update_interval_ms": 800,
     "graph_update_interval_sec": 10,
 }
 
@@ -91,6 +91,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
+            "display_scale": 0.8,
         },
         {
             "camera_id": 2,
@@ -121,6 +122,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
+            "display_scale": 0.8,
         },
         {
             "camera_id": 3,
@@ -151,6 +153,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
+            "display_scale": 0.8,
         },
     ]
 }
@@ -958,14 +961,15 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.setSpacing(8)
 
         self.video = QtWidgets.QLabel("video")
-        self.video.setMinimumSize(840, 472)
+        self.video.setMinimumSize(720, 405)
+        self.video.setMaximumHeight(420)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
-        top_row.addWidget(self.video, 7)
+        top_row.addWidget(self.video, 8)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(220)
+        right_box.setMinimumWidth(200)
         right = QtWidgets.QVBoxLayout(right_box)
         right.setContentsMargins(6, 6, 6, 6)
         right.setSpacing(6)
@@ -1007,7 +1011,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.long_stay_scroll.setWidget(self.long_stay_container)
         right.addWidget(self.long_stay_scroll, 1)
 
-        top_row.addWidget(right_box, 3)
+        top_row.addWidget(right_box, 2)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1730,11 +1734,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 500)))
+        self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 800)))
+        self.report_update_timer = QtCore.QTimer(self)
+        self.report_update_timer.timeout.connect(self._flush_report_update_if_needed)
+        self.report_update_timer.start(300000)
         self.report_retry_timer = QtCore.QTimer(self)
         self.report_retry_timer.timeout.connect(self._retry_pending_report_update)
         self.report_retry_timer.start(30000)
-        self.setWindowState(QtCore.Qt.WindowState.WindowMaximized)
+        QtCore.QTimer.singleShot(0, self._show_on_target_screen)
 
     def tick(self) -> None:
         self._update_status_level()
@@ -1747,7 +1754,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.panels[cid].update_view(payload)
         self.latest_payloads[cid] = payload
         self._update_status_level()
-        self._request_report_update()
+        self.pending_report_update = True
+
+    def _show_on_target_screen(self) -> None:
+        screens = QtGui.QGuiApplication.screens()
+        if not screens:
+            self.showMaximized()
+            return
+
+        target_index = 2 if len(screens) >= 3 else len(screens) - 1
+        target_screen = screens[target_index]
+        geom = target_screen.availableGeometry()
+        self.setGeometry(geom)
+        self.move(geom.topLeft())
+        self.showMaximized()
 
     @QtCore.pyqtSlot(int, str)
     def on_camera_error(self, camera_id: int, message: str) -> None:
@@ -1875,6 +1895,11 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self.pending_report_update = True
             print(f"[WARN] report update skipped: {exc}")
+
+    def _flush_report_update_if_needed(self) -> None:
+        if not self.pending_report_update:
+            return
+        self._request_report_update()
 
     def _retry_pending_report_update(self) -> None:
         if self.pending_report_update:
