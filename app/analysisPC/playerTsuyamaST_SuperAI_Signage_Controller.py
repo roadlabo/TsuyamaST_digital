@@ -17,10 +17,10 @@ from datetime import datetime, time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 try:
-    from PySide6 import QtMultimedia, QtMultimediaWidgets
+    from PyQt6 import QtMultimedia, QtMultimediaWidgets
     HAS_QTMULTIMEDIA = True
 except Exception:
     QtMultimedia = None
@@ -523,11 +523,11 @@ class ConfigDialog(QtWidgets.QDialog):
         layout.addWidget(QtWidgets.QLabel("休眠時間帯"))
         self.sleep_table = QtWidgets.QTableWidget(1, 2)
         self.sleep_table.setHorizontalHeaderLabels(["開始", "終了"])
-        self.sleep_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.sleep_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         # 休眠時間帯：1行のみ見える高さに固定
         self.sleep_table.verticalHeader().setVisible(False)
-        self.sleep_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.sleep_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.sleep_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sleep_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.sleep_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.sleep_table.setFixedHeight(
             self.sleep_table.horizontalHeader().height() + self.sleep_table.rowHeight(0) + 6
@@ -536,7 +536,7 @@ class ConfigDialog(QtWidgets.QDialog):
 
         self.timer_table = QtWidgets.QTableWidget(0, 3)
         self.timer_table.setHorizontalHeaderLabels(["開始", "終了", "CH"])
-        self.timer_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.timer_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         delegate = TimeNormalizeDelegate(self.timer_table, self.timer_table)
         self.timer_table.setItemDelegateForColumn(0, delegate)
         self.timer_table.setItemDelegateForColumn(1, delegate)
@@ -747,7 +747,7 @@ class ConfigDialog(QtWidgets.QDialog):
 
 
 class EmittingStream(QtCore.QObject):
-    text_written = QtCore.Signal(str)
+    text_written = QtCore.pyqtSignal(str)
 
     def __init__(self, fallback=None):
         super().__init__()
@@ -814,7 +814,7 @@ class TimerLegendWidget(QtWidgets.QWidget):
             painter.drawLine(tick_x1, y, tick_x2, y)
             painter.drawText(
                 QtCore.QRect(0, y - 8, width - right_pad, 16),
-                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter,
                 f"{hour:02d}:00",
             )
 
@@ -903,10 +903,10 @@ class TimerBarWidget(QtWidgets.QWidget):
 
 
 class SignageColumnWidget(QtWidgets.QWidget):
-    clicked_config = QtCore.Signal(str)
-    clicked_reboot = QtCore.Signal(str)
-    clicked_shutdown = QtCore.Signal(str)
-    toggled_active = QtCore.Signal(str, bool)
+    clicked_config = QtCore.pyqtSignal(str)
+    clicked_reboot = QtCore.pyqtSignal(str)
+    clicked_shutdown = QtCore.pyqtSignal(str)
+    toggled_active = QtCore.pyqtSignal(str, bool)
 
     def __init__(self, name: str, sign_id: str, parent=None):
         super().__init__(parent)
@@ -922,7 +922,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
         preview_layout = QtWidgets.QStackedLayout(self.preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         self.preview_label = QtWidgets.QLabel("サンプルなし")
-        self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.preview_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         preview_layout.addWidget(self.preview_label)
         self.video_widget = None
         self.player = None
@@ -968,7 +968,7 @@ class SignageColumnWidget(QtWidgets.QWidget):
         self.btn_active.setCheckable(True)
         self.btn_active.setFixedHeight(26)
         self.comm_label = QtWidgets.QLabel("通信--")
-        self.comm_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.comm_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.comm_label.setFixedHeight(26)
         manage_layout.addWidget(self.btn_active)
         manage_layout.addWidget(self.comm_label)
@@ -1034,14 +1034,14 @@ QPushButton:pressed {
 
     def _make_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setWordWrap(True)
         label.setStyleSheet("border: 1px solid #999;")
         return label
 
     def _make_pc_status_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setWordWrap(True)
         label.setFixedHeight(PC_STATUS_ROW_HEIGHT)
         font = label.font()
@@ -1285,7 +1285,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._apply_3d_button_style(self.btn_emergency_override)
         header_layout.addWidget(self.btn_emergency_override)
         self.ai_level_badge = QtWidgets.QLabel("渋滞LEVEL1")
-        self.ai_level_badge.setAlignment(QtCore.Qt.AlignCenter)
+        self.ai_level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.ai_level_badge.setFixedSize(160, 44)
         self.ai_level_badge.setStyleSheet("border-radius:8px; font-weight:900; font-size:16px;")
         header_layout.addWidget(self.ai_level_badge)
@@ -1369,7 +1369,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         log_font.setPointSize(9)
         self.log_view.setFont(log_font)
         self.log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
-        self.log_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.log_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.log_view.setFixedHeight(135)
         layout.addWidget(self.log_view)
 
@@ -1410,7 +1410,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
     def _make_row_label(self, text: str, height: int) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setFixedHeight(height)
         label.setStyleSheet("border: 1px solid #999;")
         label.setWordWrap(True)
@@ -1473,7 +1473,7 @@ QPushButton:disabled {
 
     def _make_pc_status_row_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setFixedHeight(PC_STATUS_ROW_HEIGHT)
         label.setWordWrap(True)
         font = label.font()
@@ -1486,7 +1486,7 @@ QPushButton:disabled {
     def _make_chip(self, title: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(f"{title}: -")
         label.setProperty("title", title)
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setFixedHeight(26)
         label.setMinimumWidth(120)
         label.setStyleSheet(
@@ -1496,7 +1496,7 @@ QPushButton:disabled {
 
     def _make_status_cell(self) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel("-")
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setWordWrap(True)
         font = label.font()
         font.setPointSize(8)
@@ -1860,11 +1860,11 @@ QPushButton:disabled {
 
     def _replace_last_log_line(self, text: str) -> None:
         cursor = self.log_view.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
-        cursor.select(QtGui.QTextCursor.BlockUnderCursor)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        cursor.select(QtGui.QTextCursor.SelectionType.BlockUnderCursor)
         cursor.removeSelectedText()
         cursor.insertText(text)
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         self.log_view.setTextCursor(cursor)
 
     def _set_interaction_enabled(self, enabled: bool) -> None:
@@ -1955,9 +1955,9 @@ QPushButton:disabled {
         if not block.isValid():
             return
         cursor = QtGui.QTextCursor(block)
-        cursor.movePosition(QtGui.QTextCursor.EndOfBlock)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock)
         cursor.insertText(suffix)
-        self.log_view.moveCursor(QtGui.QTextCursor.End)
+        self.log_view.moveCursor(QtGui.QTextCursor.MoveOperation.End)
 
     def _log_op_done(self, op_id: str) -> None:
         label = self._op_done_labels.pop(op_id, "")
@@ -2061,7 +2061,9 @@ QPushButton:disabled {
                 pass
             try:
                 # 環境によりオーバーロード解決できない場合のフォールバック
-                QtCore.QMetaObject.invokeMethod(self, callback, QtCore.Qt.QueuedConnection)
+                QtCore.QMetaObject.invokeMethod(
+                    self, callback, QtCore.Qt.ConnectionType.QueuedConnection
+                )
                 return
             except TypeError:
                 pass
@@ -2280,7 +2282,7 @@ QPushButton:disabled {
             return trimmed
         width = max(10, self.log_view.viewport().width() - 10)
         metrics = QtGui.QFontMetrics(self.log_view.font())
-        return metrics.elidedText(trimmed, QtCore.Qt.ElideRight, width)
+        return metrics.elidedText(trimmed, QtCore.Qt.TextElideMode.ElideRight, width)
 
     def _log_command_accept(self, label: str) -> None:
         logging.info("[CMD] %s 受理", label)
@@ -2543,7 +2545,9 @@ QPushButton:disabled {
 
         height, width, _ = frame.shape
         image = QtGui.QImage(frame.data, width, height, QtGui.QImage.Format_BGR888)
-        pixmap = QtGui.QPixmap.fromImage(image).scaled(200, 120, QtCore.Qt.KeepAspectRatio)
+        pixmap = QtGui.QPixmap.fromImage(image).scaled(
+            200, 120, QtCore.Qt.AspectRatioMode.KeepAspectRatio
+        )
         column.show_preview_pixmap(pixmap)
 
     def list_sample_videos(self, channel: str) -> List[Path]:
@@ -3034,9 +3038,9 @@ QPushButton:disabled {
             self,
             "確認",
             f"{state.name} を {cmd_label} しますか？",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
         )
-        if confirm != QtWidgets.QMessageBox.Yes:
+        if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         op_id = self._log_op_start("電源操作", f"{state.name} {cmd_label} 指示送信（確認中）")
         ok, msg = self.is_share_reachable(state)
