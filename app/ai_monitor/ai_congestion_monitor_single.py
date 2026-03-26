@@ -18,12 +18,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import cv2
 import numpy as np
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
-from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 # ================== safe runtime helpers ==================
@@ -38,7 +36,83 @@ def package_version(name: str) -> str:
         return "not-installed"
 
 
+_TORCH_PRELOAD_DONE = False
+_TORCH_MODULE: Any = None
+runtime_info: dict[str, Any] = {
+    "torch_version": "not-loaded",
+    "cuda_available": "False",
+    "gpu_name": "CPU",
+    "compute_capability": "N/A",
+    "runtime_device": "cpu",
+    "probe_error": "",
+    "probe_exception_type": "",
+    "probe_exception_message": "",
+}
+
+
+def preflight_torch_runtime() -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "torch_version": "not-loaded",
+        "cuda_available": "False",
+        "gpu_name": "CPU",
+        "compute_capability": "N/A",
+        "runtime_device": "cpu",
+        "probe_error": "",
+        "probe_exception_type": "",
+        "probe_exception_message": "",
+    }
+    try:
+        torch = importlib.import_module("torch")
+        info["torch_version"] = getattr(torch, "__version__", "unknown")
+        cuda_available = bool(torch.cuda.is_available())
+        info["cuda_available"] = str(cuda_available)
+        if cuda_available:
+            try:
+                torch.cuda.init()
+            except Exception:
+                # init が失敗しても後続で詳細を取得して例外情報を返す
+                pass
+            gpu_name = torch.cuda.get_device_name(0)
+            cc = torch.cuda.get_device_capability(0)
+            info["gpu_name"] = gpu_name
+            info["compute_capability"] = f"{cc[0]}.{cc[1]}"
+            info["runtime_device"] = "cuda:0"
+        return {"info": info, "torch_module": torch}
+    except Exception as exc:
+        info["probe_exception_type"] = type(exc).__name__
+        info["probe_exception_message"] = str(exc)
+        info["probe_error"] = (
+            "torch probe failed: "
+            f"{type(exc).__name__}: {exc} | CPU fallback enabled | "
+            "Microsoft Visual C++ Redistributable x64 が未導入または破損している可能性があります | "
+            "Windows の import order 問題（PyQt6/cv2 より後で torch import） の可能性があります"
+        )
+        return {"info": info, "torch_module": None}
+
+
+def safe_preload_torch() -> dict[str, Any]:
+    global _TORCH_PRELOAD_DONE, _TORCH_MODULE, runtime_info
+    if _TORCH_PRELOAD_DONE:
+        return runtime_info
+    result = preflight_torch_runtime()
+    runtime_info = result["info"]
+    _TORCH_MODULE = result["torch_module"]
+    _TORCH_PRELOAD_DONE = True
+    return runtime_info
+
+
+safe_preload_torch()
+
+from PyQt6 import QtCore, QtGui, QtWidgets
+import cv2
+
+
 def lazy_import_torch() -> Any:
+    preloaded = safe_preload_torch()
+    if _TORCH_MODULE is not None:
+        return _TORCH_MODULE
+    if preloaded.get("probe_error"):
+        raise RuntimeError(preloaded["probe_error"])
     return importlib.import_module("torch")
 
 
@@ -46,30 +120,26 @@ def probe_runtime_environment(skip_torch: bool = False) -> dict[str, str]:
     info = {
         "python_version": platform.python_version(),
         "platform": platform.platform(),
-        "opencv_version": getattr(cv2, "__version__", "unknown"),
+        "opencv_version": "unknown",
         "ultralytics_version": package_version("ultralytics"),
         "boxmot_version": package_version("boxmot"),
-        "torch_version": "not-loaded",
-        "cuda_available": "unknown",
-        "gpu_name": "N/A",
-        "compute_capability": "N/A",
-        "runtime_device": "cpu",
-        "probe_error": "",
+        "torch_version": runtime_info.get("torch_version", "not-loaded"),
+        "cuda_available": runtime_info.get("cuda_available", "False"),
+        "gpu_name": runtime_info.get("gpu_name", "CPU"),
+        "compute_capability": runtime_info.get("compute_capability", "N/A"),
+        "runtime_device": runtime_info.get("runtime_device", "cpu"),
+        "probe_error": runtime_info.get("probe_error", ""),
+        "probe_exception_type": runtime_info.get("probe_exception_type", ""),
+        "probe_exception_message": runtime_info.get("probe_exception_message", ""),
     }
-    if skip_torch:
-        return info
     try:
-        torch = lazy_import_torch()
-        info["torch_version"] = getattr(torch, "__version__", "unknown")
-        cuda_available = bool(torch.cuda.is_available())
-        info["cuda_available"] = str(cuda_available)
-        if cuda_available:
-            info["gpu_name"] = torch.cuda.get_device_name(0)
-            cc = torch.cuda.get_device_capability(0)
-            info["compute_capability"] = f"{cc[0]}.{cc[1]}"
-            info["runtime_device"] = "cuda:0"
-    except Exception as exc:
-        info["probe_error"] = f"torch probe failed: {exc}"
+        info["opencv_version"] = getattr(cv2, "__version__", "unknown")
+    except Exception:
+        info["opencv_version"] = "not-loaded"
+    if skip_torch:
+        info["runtime_device"] = "cpu"
+        info["gpu_name"] = "CPU"
+        return info
     return info
 
 
@@ -77,6 +147,11 @@ def choose_device(preference: str, safe_mode: bool = False) -> tuple[str, str, s
     """Return (device, gpu_name, reason)."""
     if preference == "cpu" or safe_mode:
         return "cpu", "CPU", "forced cpu"
+    preload = safe_preload_torch()
+    if preload.get("probe_error"):
+        return "cpu", "CPU", f"cuda probe failed: {preload['probe_error']}"
+    if preload.get("cuda_available") == "True":
+        return "cuda:0", preload.get("gpu_name", "CPU"), "cuda available"
     try:
         torch = lazy_import_torch()
         if not torch.cuda.is_available():
@@ -841,6 +916,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-ai", action="store_true")
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--safe-mode", action="store_true")
+    p.add_argument("--debug-runtime", action="store_true")
     return p.parse_args()
 
 
@@ -852,6 +928,9 @@ def main() -> int:
         config_path = root / config_path
 
     probe = probe_runtime_environment(skip_torch=bool(args.no_ai))
+    if args.debug_runtime:
+        log("Import order: stdlib -> torch preflight -> PyQt6 -> cv2 -> lazy ultralytics")
+        log(f"Torch preflight: {json.dumps(runtime_info, ensure_ascii=False)}")
     log(f"Runtime probe: {json.dumps(probe, ensure_ascii=False)}")
 
     if args.probe_device:
@@ -863,7 +942,15 @@ def main() -> int:
     window.show()
 
     if probe.get("probe_error"):
-        QtWidgets.QMessageBox.warning(window, "Runtime probe warning", probe["probe_error"])
+        warning = (
+            f"{probe['probe_error']}\n\n"
+            f"exception type: {probe.get('probe_exception_type', 'N/A')}\n"
+            f"exception message: {probe.get('probe_exception_message', 'N/A')}\n"
+            "CPU fallback: enabled\n"
+            "Microsoft Visual C++ Redistributable x64 が未導入または破損している可能性があります\n"
+            "Windows の import order 問題（PyQt6/cv2 より後で torch import）の可能性があります"
+        )
+        QtWidgets.QMessageBox.warning(window, "Runtime probe warning", warning)
 
     return app.exec()
 
