@@ -528,7 +528,7 @@ class ConfigDialog(QtWidgets.QDialog):
         self.sleep_table.verticalHeader().setVisible(False)
         self.sleep_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.sleep_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.sleep_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.sleep_table.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.sleep_table.setFixedHeight(
             self.sleep_table.horizontalHeader().height() + self.sleep_table.rowHeight(0) + 6
         )
@@ -542,7 +542,7 @@ class ConfigDialog(QtWidgets.QDialog):
         self.timer_table.setItemDelegateForColumn(1, delegate)
         # タイマー設定：10行程度見える高さを確保
         self.timer_table.verticalHeader().setVisible(False)
-        self.timer_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.timer_table.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         row_h = self.timer_table.verticalHeader().defaultSectionSize()
         if row_h <= 0:
             row_h = 24
@@ -667,7 +667,7 @@ class ConfigDialog(QtWidgets.QDialog):
         listw.setCurrentRow(0)
         layout.addWidget(listw)
         btns = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+            QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
         )
         layout.addWidget(btns)
 
@@ -1305,7 +1305,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         for idx in range(N_SIGNAGE):
             name = f"Signage {idx + 1:02d}"
             button = QtWidgets.QPushButton(name)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
             button.setFixedHeight(42)
             button.setStyleSheet("border: 1px solid #999;")
             signage_grid.addWidget(button, 0, BASE_COL + idx)
@@ -1343,7 +1343,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
             name = f"Signage{idx + 1:02d}"
             sign_id = f"Sign{idx + 1:02d}"
             column = SignageColumnWidget(name, sign_id)
-            column.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            column.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
             column.setMinimumWidth(0)
             self.columns.append(column)
             signage_grid.addWidget(column, 1, BASE_COL + idx)
@@ -1368,7 +1368,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         log_font = self.log_view.font()
         log_font.setPointSize(9)
         self.log_view.setFont(log_font)
-        self.log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
         self.log_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.log_view.setFixedHeight(135)
         layout.addWidget(self.log_view)
@@ -3024,7 +3024,7 @@ QPushButton:disabled {
         config_path = CONFIG_DIR / state.name / "config.json"
         config = read_config(CONFIG_DIR / state.name)
         dialog = ConfigDialog(sign_name=state.name, config=config, parent=self, controller_window=self)
-        if dialog.exec() == QtWidgets.QDialog.Accepted:
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             new_config = dialog.get_config()
             if not new_config:
                 return
