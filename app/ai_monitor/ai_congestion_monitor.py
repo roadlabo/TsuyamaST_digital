@@ -66,7 +66,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "line_start": [100, 300],
             "line_end": [1000, 300],
             "exclude_polygon": [],
-            "congestion_threshold": 60,
+            "congestion_threshold": 5,
             "long_stay_minutes": 15,
             "long_stay_trigger_count": 1,
             "stay_zone_polygon": [],
@@ -96,7 +96,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "line_start": [100, 300],
             "line_end": [1000, 300],
             "exclude_polygon": [],
-            "congestion_threshold": 60,
+            "congestion_threshold": 5,
             "long_stay_minutes": 15,
             "long_stay_trigger_count": 1,
             "stay_zone_polygon": [],
@@ -126,7 +126,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "line_start": [100, 300],
             "line_end": [1000, 300],
             "exclude_polygon": [],
-            "congestion_threshold": 65,
+            "congestion_threshold": 5,
             "long_stay_minutes": 15,
             "long_stay_trigger_count": 1,
             "stay_zone_polygon": [],
@@ -378,15 +378,15 @@ class ReportWriter:
             date_str = target_date.isoformat()
             cam_dir = metrics_root / f"cam{cid}"
             pass_df = self._safe_read(cam_dir / f"pass_events_{date_str}.csv")
-            metric_df = self._safe_read(cam_dir / f"realtime_metrics_{date_str}.csv")
+            metric_df = self._safe_read(cam_dir / f"congestion_timeseries_{date_str}.csv")
             long_df = self._safe_read(cam_dir / f"long_stay_events_{date_str}.csv")
 
             total_pass = len(pass_df)
             total_pass_all += total_pass
             max_cong = float(metric_df["congestion_score"].max()) if not metric_df.empty else 0.0
-            over_count = int(metric_df["threshold_over"].sum()) if "threshold_over" in metric_df.columns else 0
+            over_count = int((metric_df["congestion_score"] > metric_df["threshold"]).sum()) if not metric_df.empty else 0
             long_count = len(long_df)
-            ws_summary.append([cam["camera_name"], total_pass, round(max_cong, 1), over_count, long_count])
+            ws_summary.append([cam["camera_name"], total_pass, round(max_cong, 2), over_count, long_count])
             self._add_camera_sheet(wb, cam, pass_df, metric_df, long_df)
 
         ws_summary["A2"] = "date"
@@ -409,7 +409,7 @@ class ReportWriter:
         daily_map: dict[str, dict[str, float]] = {}
         for cam in cameras:
             cam_dir = metrics_root / f"cam{cam['camera_id']}"
-            for file in cam_dir.glob(f"realtime_metrics_{target_month}-*.csv"):
+            for file in cam_dir.glob(f"congestion_timeseries_{target_month}-*.csv"):
                 date_str = file.stem.split("_")[-1]
                 d = daily_map.setdefault(date_str, {"pass": 0, "max": 0, "long": 0})
                 metric_df = self._safe_read(file)
@@ -422,7 +422,7 @@ class ReportWriter:
 
         for key in sorted(daily_map.keys()):
             d = daily_map[key]
-            ws.append([key, int(d["pass"]), round(d["max"], 1), int(d["long"])])
+            ws.append([key, int(d["pass"]), round(d["max"], 2), int(d["long"])])
 
         out_path = self.output_root / "reports" / "monthly" / f"monthly_report_{target_month}.xlsx"
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -611,14 +611,14 @@ def has_self_intersection(points: list[list[int]]) -> bool:
 
 
 class CameraSettingsDialog(QtWidgets.QDialog):
-    def __init__(self, camera_cfg: dict[str, Any], latest_frame=None, parent=None):
+    def __init__(self, camera_cfg: dict[str, Any], latest_frame=None, parent=None, initial_mode: str = "line"):
         super().__init__(parent)
         self.setWindowTitle(f"設定: {camera_cfg['camera_name']}")
         self.resize(1000, 780)
         self.camera_cfg = dict(camera_cfg)
         self.line_points = [camera_cfg.get("line_start", [100, 100])[:], camera_cfg.get("line_end", [400, 100])[:]]
         self.exclude_polygon: list[list[int]] = [p[:] for p in camera_cfg.get("exclude_polygon", [])]
-        self.mode = "line"
+        self.mode = initial_mode if initial_mode in {"line", "poly"} else "line"
 
         root = QtWidgets.QVBoxLayout(self)
         tabs = QtWidgets.QTabWidget()
@@ -685,6 +685,10 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         self.image.point_clicked.connect(self._on_click)
         root.addWidget(self.image)
 
+        self.mode_label = QtWidgets.QLabel("")
+        self.mode_label.setStyleSheet("color:#d4e6ff;font-weight:bold;")
+        root.addWidget(self.mode_label)
+
         row = QtWidgets.QHBoxLayout()
         btn_line = QtWidgets.QPushButton("ライン設定")
         btn_line.clicked.connect(lambda: self._set_mode("line"))
@@ -706,10 +710,18 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         if self.snapshot is None:
             self.snapshot = np.zeros((360, 640, 3), dtype=np.uint8)
             cv2.putText(self.snapshot, "No live frame", (30, 180), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        self._update_mode_label()
         self._render_snapshot()
 
     def _set_mode(self, mode: str) -> None:
         self.mode = mode
+        if mode == "line":
+            QtWidgets.QMessageBox.information(self, "ライン設定", "ライン設定は2点を取り直します。")
+        self._update_mode_label()
+
+    def _update_mode_label(self) -> None:
+        txt = "現在モード: ライン設定" if self.mode == "line" else "現在モード: 除外エリア設定"
+        self.mode_label.setText(txt)
 
     def _on_click(self, x: int, y: int) -> None:
         if self.mode == "line":
@@ -744,15 +756,19 @@ class CameraSettingsDialog(QtWidgets.QDialog):
                 cv2.circle(frame, tuple(p), 4, (0, 255, 255), -1)
                 cv2.putText(frame, f"{p[0]},{p[1]}", (p[0] + 5, p[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         for i, p in enumerate(self.exclude_polygon):
-            cv2.circle(frame, tuple(p), 4, (255, 0, 255), -1)
+            cv2.circle(frame, tuple(p), 4, (150, 150, 150), -1)
             cv2.putText(frame, str(i + 1), (p[0] + 5, p[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         if len(self.exclude_polygon) >= 2:
-            cv2.polylines(frame, [np.array(self.exclude_polygon, np.int32)], len(self.exclude_polygon) >= 3, (255, 0, 255), 2)
+            cv2.polylines(frame, [np.array(self.exclude_polygon, np.int32)], len(self.exclude_polygon) >= 3, (120, 120, 120), 2)
 
         h, w, _ = frame.shape
         self.image.set_source_size(w, h)
         qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
         self.image.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.image.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio))
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._render_snapshot()
 
     def _validate_and_accept(self) -> None:
         selected_classes = [i for i, cb in self.class_checks.items() if cb.isChecked()]
@@ -789,48 +805,40 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         return cfg
 
 
-class MiniTimelineGraph(QtWidgets.QWidget):
+class CombinedTimelineGraph(QtWidgets.QWidget):
     def __init__(self, mode: str = "line", parent=None):
         super().__init__(parent)
         self.mode = mode
         self.title = ""
-        self.y_label = ""
-        self.series_color = QtGui.QColor("#00D7FF")
-        self.points: list[tuple[datetime, float]] = []
-        self.values: list[float] = []
+        self.today_points: list[tuple[datetime, float]] = []
+        self.prev_points: list[tuple[datetime, float]] = []
+        self.today_values: list[float] = []
+        self.prev_values: list[float] = []
         self.threshold: float | None = None
         self.show_threshold = False
         self.setMinimumHeight(78)
         self.setMaximumHeight(92)
 
-    def set_line_data(
-        self,
-        points: list[tuple[datetime, float]],
-        title: str,
-        y_label: str,
-        threshold: float | None = None,
-        series_color: str = "#00D7FF",
-        show_threshold: bool = True,
-    ) -> None:
+    def set_line_data(self, prev_points: list[tuple[datetime, float]], today_points: list[tuple[datetime, float]], title: str, threshold: float | None = None, show_threshold: bool = True) -> None:
         self.mode = "line"
-        self.points = points
-        self.values = []
+        self.prev_points = prev_points
+        self.today_points = today_points
+        self.prev_values = []
+        self.today_values = []
         self.title = title
-        self.y_label = y_label
         self.threshold = threshold
         self.show_threshold = show_threshold
-        self.series_color = QtGui.QColor(series_color)
         self.update()
 
-    def set_bar_data(self, values: list[int], title: str, y_label: str, series_color: str = "#00D7FF") -> None:
+    def set_bar_data(self, prev_values: list[int], today_values: list[int], title: str) -> None:
         self.mode = "bar"
-        self.values = [float(v) for v in values]
-        self.points = []
+        self.prev_values = [float(v) for v in prev_values]
+        self.today_values = [float(v) for v in today_values]
+        self.prev_points = []
+        self.today_points = []
         self.title = title
-        self.y_label = y_label
         self.threshold = None
         self.show_threshold = False
-        self.series_color = QtGui.QColor(series_color)
         self.update()
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
@@ -839,8 +847,8 @@ class MiniTimelineGraph(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QtGui.QColor("#0f1620"))
 
-        y_axis_w = 46
-        right_margin = 12
+        y_axis_w = 34
+        right_margin = 8
         top_margin = 20
         bottom_margin = 22
         plot = QtCore.QRectF(y_axis_w, top_margin, max(10, self.width() - y_axis_w - right_margin), max(10, self.height() - top_margin - bottom_margin))
@@ -852,9 +860,9 @@ class MiniTimelineGraph(QtWidgets.QWidget):
         painter.drawText(8, 14, self.title)
 
         if self.mode == "line":
-            ys = [v for _, v in self.points]
+            ys = [v for _, v in self.prev_points] + [v for _, v in self.today_points]
         else:
-            ys = self.values[:]
+            ys = self.prev_values[:] + self.today_values[:]
         if self.show_threshold and self.threshold is not None:
             ys.append(float(self.threshold))
         y_max = max(1.0, max(ys) if ys else 1.0)
@@ -867,7 +875,7 @@ class MiniTimelineGraph(QtWidgets.QWidget):
             painter.drawLine(QtCore.QPointF(plot.left(), y), QtCore.QPointF(plot.right(), y))
             painter.setPen(QtGui.QColor("#8db6c7"))
             value = y_min + (y_max - y_min) * ratio
-            painter.drawText(4, int(y) + 4, f"{value:.0f}")
+            painter.drawText(2, int(y) + 4, f"{value:.1f}")
 
         x_ticks = [0, 6, 12, 18, 24]
         for h in x_ticks:
@@ -879,34 +887,61 @@ class MiniTimelineGraph(QtWidgets.QWidget):
             text_w = painter.fontMetrics().horizontalAdvance(text)
             painter.drawText(int(x - text_w / 2), self.height() - 6, text)
 
-        if self.mode == "line" and self.points:
-            path = QtGui.QPainterPath()
-            for i, (ts, value) in enumerate(self.points):
-                sec = ts.hour * 3600 + ts.minute * 60 + ts.second
-                x = plot.left() + (sec / 86400.0) * plot.width()
-                y = plot.bottom() - ((value - y_min) / (y_max - y_min)) * plot.height()
-                if i == 0:
-                    path.moveTo(x, y)
-                else:
-                    path.lineTo(x, y)
-            painter.setPen(QtGui.QPen(self.series_color, 2.4))
-            painter.drawPath(path)
+        if self.mode == "line" and (self.prev_points or self.today_points):
+            for points, color in [(self.prev_points, QtGui.QColor("#2f7dff")), (self.today_points, QtGui.QColor("#ff3b3b"))]:
+                if not points:
+                    continue
+                path = QtGui.QPainterPath()
+                for i, (ts, value) in enumerate(points):
+                    sec = ts.hour * 3600 + ts.minute * 60 + ts.second
+                    x = plot.left() + (sec / 86400.0) * plot.width()
+                    y = plot.bottom() - ((value - y_min) / (y_max - y_min)) * plot.height()
+                    if i == 0:
+                        path.moveTo(x, y)
+                    else:
+                        path.lineTo(x, y)
+                painter.setPen(QtGui.QPen(color, 2.0))
+                painter.drawPath(path)
             if self.show_threshold and self.threshold is not None:
                 th_y = plot.bottom() - ((self.threshold - y_min) / (y_max - y_min)) * plot.height()
-                painter.setPen(QtGui.QPen(QtGui.QColor("#ffd400"), 2.8))
+                painter.setPen(QtGui.QPen(QtGui.QColor("#ffd400"), 2.0))
                 painter.drawLine(QtCore.QPointF(plot.left(), th_y), QtCore.QPointF(plot.right(), th_y))
                 painter.setPen(QtGui.QColor("#ffd400"))
-                painter.drawText(int(plot.right()) - 75, int(th_y) - 4, f"TH={self.threshold:.0f}")
-        elif self.mode == "bar" and self.values:
-            n = max(1, len(self.values))
-            bar_w = max(2.0, plot.width() / n * 0.92)
-            for i, value in enumerate(self.values):
-                x0 = plot.left() + i * (plot.width() / n)
-                h = ((value - y_min) / (y_max - y_min)) * plot.height()
-                painter.fillRect(QtCore.QRectF(x0, plot.bottom() - h, bar_w, h), self.series_color)
+                painter.drawText(int(plot.right()) - 82, int(th_y) - 4, f"TH={self.threshold:.2f}")
+        elif self.mode == "bar" and (self.prev_values or self.today_values):
+            n = max(1, len(self.prev_values), len(self.today_values))
+            slot_w = plot.width() / n
+            bar_w = max(1.5, slot_w * 0.42)
+            for i in range(n):
+                prev_val = self.prev_values[i] if i < len(self.prev_values) else 0.0
+                today_val = self.today_values[i] if i < len(self.today_values) else 0.0
+                base_x = plot.left() + i * slot_w
+                prev_h = ((prev_val - y_min) / (y_max - y_min)) * plot.height()
+                today_h = ((today_val - y_min) / (y_max - y_min)) * plot.height()
+                painter.fillRect(QtCore.QRectF(base_x, plot.bottom() - prev_h, bar_w, prev_h), QtGui.QColor("#2f7dff"))
+                painter.fillRect(QtCore.QRectF(base_x + bar_w + 0.5, plot.bottom() - today_h, bar_w, today_h), QtGui.QColor("#ff3b3b"))
+
+        self._draw_legend(painter, plot)
+
+    def _draw_legend(self, painter: QtGui.QPainter, plot: QtCore.QRectF) -> None:
+        legend = [("前日", QtGui.QColor("#2f7dff")), ("当日", QtGui.QColor("#ff3b3b"))]
+        if self.mode == "line" and self.show_threshold:
+            legend.append(("閾値", QtGui.QColor("#ffd400")))
+        x = int(plot.right()) - 80
+        y = int(plot.top()) + 10
+        for label, color in legend:
+            painter.setPen(QtGui.QPen(color, 2))
+            painter.drawLine(x, y, x + 12, y)
+            painter.setPen(QtGui.QColor("#d9ecff"))
+            painter.drawText(x + 15, y + 4, label)
+            y += 12
 
 
 class CameraPanel(QtWidgets.QFrame):
+    line_setting_requested = QtCore.pyqtSignal(int)
+    exclude_setting_requested = QtCore.pyqtSignal(int)
+    camera_setting_requested = QtCore.pyqtSignal(int)
+
     def __init__(self, camera_cfg: dict[str, Any], parent=None):
         super().__init__(parent)
         self.camera_id = camera_cfg["camera_id"]
@@ -919,52 +954,40 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.setSpacing(8)
 
         self.video = QtWidgets.QLabel("video")
-        self.video.setMinimumSize(960, 540)
+        self.video.setMinimumSize(840, 472)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
-        top_row.addWidget(self.video, 4)
+        top_row.addWidget(self.video, 7)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(260)
+        right_box.setMinimumWidth(220)
         right = QtWidgets.QVBoxLayout(right_box)
         right.setContentsMargins(6, 6, 6, 6)
         right.setSpacing(6)
         self.title = QtWidgets.QLabel(camera_cfg["camera_name"])
-        self.title.setStyleSheet("font-size:15px;color:#00D7FF;font-weight:bold;")
+        self.title.setStyleSheet("font-size:14px;color:#00D7FF;font-weight:bold;")
         right.addWidget(self.title)
 
-        self.meter = QtWidgets.QProgressBar()
-        self.meter.setRange(0, 100)
-        self.meter.setFixedHeight(28)
-        self.meter.setFormat("渋滞指数 %p")
-        self.meter.setStyleSheet(
-            """
-            QProgressBar {
-                background:#101820;
-                border:1px solid #1d6f8b;
-                border-radius:4px;
-                color:#ffffff;
-                text-align:center;
-                font-weight:bold;
-                font-size:13px;
-            }
-            QProgressBar::chunk {
-                background:#00d7ff;
-            }
-            """
-        )
-        right.addWidget(self.meter)
-        self.meter_detail = QtWidgets.QLabel("現在値: 0.0 / 閾値: 60")
-        right.addWidget(self.meter_detail)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setSpacing(4)
+        btn_line = QtWidgets.QPushButton("ライン設定")
+        btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
+        btn_excl = QtWidgets.QPushButton("除外エリア")
+        btn_excl.clicked.connect(lambda: self.exclude_setting_requested.emit(self.camera_id))
+        btn_cfg = QtWidgets.QPushButton("解析条件")
+        btn_cfg.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
+        for btn in (btn_line, btn_excl, btn_cfg):
+            btn.setStyleSheet("font-size:11px;padding:3px;")
+            btn_row.addWidget(btn)
+        right.addLayout(btn_row)
 
-        self.meta = QtWidgets.QLabel("time / device / gpu / fps / th")
-        right.addWidget(self.meta)
         self.status_label = QtWidgets.QLabel("IDLE")
-        self.status_label.setStyleSheet("font-size:13px;font-weight:bold;color:#ffd166;")
+        self.status_label.setStyleSheet("font-size:12px;font-weight:bold;color:#ffd166;")
         right.addWidget(self.status_label)
 
         self.summary = QtWidgets.QLabel("LtoR=0 / RtoL=0")
+        self.summary.setStyleSheet("font-size:12px;")
         right.addWidget(self.summary)
 
         long_stay_title = QtWidgets.QLabel("15分以上滞在")
@@ -980,16 +1003,16 @@ class CameraPanel(QtWidgets.QFrame):
         self.long_stay_scroll.setWidget(self.long_stay_container)
         right.addWidget(self.long_stay_scroll, 1)
 
-        top_row.addWidget(right_box, 1)
+        top_row.addWidget(right_box, 3)
         root.addLayout(top_row)
 
-        self.graphs: list[MiniTimelineGraph] = []
+        self.graphs: list[CombinedTimelineGraph] = []
         graphs_box = QtWidgets.QWidget()
         graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
-        graphs_layout.setContentsMargins(0, 0, 0, 0)
-        graphs_layout.setSpacing(6)
-        for _ in range(6):
-            g = MiniTimelineGraph("line")
+        graphs_layout.setContentsMargins(2, 0, 2, 0)
+        graphs_layout.setSpacing(4)
+        for _ in range(3):
+            g = CombinedTimelineGraph("line")
             self.graphs.append(g)
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
@@ -1002,22 +1025,15 @@ class CameraPanel(QtWidgets.QFrame):
             self.video.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.video.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio))
 
         score = float(payload.get("congestion_score", 0))
-        threshold = float(payload.get("threshold", 60))
-        self.meter.setValue(int(max(0, min(100, score))))
-        self.meter_detail.setText(f"現在値: {score:.1f} / 閾値: {threshold:.0f}")
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.meta.setText(f"{now} | device={payload.get('device')} | GPU={payload.get('gpu_name')} | FPS={payload.get('fps',0):.1f} | TH={threshold}")
+        threshold = float(payload.get("threshold", 5))
         self.status_label.setText(payload.get("status", "RUNNING"))
 
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
-        self.summary.setText(f"LtoR 合計={sum(ltor)} / RtoL 合計={sum(rtol)}")
-        self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), "渋滞指数（前日実績）", "index", threshold=threshold, series_color="#33d1ff", show_threshold=True)
-        self.graphs[1].set_line_data(payload.get("congestion_points", []), "渋滞指数（当日）", "index", threshold=threshold, series_color="#9dfc9d", show_threshold=True)
-        self.graphs[2].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), "LtoR（前日実績）", "count", series_color="#33d1ff")
-        self.graphs[3].set_bar_data(ltor, "LtoR（当日）", "count", series_color="#aef7a3")
-        self.graphs[4].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), "RtoL（前日実績）", "count", series_color="#33d1ff")
-        self.graphs[5].set_bar_data(rtol, "RtoL（当日）", "count", series_color="#ffffff")
+        self.summary.setText(f"LtoR 合計={sum(ltor)} / RtoL 合計={sum(rtol)} | 渋滞指数={score:.2f} / 閾値={threshold:.2f}")
+        self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
+        self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
+        self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
         self._rebuild_long_stay_cards(payload.get("long_stays", []))
 
     def _rebuild_long_stay_cards(self, long_stays: list[tuple[int, float]]) -> None:
@@ -1100,6 +1116,7 @@ class CameraWorker(QtCore.QObject):
         self.counter = LineCounter(line)
         self.congestion = CongestionScorer(int(self.camera_cfg.get("congestion_calculation_interval", 10)))
         self.track_state = TrackState()
+        self.track_class_memory: dict[int, dict[str, Any]] = {}
 
         self.cap = None
         self.last_frame = None
@@ -1115,9 +1132,17 @@ class CameraWorker(QtCore.QObject):
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
-        self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
+        self.congestion_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
+        today_ltor, today_rtol = self._load_today_pass_histogram()
+        self.counter.state.pass_bins_ltor = today_ltor
+        self.counter.state.pass_bins_rtol = today_rtol
+        today_points = self._load_today_congestion_points()
+        self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
+        self.congestion.state.frame_inverse_distances = [v for _, v in today_points]
+        if today_points:
+            self.congestion.state.current_congestion_index = today_points[-1][1]
 
     def get_latest_raw_frame(self):
         return None if self.last_raw_frame is None else self.last_raw_frame.copy()
@@ -1179,14 +1204,14 @@ class CameraWorker(QtCore.QObject):
 
     def _ensure_daily_csvs(self):
         date_str = self.today.strftime("%Y-%m-%d")
-        realtime = self.metrics_dir / f"realtime_metrics_{date_str}.csv"
+        congestion_ts = self.metrics_dir / f"congestion_timeseries_{date_str}.csv"
         pass_events = self.metrics_dir / f"pass_events_{date_str}.csv"
         long_stay = self.metrics_dir / f"long_stay_events_{date_str}.csv"
 
-        self._ensure_csv_header(realtime, ["timestamp", "camera_id", "camera_name", "active_tracks", "congestion_score", "congestion_threshold", "threshold_over", "long_stay_count", "fps"])
+        self._ensure_csv_header(congestion_ts, ["timestamp", "camera_id", "camera_name", "congestion_score", "threshold"])
         self._ensure_csv_header(pass_events, ["timestamp", "camera_id", "track_id", "class_name", "direction"])
         self._ensure_csv_header(long_stay, ["first_seen", "detected_at", "camera_id", "track_id", "stay_minutes", "class_name"])
-        return realtime, pass_events, long_stay
+        return congestion_ts, pass_events, long_stay
 
     @staticmethod
     def _ensure_csv_header(path: Path, header: list[str]) -> None:
@@ -1220,7 +1245,7 @@ class CameraWorker(QtCore.QObject):
 
     def _load_previous_day_congestion_points(self) -> list[tuple[datetime, float]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
-        prev_file = self.metrics_dir / f"realtime_metrics_{prev.strftime('%Y-%m-%d')}.csv"
+        prev_file = self.metrics_dir / f"congestion_timeseries_{prev.strftime('%Y-%m-%d')}.csv"
         points: list[tuple[datetime, float]] = []
         if not prev_file.exists():
             return points
@@ -1235,15 +1260,106 @@ class CameraWorker(QtCore.QObject):
                     continue
         return points
 
+    def _load_today_pass_histogram(self) -> tuple[list[int], list[int]]:
+        today_file = self.metrics_dir / f"pass_events_{self.today.strftime('%Y-%m-%d')}.csv"
+        ltor = [0] * 144
+        rtol = [0] * 144
+        if not today_file.exists():
+            return ltor, rtol
+        with today_file.open("r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    dt = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                idx = (dt.hour * 60 + dt.minute) // 10
+                if 0 <= idx < 144:
+                    if row.get("direction") == "LtoR":
+                        ltor[idx] += 1
+                    else:
+                        rtol[idx] += 1
+        return ltor, rtol
+
+    def _load_today_congestion_points(self) -> list[tuple[datetime, float]]:
+        today_file = self.metrics_dir / f"congestion_timeseries_{self.today.strftime('%Y-%m-%d')}.csv"
+        points: list[tuple[datetime, float]] = []
+        if not today_file.exists():
+            return points
+        with today_file.open("r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    points.append((datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S"), float(row["congestion_score"])))
+                except Exception:
+                    continue
+        return points
+
     def _rollover_if_needed(self, now: datetime) -> None:
         if now.date() == self.today:
             return
         self.today = now.date()
-        self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
+        self.congestion_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
-        self.counter.state.pass_bins_ltor = [0] * 144
-        self.counter.state.pass_bins_rtol = [0] * 144
+        self.counter.state.pass_bins_ltor, self.counter.state.pass_bins_rtol = self._load_today_pass_histogram()
+        today_points = self._load_today_congestion_points()
+        self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
+        self.congestion.state.frame_inverse_distances = [v for _, v in today_points]
+        self.congestion.state.current_congestion_index = today_points[-1][1] if today_points else 0.0
+
+    @staticmethod
+    def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        inter_x1, inter_y1 = max(ax1, bx1), max(ay1, by1)
+        inter_x2, inter_y2 = min(ax2, bx2), min(ay2, by2)
+        iw = max(0, inter_x2 - inter_x1)
+        ih = max(0, inter_y2 - inter_y1)
+        inter = iw * ih
+        area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+        area_b = max(1, (bx2 - bx1) * (by2 - by1))
+        union = max(1, area_a + area_b - inter)
+        return inter / union
+
+    def _deduplicate_overlapping_detections(self, raw_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        priority = {"truck": 0, "bus": 1, "car": 2, "motorcycle": 3, "bicycle": 4, "person": 5}
+        used = [False] * len(raw_items)
+        kept: list[dict[str, Any]] = []
+        conf_eps = 0.05
+        for i, item in enumerate(raw_items):
+            if used[i]:
+                continue
+            cluster = [item]
+            used[i] = True
+            x1, y1, x2, y2 = item["bbox"]
+            base_w = max(1.0, float(x2 - x1))
+            base_h = max(1.0, float(y2 - y1))
+            for j in range(i + 1, len(raw_items)):
+                if used[j]:
+                    continue
+                cand = raw_items[j]
+                iou = self._bbox_iou(item["bbox"], cand["bbox"])
+                cx1, cy1 = item["center"]
+                cx2, cy2 = cand["center"]
+                dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
+                if iou >= 0.65 or dist <= min(base_w, base_h) * 0.35:
+                    cluster.append(cand)
+                    used[j] = True
+            cluster.sort(key=lambda x: (-float(x.get("conf", 0.0)), priority.get(str(x.get("cls_name", "")).lower(), 999)))
+            best = cluster[0]
+            tid = int(best.get("track_id", -1))
+            if tid >= 0:
+                mem = self.track_class_memory.get(tid)
+                if mem is not None:
+                    prev_cls = str(mem.get("cls_name", best["cls_name"]))
+                    prev_ts = mem.get("ts", datetime.min)
+                    prev_area = float(mem.get("area", 1.0))
+                    new_area = max(1.0, (best["bbox"][2] - best["bbox"][0]) * (best["bbox"][3] - best["bbox"][1]))
+                    if (datetime.now() - prev_ts).total_seconds() <= 3.0 and abs(float(best.get("conf", 0)) - float(mem.get("conf", 0))) <= conf_eps:
+                        if prev_cls != best["cls_name"] and 0.55 <= (new_area / max(1.0, prev_area)) <= 1.8:
+                            best["cls_name"] = prev_cls
+                self.track_class_memory[tid] = {"cls_name": best["cls_name"], "ts": datetime.now(), "area": max(1.0, (best["bbox"][2] - best["bbox"][0]) * (best["bbox"][3] - best["bbox"][1])), "conf": float(best.get("conf", 0.0))}
+            kept.append(best)
+        return kept
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
@@ -1321,6 +1437,7 @@ class CameraWorker(QtCore.QObject):
 
         boxes = result.boxes
         tracks: list[dict[str, Any]] = []
+        raw_items: list[dict[str, Any]] = []
         pass_events: list[dict[str, Any]] = []
         long_stay_events: list[dict[str, Any]] = []
         long_stay_list: list[tuple[int, float]] = []
@@ -1329,11 +1446,13 @@ class CameraWorker(QtCore.QObject):
 
         if boxes is not None and boxes.id is not None:
             cls_array = boxes.cls.cpu().numpy() if boxes.cls is not None else []
+            conf_array = boxes.conf.cpu().numpy() if boxes.conf is not None else []
             for i, (box, tid) in enumerate(zip(boxes.xyxy.cpu().numpy(), boxes.id.cpu().numpy())):
                 cls_idx = int(cls_array[i]) if len(cls_array) > i else -1
                 if self.target_classes and cls_idx not in self.target_classes:
                     continue
                 cls_name = self.model.names.get(cls_idx, str(cls_idx)) if isinstance(self.model.names, dict) else str(cls_idx)
+                conf = float(conf_array[i]) if len(conf_array) > i else 0.0
 
                 x1, y1, x2, y2 = box.tolist()
                 cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
@@ -1341,7 +1460,20 @@ class CameraWorker(QtCore.QObject):
                     continue
 
                 track_id = int(tid)
-                tracks.append({"track_id": track_id, "center": (cx, cy), "bbox": (int(x1), int(y1), int(x2), int(y2)), "class_name": cls_name})
+                raw_items.append({
+                    "track_id": track_id,
+                    "cls_idx": cls_idx,
+                    "cls_name": cls_name,
+                    "conf": conf,
+                    "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                    "center": (cx, cy),
+                })
+
+            for item in self._deduplicate_overlapping_detections(raw_items):
+                track_id = int(item["track_id"])
+                cls_name = item["cls_name"]
+                cx, cy = item["center"]
+                tracks.append({"track_id": track_id, "center": (cx, cy), "bbox": item["bbox"], "class_name": cls_name})
 
                 event = self.counter.update(track_id, (cx, cy), cls_name, now)
                 if event:
@@ -1367,7 +1499,7 @@ class CameraWorker(QtCore.QObject):
 
         frame_width = int(frame.shape[1]) if frame is not None else 1920
         congestion_score = self.congestion.update(tracks, now, frame_width) if self.camera_cfg.get("enable_congestion", True) else 0.0
-        threshold = float(self.camera_cfg.get("congestion_threshold", 60))
+        threshold = float(self.camera_cfg.get("congestion_threshold", 5))
         threshold_over = congestion_score >= threshold
 
         elapsed = max(1e-6, time.time() - start)
@@ -1386,11 +1518,11 @@ class CameraWorker(QtCore.QObject):
                 self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} long_stay csv write failed: {exc}")
 
         try:
-            self._append_csv(self.realtime_csv, [
-                now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_id, self.camera_name, len(tracks), round(congestion_score, 2), threshold, int(threshold_over), len(long_stay_list), round(self.fps, 2),
+            self._append_csv(self.congestion_csv, [
+                now.strftime("%Y-%m-%d %H:%M:%S"), self.camera_id, self.camera_name, round(congestion_score, 2), round(threshold, 2),
             ])
         except Exception as exc:
-            self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} realtime csv write failed: {exc}")
+            self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} congestion csv write failed: {exc}")
 
         self.last_frame = self._draw_overlay(frame.copy(), tracks, long_stay_list)
         long_stay_list.sort(key=lambda x: x[1], reverse=True)
@@ -1411,9 +1543,9 @@ class CameraWorker(QtCore.QObject):
             "long_stays": long_stay_list[:10],
             "long_stay_count": len(long_stay_list),
             "fps": self.fps,
+            "status": self._status_text,
             "device": self.device,
             "gpu_name": self.gpu_name,
-            "status": self._status_text,
         }
 
     def _draw_overlay(self, frame: np.ndarray, tracks: list[dict[str, Any]], long_stays: list[tuple[int, float]]) -> np.ndarray:
@@ -1422,7 +1554,7 @@ class CameraWorker(QtCore.QObject):
 
         poly = self.camera_cfg.get("exclude_polygon", [])
         if len(poly) >= 3:
-            cv2.polylines(frame, [np.array(poly, np.int32)], isClosed=True, color=(255, 0, 255), thickness=2)
+            cv2.polylines(frame, [np.array(poly, np.int32)], isClosed=True, color=(140, 140, 140), thickness=2)
 
         for tr in tracks:
             x1, y1, x2, y2 = tr["bbox"]
@@ -1455,6 +1587,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workers: dict[int, CameraWorker] = {}
         self.panels: dict[int, CameraPanel] = {}
         self.latest_payloads: dict[int, dict[str, Any]] = {}
+        self.pending_report_update = False
+        self.report_warning_shown = False
 
         toolbar = QtWidgets.QToolBar("Main", self)
         toolbar.setMovable(False)
@@ -1479,10 +1613,17 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setSpacing(10)
         scroll.setWidget(content)
 
+        self.global_status = QtWidgets.QLabel("時刻 | device | GPU | FPS | model | LEVEL")
+        self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:12px;")
+        layout.addWidget(self.global_status)
+
         for cam in self.app_cfg.cameras:
             if not cam.get("enabled", True):
                 continue
             panel = CameraPanel(cam)
+            panel.line_setting_requested.connect(lambda cid, m="line": self.open_settings_for_camera(cid, m))
+            panel.exclude_setting_requested.connect(lambda cid, m="poly": self.open_settings_for_camera(cid, m))
+            panel.camera_setting_requested.connect(lambda cid, m="basic": self.open_settings_for_camera(cid, m))
             layout.addWidget(panel, 1)
             self.panels[cam["camera_id"]] = panel
             try:
@@ -1509,10 +1650,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 500)))
+        self.report_retry_timer = QtCore.QTimer(self)
+        self.report_retry_timer.timeout.connect(self._retry_pending_report_update)
+        self.report_retry_timer.start(30000)
         self.setWindowState(QtCore.Qt.WindowState.WindowMaximized)
 
     def tick(self) -> None:
         self._update_status_level()
+        self._update_global_status()
 
     @QtCore.pyqtSlot(dict)
     def on_camera_payload(self, payload: dict[str, Any]) -> None:
@@ -1521,6 +1666,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.panels[cid].update_view(payload)
         self.latest_payloads[cid] = payload
         self._update_status_level()
+        self._request_report_update()
 
     @QtCore.pyqtSlot(int, str)
     def on_camera_error(self, camera_id: int, message: str) -> None:
@@ -1545,6 +1691,21 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.status_mgr.update_if_needed(level)
 
+    def _update_global_status(self) -> None:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        model_name = self.app_cfg.system.get("model_path", "yolo11n.pt")
+        device = next(iter(self.latest_payloads.values()), {}).get("device", "n/a")
+        gpu = next(iter(self.latest_payloads.values()), {}).get("gpu_name", "n/a")
+        fps_text = " ".join([f"cam{cid}={p.get('fps', 0):.1f}" for cid, p in sorted(self.latest_payloads.items())])
+        cam1 = self.latest_payloads.get(1, {})
+        cam2 = self.latest_payloads.get(2, {})
+        cam3 = self.latest_payloads.get(3, {})
+        cam2_cfg = next((c for c in self.app_cfg.cameras if c.get("camera_id") == 2), {})
+        level = self.status_mgr.decide_level(bool(cam1.get("threshold_over", False)), int(cam2.get("long_stay_count", 0)), int(cam2_cfg.get("long_stay_trigger_count", 1)), bool(cam3.get("threshold_over", False)))
+        self.global_status.setText(
+            f"{now} | device={device} | GPU={gpu} | FPS {fps_text} | model={model_name} | output={self.root_dir / 'data'} | {level}"
+        )
+
     def open_settings(self) -> None:
         cams = self.app_cfg.cameras
         names = [f"{c['camera_id']}: {c['camera_name']}" for c in cams]
@@ -1552,18 +1713,24 @@ class MainWindow(QtWidgets.QMainWindow):
         if not ok:
             return
         camera_id = int(selected.split(":", 1)[0])
+        self.open_settings_for_camera(camera_id, "basic")
+
+    def open_settings_for_camera(self, camera_id: int, mode: str = "basic") -> None:
+        cams = self.app_cfg.cameras
         idx = next(i for i, c in enumerate(cams) if c["camera_id"] == camera_id)
         live = self.workers[camera_id].get_latest_raw_frame() if camera_id in self.workers else None
-        dlg = CameraSettingsDialog(cams[idx], live, self)
-        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            cams[idx] = dlg.get_updated_config()
-            self.cfg_mgr.save_camera_settings(cams)
-            try:
-                self.workers[camera_id].update_camera_config(cams[idx])
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(self, "モデル更新失敗", str(exc))
-                return
-            QtWidgets.QMessageBox.information(self, "保存", "設定を保存し、次フレームから反映しました。")
+        initial_mode = "line" if mode in {"line", "basic"} else "poly"
+        dlg = CameraSettingsDialog(cams[idx], live, self, initial_mode=initial_mode)
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        cams[idx] = dlg.get_updated_config()
+        self.cfg_mgr.save_camera_settings(cams)
+        try:
+            self.workers[camera_id].update_camera_config(cams[idx])
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "モデル更新失敗", str(exc))
+            return
+        QtWidgets.QMessageBox.information(self, "保存", "設定を保存し、次フレームから反映しました。")
 
     def save_current_settings(self) -> None:
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "設定保存", str(self.root_dir / "config" / "monitor_config.json"), "JSON (*.json)")
@@ -1606,9 +1773,28 @@ class MainWindow(QtWidgets.QMainWindow):
         for cam in self.app_cfg.cameras:
             cid = cam["camera_id"]
             cam_dir = self.root_dir / "data" / "metrics" / f"cam{cid}"
-            metrics_files.extend(sorted(cam_dir.glob("realtime_metrics_*.csv"))[-7:])
+            metrics_files.extend(sorted(cam_dir.glob("congestion_timeseries_*.csv"))[-7:])
         out = self.root_dir / "data" / "reports" / "daily" / f"multi_day_trend_{date.today().isoformat()}.png"
         save_multi_day_trend_plot(metrics_files, "congestion_score", out)
+
+    def _request_report_update(self) -> None:
+        try:
+            self.reporter.write_daily_report(date.today(), self.app_cfg.cameras, self.root_dir / "data" / "metrics")
+            self.pending_report_update = False
+            self.report_warning_shown = False
+        except PermissionError:
+            self.pending_report_update = True
+            if not self.report_warning_shown:
+                self.report_warning_shown = True
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Excel更新保留",
+                    "Excelレポートが開かれているため更新できません。Excelを閉じてください。閉じられ次第、自動で再更新します。",
+                )
+
+    def _retry_pending_report_update(self) -> None:
+        if self.pending_report_update:
+            self._request_report_update()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         for worker in self.workers.values():
