@@ -789,75 +789,121 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         return cfg
 
 
-class TimeSeriesGraph(QtWidgets.QLabel):
-    def __init__(self, title: str, parent=None):
+class MiniTimelineGraph(QtWidgets.QWidget):
+    def __init__(self, mode: str = "line", parent=None):
         super().__init__(parent)
+        self.mode = mode
+        self.title = ""
+        self.y_label = ""
+        self.series_color = QtGui.QColor("#00D7FF")
+        self.points: list[tuple[datetime, float]] = []
+        self.values: list[float] = []
+        self.threshold: float | None = None
+        self.show_threshold = False
+        self.setMinimumHeight(78)
+        self.setMaximumHeight(92)
+
+    def set_line_data(
+        self,
+        points: list[tuple[datetime, float]],
+        title: str,
+        y_label: str,
+        threshold: float | None = None,
+        series_color: str = "#00D7FF",
+        show_threshold: bool = True,
+    ) -> None:
+        self.mode = "line"
+        self.points = points
+        self.values = []
         self.title = title
-        self.setMinimumHeight(140)
-        self.setStyleSheet("background:#0f1620;border:1px solid #1d6f8b;color:#cfefff;")
+        self.y_label = y_label
+        self.threshold = threshold
+        self.show_threshold = show_threshold
+        self.series_color = QtGui.QColor(series_color)
+        self.update()
 
-    def draw_line_series(self, points: list[tuple[datetime, float]]) -> None:
-        w, h = max(300, self.width()), max(120, self.height())
-        pix = QtGui.QPixmap(w, h)
-        pix.fill(QtGui.QColor("#0f1620"))
-        painter = QtGui.QPainter(pix)
+    def set_bar_data(self, values: list[int], title: str, y_label: str, series_color: str = "#00D7FF") -> None:
+        self.mode = "bar"
+        self.values = [float(v) for v in values]
+        self.points = []
+        self.title = title
+        self.y_label = y_label
+        self.threshold = None
+        self.show_threshold = False
+        self.series_color = QtGui.QColor(series_color)
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QtGui.QColor("#0f1620"))
 
-        margin = 28
-        plot = QtCore.QRectF(margin, 16, w - margin - 10, h - 40)
-        painter.setPen(QtGui.QPen(QtGui.QColor("#35516b"), 1))
+        y_axis_w = 46
+        right_margin = 12
+        top_margin = 20
+        bottom_margin = 22
+        plot = QtCore.QRectF(y_axis_w, top_margin, max(10, self.width() - y_axis_w - right_margin), max(10, self.height() - top_margin - bottom_margin))
+
+        painter.setPen(QtGui.QPen(QtGui.QColor("#1d6f8b"), 1))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 3, 3)
         painter.drawRect(plot)
         painter.setPen(QtGui.QColor("#cfefff"))
         painter.drawText(8, 14, self.title)
 
-        if points:
-            ys = [v for _, v in points]
-            ymin, ymax = min(ys), max(ys)
-            if abs(ymax - ymin) < 1e-9:
-                ymax = ymin + 1.0
+        if self.mode == "line":
+            ys = [v for _, v in self.points]
+        else:
+            ys = self.values[:]
+        if self.show_threshold and self.threshold is not None:
+            ys.append(float(self.threshold))
+        y_max = max(1.0, max(ys) if ys else 1.0)
+        y_min = 0.0
+
+        for i in range(5):
+            ratio = i / 4.0
+            y = plot.bottom() - ratio * plot.height()
+            painter.setPen(QtGui.QPen(QtGui.QColor("#274457"), 1))
+            painter.drawLine(QtCore.QPointF(plot.left(), y), QtCore.QPointF(plot.right(), y))
+            painter.setPen(QtGui.QColor("#8db6c7"))
+            value = y_min + (y_max - y_min) * ratio
+            painter.drawText(4, int(y) + 4, f"{value:.0f}")
+
+        x_ticks = [0, 6, 12, 18, 24]
+        for h in x_ticks:
+            x = plot.left() + (h / 24.0) * plot.width()
+            painter.setPen(QtGui.QPen(QtGui.QColor("#274457"), 1))
+            painter.drawLine(QtCore.QPointF(x, plot.top()), QtCore.QPointF(x, plot.bottom()))
+            painter.setPen(QtGui.QColor("#8db6c7"))
+            text = f"{h}:00"
+            text_w = painter.fontMetrics().horizontalAdvance(text)
+            painter.drawText(int(x - text_w / 2), self.height() - 6, text)
+
+        if self.mode == "line" and self.points:
             path = QtGui.QPainterPath()
-            for i, (ts, value) in enumerate(points):
+            for i, (ts, value) in enumerate(self.points):
                 sec = ts.hour * 3600 + ts.minute * 60 + ts.second
                 x = plot.left() + (sec / 86400.0) * plot.width()
-                y = plot.bottom() - ((value - ymin) / (ymax - ymin)) * plot.height()
+                y = plot.bottom() - ((value - y_min) / (y_max - y_min)) * plot.height()
                 if i == 0:
                     path.moveTo(x, y)
                 else:
                     path.lineTo(x, y)
-            painter.setPen(QtGui.QPen(QtGui.QColor("#00D7FF"), 2))
+            painter.setPen(QtGui.QPen(self.series_color, 2.4))
             painter.drawPath(path)
-        painter.drawText(int(plot.left()), h - 10, "0:00")
-        painter.drawText(int(plot.right()) - 40, h - 10, "24:00")
-        painter.end()
-        self.setPixmap(pix)
-
-    def draw_bars(self, ltor: list[int], rtol: list[int]) -> None:
-        w, h = max(300, self.width()), max(120, self.height())
-        pix = QtGui.QPixmap(w, h)
-        pix.fill(QtGui.QColor("#0f1620"))
-        painter = QtGui.QPainter(pix)
-        margin = 28
-        plot = QtCore.QRectF(margin, 16, w - margin - 10, h - 40)
-        painter.setPen(QtGui.QPen(QtGui.QColor("#35516b"), 1))
-        painter.drawRect(plot)
-        painter.setPen(QtGui.QColor("#cfefff"))
-        painter.drawText(8, 14, self.title)
-
-        maxv = max(1, max(ltor) if ltor else 0, max(rtol) if rtol else 0)
-        bin_w = plot.width() / 144.0
-        for i in range(144):
-            l = ltor[i] if i < len(ltor) else 0
-            r = rtol[i] if i < len(rtol) else 0
-            x0 = plot.left() + i * bin_w
-            h_l = (l / maxv) * plot.height()
-            h_r = (r / maxv) * plot.height()
-            painter.fillRect(QtCore.QRectF(x0, plot.bottom() - h_l, bin_w * 0.45, h_l), QtGui.QColor("#00D7FF"))
-            painter.fillRect(QtCore.QRectF(x0 + bin_w * 0.5, plot.bottom() - h_r, bin_w * 0.45, h_r), QtGui.QColor("#ff8f66"))
-
-        painter.drawText(int(plot.left()), h - 10, "0:00")
-        painter.drawText(int(plot.right()) - 40, h - 10, "24:00")
-        painter.end()
-        self.setPixmap(pix)
+            if self.show_threshold and self.threshold is not None:
+                th_y = plot.bottom() - ((self.threshold - y_min) / (y_max - y_min)) * plot.height()
+                painter.setPen(QtGui.QPen(QtGui.QColor("#ffd400"), 2.8))
+                painter.drawLine(QtCore.QPointF(plot.left(), th_y), QtCore.QPointF(plot.right(), th_y))
+                painter.setPen(QtGui.QColor("#ffd400"))
+                painter.drawText(int(plot.right()) - 75, int(th_y) - 4, f"TH={self.threshold:.0f}")
+        elif self.mode == "bar" and self.values:
+            n = max(1, len(self.values))
+            bar_w = max(2.0, plot.width() / n * 0.92)
+            for i, value in enumerate(self.values):
+                x0 = plot.left() + i * (plot.width() / n)
+                h = ((value - y_min) / (y_max - y_min)) * plot.height()
+                painter.fillRect(QtCore.QRectF(x0, plot.bottom() - h, bar_w, h), self.series_color)
 
 
 class CameraPanel(QtWidgets.QFrame):
@@ -865,25 +911,54 @@ class CameraPanel(QtWidgets.QFrame):
         super().__init__(parent)
         self.camera_id = camera_cfg["camera_id"]
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
-        root = QtWidgets.QHBoxLayout(self)
+        root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setSpacing(8)
 
         self.video = QtWidgets.QLabel("video")
-        self.video.setMinimumSize(540, 280)
+        self.video.setMinimumSize(960, 540)
+        self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
-        root.addWidget(self.video, 3)
+        top_row.addWidget(self.video, 4)
 
-        right = QtWidgets.QVBoxLayout()
+        right_box = QtWidgets.QWidget()
+        right_box.setMinimumWidth(260)
+        right = QtWidgets.QVBoxLayout(right_box)
+        right.setContentsMargins(6, 6, 6, 6)
+        right.setSpacing(6)
         self.title = QtWidgets.QLabel(camera_cfg["camera_name"])
         self.title.setStyleSheet("font-size:15px;color:#00D7FF;font-weight:bold;")
         right.addWidget(self.title)
 
         self.meter = QtWidgets.QProgressBar()
         self.meter.setRange(0, 100)
-        self.meter.setFormat("Congestion %p")
+        self.meter.setFixedHeight(28)
+        self.meter.setFormat("渋滞指数 %p")
+        self.meter.setStyleSheet(
+            """
+            QProgressBar {
+                background:#101820;
+                border:1px solid #1d6f8b;
+                border-radius:4px;
+                color:#ffffff;
+                text-align:center;
+                font-weight:bold;
+                font-size:13px;
+            }
+            QProgressBar::chunk {
+                background:#00d7ff;
+            }
+            """
+        )
         right.addWidget(self.meter)
+        self.meter_detail = QtWidgets.QLabel("現在値: 0.0 / 閾値: 60")
+        right.addWidget(self.meter_detail)
 
-        self.meta = QtWidgets.QLabel("time / gpu / fps")
+        self.meta = QtWidgets.QLabel("time / device / gpu / fps / th")
         right.addWidget(self.meta)
         self.status_label = QtWidgets.QLabel("IDLE")
         self.status_label.setStyleSheet("font-size:13px;font-weight:bold;color:#ffd166;")
@@ -892,18 +967,32 @@ class CameraPanel(QtWidgets.QFrame):
         self.summary = QtWidgets.QLabel("LtoR=0 / RtoL=0")
         right.addWidget(self.summary)
 
-        self.congestion_graph = TimeSeriesGraph("渋滞指数(10秒更新)")
-        right.addWidget(self.congestion_graph)
-        self.pass_graph = TimeSeriesGraph("通過台数(台/10分) LtoR/RtoL")
-        right.addWidget(self.pass_graph)
+        long_stay_title = QtWidgets.QLabel("15分以上滞在")
+        long_stay_title.setStyleSheet("color:#ff8893;font-weight:bold;")
+        right.addWidget(long_stay_title)
+        self.long_stay_scroll = QtWidgets.QScrollArea()
+        self.long_stay_scroll.setWidgetResizable(True)
+        self.long_stay_scroll.setMinimumHeight(180)
+        self.long_stay_container = QtWidgets.QWidget()
+        self.long_stay_layout = QtWidgets.QVBoxLayout(self.long_stay_container)
+        self.long_stay_layout.setContentsMargins(0, 0, 0, 0)
+        self.long_stay_layout.setSpacing(6)
+        self.long_stay_scroll.setWidget(self.long_stay_container)
+        right.addWidget(self.long_stay_scroll, 1)
 
-        self.long_stay = QtWidgets.QTextEdit()
-        self.long_stay.setReadOnly(True)
-        self.long_stay.setMinimumHeight(90)
-        self.long_stay.setStyleSheet("background:#0f1620;border:1px solid #1d6f8b;color:#ffaeae;")
-        right.addWidget(self.long_stay)
+        top_row.addWidget(right_box, 1)
+        root.addLayout(top_row)
 
-        root.addLayout(right, 2)
+        self.graphs: list[MiniTimelineGraph] = []
+        graphs_box = QtWidgets.QWidget()
+        graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
+        graphs_layout.setContentsMargins(0, 0, 0, 0)
+        graphs_layout.setSpacing(6)
+        for _ in range(6):
+            g = MiniTimelineGraph("line")
+            self.graphs.append(g)
+            graphs_layout.addWidget(g)
+        root.addWidget(graphs_box)
 
     def update_view(self, payload: dict[str, Any]) -> None:
         frame = payload.get("frame")
@@ -912,20 +1001,52 @@ class CameraPanel(QtWidgets.QFrame):
             qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
             self.video.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.video.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio))
 
-        score = int(payload.get("congestion_score", 0))
-        threshold = int(payload.get("threshold", 60))
-        self.meter.setValue(max(0, min(100, score)))
+        score = float(payload.get("congestion_score", 0))
+        threshold = float(payload.get("threshold", 60))
+        self.meter.setValue(int(max(0, min(100, score))))
+        self.meter_detail.setText(f"現在値: {score:.1f} / 閾値: {threshold:.0f}")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.meta.setText(f"{now} | device={payload.get('device')} | GPU={payload.get('gpu_name')} | FPS={payload.get('fps',0):.1f} | TH={threshold}")
+        self.status_label.setText(payload.get("status", "RUNNING"))
 
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
         self.summary.setText(f"LtoR 合計={sum(ltor)} / RtoL 合計={sum(rtol)}")
-        self.congestion_graph.draw_line_series(payload.get("congestion_points", []))
-        self.pass_graph.draw_bars(ltor, rtol)
+        self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), "渋滞指数（前日実績）", "index", threshold=threshold, series_color="#33d1ff", show_threshold=True)
+        self.graphs[1].set_line_data(payload.get("congestion_points", []), "渋滞指数（当日）", "index", threshold=threshold, series_color="#9dfc9d", show_threshold=True)
+        self.graphs[2].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), "LtoR（前日実績）", "count", series_color="#33d1ff")
+        self.graphs[3].set_bar_data(ltor, "LtoR（当日）", "count", series_color="#aef7a3")
+        self.graphs[4].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), "RtoL（前日実績）", "count", series_color="#33d1ff")
+        self.graphs[5].set_bar_data(rtol, "RtoL（当日）", "count", series_color="#ffffff")
+        self._rebuild_long_stay_cards(payload.get("long_stays", []))
 
-        lines = [f"ID {tid}: {mins:.1f} min" for tid, mins in payload.get("long_stays", [])]
-        self.long_stay.setText("\n".join(lines) if lines else "No long stay")
+    def _rebuild_long_stay_cards(self, long_stays: list[tuple[int, float]]) -> None:
+        while self.long_stay_layout.count():
+            child = self.long_stay_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not long_stays:
+            label = QtWidgets.QLabel("15分以上滞在なし")
+            label.setStyleSheet("color:#ffb7be;")
+            self.long_stay_layout.addWidget(label)
+            self.long_stay_layout.addStretch()
+            return
+
+        for tid, mins in long_stays:
+            card = QtWidgets.QFrame()
+            card.setStyleSheet("background:#1a1014;border:1px solid #ff5a6e;border-radius:6px;")
+            card_layout = QtWidgets.QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 6, 8, 6)
+            id_label = QtWidgets.QLabel(f"ID:{tid}")
+            id_label.setStyleSheet("color:#ffd3d9;font-weight:bold;")
+            min_label = QtWidgets.QLabel(f"{mins:.0f}min")
+            min_label.setStyleSheet("color:#ff6678;")
+            card_layout.addWidget(id_label)
+            card_layout.addWidget(min_label)
+            self.long_stay_layout.addWidget(card)
+        self.long_stay_layout.addStretch()
 
     def set_status(self, status_text: str) -> None:
         self.status_label.setText(status_text)
@@ -996,6 +1117,7 @@ class CameraWorker(QtCore.QObject):
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
+        self.previous_day_congestion_points = self._load_previous_day_congestion_points()
 
     def get_latest_raw_frame(self):
         return None if self.last_raw_frame is None else self.last_raw_frame.copy()
@@ -1096,12 +1218,30 @@ class CameraWorker(QtCore.QObject):
                         rtol[idx] += 1
         return ltor, rtol
 
+    def _load_previous_day_congestion_points(self) -> list[tuple[datetime, float]]:
+        prev = self.today.fromordinal(self.today.toordinal() - 1)
+        prev_file = self.metrics_dir / f"realtime_metrics_{prev.strftime('%Y-%m-%d')}.csv"
+        points: list[tuple[datetime, float]] = []
+        if not prev_file.exists():
+            return points
+        with prev_file.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    ts = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
+                    score = float(row.get("congestion_score", 0.0))
+                    points.append((ts, score))
+                except Exception:
+                    continue
+        return points
+
     def _rollover_if_needed(self, now: datetime) -> None:
         if now.date() == self.today:
             return
         self.today = now.date()
         self.realtime_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
+        self.previous_day_congestion_points = self._load_previous_day_congestion_points()
         self.counter.state.pass_bins_ltor = [0] * 144
         self.counter.state.pass_bins_rtol = [0] * 144
 
@@ -1263,6 +1403,7 @@ class CameraWorker(QtCore.QObject):
             "threshold": threshold,
             "threshold_over": threshold_over,
             "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
+            "prev_congestion_points": self.previous_day_congestion_points,
             "pass_bins_ltor": self.counter.state.pass_bins_ltor,
             "pass_bins_rtol": self.counter.state.pass_bins_rtol,
             "hist_prev_ltor": self.previous_day_hist_ltor,
@@ -1315,25 +1456,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.panels: dict[int, CameraPanel] = {}
         self.latest_payloads: dict[int, dict[str, Any]] = {}
 
-        central = QtWidgets.QWidget()
-        self.setCentralWidget(central)
-        layout = QtWidgets.QVBoxLayout(central)
+        toolbar = QtWidgets.QToolBar("Main", self)
+        toolbar.setMovable(False)
+        self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, toolbar)
+        action_setting = toolbar.addAction("解析条件")
+        action_setting.triggered.connect(self.open_settings)
+        action_save = toolbar.addAction("保存")
+        action_save.triggered.connect(self.save_current_settings)
+        action_load = toolbar.addAction("読込")
+        action_load.triggered.connect(self.load_settings_from_json)
+        action_daily = toolbar.addAction("日次Excel出力")
+        action_daily.triggered.connect(self.export_daily)
+        action_monthly = toolbar.addAction("月次Excel出力")
+        action_monthly.triggered.connect(self.export_monthly)
 
-        toolbar = QtWidgets.QHBoxLayout()
-        btn_setting = QtWidgets.QPushButton("解析条件")
-        btn_setting.clicked.connect(self.open_settings)
-        btn_save = QtWidgets.QPushButton("保存")
-        btn_save.clicked.connect(self.save_current_settings)
-        btn_load = QtWidgets.QPushButton("読込")
-        btn_load.clicked.connect(self.load_settings_from_json)
-        btn_daily = QtWidgets.QPushButton("日次Excel出力")
-        btn_daily.clicked.connect(self.export_daily)
-        btn_monthly = QtWidgets.QPushButton("月次Excel出力")
-        btn_monthly.clicked.connect(self.export_monthly)
-        for btn in (btn_setting, btn_save, btn_load, btn_daily, btn_monthly):
-            toolbar.addWidget(btn)
-        toolbar.addStretch()
-        layout.addLayout(toolbar)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.setCentralWidget(scroll)
+        content = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(content)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+        scroll.setWidget(content)
 
         for cam in self.app_cfg.cameras:
             if not cam.get("enabled", True):
