@@ -3,8 +3,8 @@
 ## 方針（この構成が正）
 - **GitHub / マスターUSB / 現地PC は同一構成**。
 - **Python は2本のみ**。
-  - 再生: `app/signagePC/auto_play.py`
-  - PC管理: `app/signagePC/pc_agent.py`
+  - 再生: `app/01_signagePC/auto_play.py`
+  - PC管理: `app/01_signagePC/pc_agent.py`
     - 再起動／シャットダウン
     - 死活監視／再生監視（heartbeat）
     - 負荷／容量監視
@@ -13,9 +13,13 @@
 ```
 TsuyamaST_digital\
   app\
-    analysisPC\
-    config\
-    signagePC\
+    01_signagePC\
+    02_SignageController\
+    03_ip_camera_viewer\
+    04_ai_monitor\
+    10_common\
+    11_config\
+    90_sample\
   content\
   docs\
   logs\
@@ -23,6 +27,27 @@ TsuyamaST_digital\
     python\
     mpv\
 ```
+
+## 管理番号を付与した理由
+- 起動順と依存関係をフォルダ名だけで判別しやすくするため。
+- 運用時に確認対象を固定し、保守ミスを減らすため。
+
+## 起動順の想定
+1. `01_signagePC`（親機・常駐）
+2. `04_ai_monitor`（AI監視）
+3. `02_SignageController`（全体制御）
+4. `03_ip_camera_viewer`（カメラ確認）
+
+## 旧フォルダ名との対応表
+| 旧フォルダ名 | 新フォルダ名 |
+|---|---|
+| signagePC | 01_signagePC |
+| SignageController | 02_SignageController |
+| ip_camera_viewer | 03_ip_camera_viewer |
+| ai_monitor | 04_ai_monitor |
+| common | 10_common |
+| config | 11_config |
+| sample | 90_sample |
 
 ## USB更新手順（GitHub → USB → 現場）
 1. GitHub を clone して最新のリポジトリを取得する。

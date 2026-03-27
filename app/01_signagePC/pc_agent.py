@@ -18,11 +18,12 @@ except ImportError:
 JST = timezone(timedelta(hours=9))
 ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = ROOT / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
+COMMON_DIR = APP_DIR / "10_common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
 
-from common.json_io import write_json_safe
-CONFIG_DIR = APP_DIR / "config"
+from json_io import write_json_safe
+CONFIG_DIR = APP_DIR / "11_config"
 CONTENT_DIR = ROOT / "content"
 LOGS_DIR = ROOT / "logs"
 RUNTIME_DIR = ROOT / "runtime"

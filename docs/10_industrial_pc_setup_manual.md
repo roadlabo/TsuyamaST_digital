@@ -392,8 +392,8 @@ Source に親機 IP（例：192.168.1.9）が表示されていれば合格
    - ＜操作＞
      - 新規(N)
      - プログラムの開始
-     - プログラム/スクリプト：`C:\_TsuyamaSignage\app\signagePC\start_pc_agent.bat`（参照）
-     - 開始（オプション）：`C:\_TsuyamaSignage\app\signagePC`
+     - プログラム/スクリプト：`C:\_TsuyamaSignage\app\01_signagePC\start_pc_agent.bat`（参照）
+     - 開始（オプション）：`C:\_TsuyamaSignage\app\01_signagePC`
    - ＜条件＞
      - 変更なし
    - ＜設定＞
@@ -413,8 +413,8 @@ Source に親機 IP（例：192.168.1.9）が表示されていれば合格
    - ＜操作＞
      - 新規(N)
      - プログラムの開始
-     - プログラム/スクリプト：`C:\_TsuyamaSignage\app\signagePC\start_auto_play.bat`（参照）
-     - 開始（オプション）：`C:\_TsuyamaSignage\app\signagePC`
+     - プログラム/スクリプト：`C:\_TsuyamaSignage\app\01_signagePC\start_auto_play.bat`（参照）
+     - 開始（オプション）：`C:\_TsuyamaSignage\app\01_signagePC`
    - ＜条件＞
      - 変更なし
    - ＜設定＞
