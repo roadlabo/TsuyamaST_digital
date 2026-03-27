@@ -45,6 +45,13 @@ CLASS_MAP = {
     7: "トラック",
 }
 
+LEVEL_STYLE_MAP: dict[str, dict[str, str]] = {
+    "LEVEL0": {"label": "渋滞LEVEL1", "bg": "#7fd0ff", "fg": "#000000", "icon": "🟢"},
+    "LEVEL1": {"label": "渋滞LEVEL2", "bg": "#ffb347", "fg": "#000000", "icon": "🟠"},
+    "LEVEL2": {"label": "渋滞LEVEL3", "bg": "#e53935", "fg": "#ffffff", "icon": "🔴"},
+    "LEVEL3": {"label": "渋滞LEVEL4", "bg": "#000000", "fg": "#ffffff", "icon": "⚫"},
+}
+
 # =========================================
 # Default Settings
 # =========================================
@@ -325,16 +332,16 @@ class LineCounter:
         self.state.previous_side.clear()
         self.state.counted_track_ids.clear()
 
-    def _signed_side(self, center: tuple[float, float]) -> float:
+    def _signed_side(self, point: tuple[float, float]) -> float:
         p1, p2 = self.line_points
         vx, vy = p2[0] - p1[0], p2[1] - p1[1]
-        wx, wy = center[0] - p1[0], center[1] - p1[1]
+        wx, wy = point[0] - p1[0], point[1] - p1[1]
         return vx * wy - vy * wx
 
-    def update(self, track_id: int, center: tuple[float, float], class_name: str, now: datetime):
+    def update(self, track_id: int, point: tuple[float, float], class_name: str, now: datetime):
         if len(self.line_points) != 2:
             return None
-        current_side = self._signed_side(center)
+        current_side = self._signed_side(point)
         prev_side = self.state.previous_side.get(track_id)
         self.state.previous_side[track_id] = current_side
         if prev_side is None or track_id in self.state.counted_track_ids:
@@ -676,7 +683,7 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         tabs.addTab(ai_tab, "解析条件")
         ai_form = QtWidgets.QFormLayout(ai_tab)
 
-        self.yolo_model = QtWidgets.QLineEdit(str(camera_cfg.get("yolo_model", "yolo11n.pt")))
+        self.yolo_model = QtWidgets.QLineEdit(str(camera_cfg.get("yolo_model", "")))
         self.conf = QtWidgets.QDoubleSpinBox(); self.conf.setRange(0, 1); self.conf.setSingleStep(0.01); self.conf.setValue(float(camera_cfg.get("confidence_threshold", 0.25)))
         self.iou = QtWidgets.QDoubleSpinBox(); self.iou.setRange(0, 1); self.iou.setSingleStep(0.01); self.iou.setValue(float(camera_cfg.get("iou_threshold", 0.5)))
         self.frame_skip = QtWidgets.QSpinBox(); self.frame_skip.setRange(1, 30); self.frame_skip.setValue(int(camera_cfg.get("frame_skip", 1)))
@@ -918,13 +925,13 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
             value = y_min + (y_max - y_min) * ratio
             painter.drawText(2, int(y) + 4, f"{value:.1f}")
 
-        x_ticks = [0, 6, 12, 18, 24]
+        x_ticks = list(range(25))
         for h in x_ticks:
             x = plot.left() + (h / 24.0) * plot.width()
             painter.setPen(QtGui.QPen(QtGui.QColor("#274457"), 1))
             painter.drawLine(QtCore.QPointF(x, plot.top()), QtCore.QPointF(x, plot.bottom()))
             painter.setPen(QtGui.QColor("#8db6c7"))
-            text = f"{h}:00"
+            text = f"{h}"
             text_w = painter.fontMetrics().horizontalAdvance(text)
             painter.drawText(int(x - text_w / 2), self.height() - 6, text)
 
@@ -978,6 +985,43 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
             y += 12
 
 
+class CongestionIndexBar(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.score = 0.0
+        self.threshold = 5.0
+        self.setMinimumHeight(30)
+        self.setMaximumHeight(30)
+
+    def set_values(self, score: float, threshold: float) -> None:
+        self.score = float(score)
+        self.threshold = float(threshold)
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#1f4f7a"), 1))
+        painter.setBrush(QtGui.QColor("#0c1a24"))
+        painter.drawRoundedRect(rect, 4, 4)
+
+        score_limited = max(0.0, min(20.0, self.score))
+        threshold_limited = max(0.0, min(20.0, self.threshold))
+        ratio = score_limited / 20.0
+        fill = QtCore.QRectF(rect.left(), rect.top(), rect.width() * ratio, rect.height())
+        bar_color = QtGui.QColor("#ff3b3b" if self.score >= self.threshold else "#2f7dff")
+        painter.fillRect(fill, bar_color)
+
+        th_x = rect.left() + rect.width() * (threshold_limited / 20.0)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#ffd400"), 2))
+        painter.drawLine(QtCore.QPointF(th_x, rect.top()), QtCore.QPointF(th_x, rect.bottom()))
+
+        painter.setPen(QtGui.QColor("#ffffff"))
+        painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignCenter, f"渋滞指数 {self.score:.1f}")
+
+
 class CameraPanel(QtWidgets.QFrame):
     line_setting_requested = QtCore.pyqtSignal(int)
     exclude_setting_requested = QtCore.pyqtSignal(int)
@@ -986,6 +1030,7 @@ class CameraPanel(QtWidgets.QFrame):
     def __init__(self, camera_cfg: dict[str, Any], parent=None):
         super().__init__(parent)
         self.camera_id = camera_cfg["camera_id"]
+        self.long_stay_minutes = int(camera_cfg.get("long_stay_minutes", 15))
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -996,14 +1041,14 @@ class CameraPanel(QtWidgets.QFrame):
 
         self.video = QtWidgets.QLabel("video")
         self.video.setMinimumSize(720, 405)
-        self.video.setMaximumHeight(420)
+        self.video.setMaximumHeight(336)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
-        top_row.addWidget(self.video, 8)
+        top_row.addWidget(self.video, 6)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(200)
+        right_box.setMinimumWidth(420)
         right = QtWidgets.QVBoxLayout(right_box)
         right.setContentsMargins(6, 6, 6, 6)
         right.setSpacing(6)
@@ -1033,14 +1078,15 @@ class CameraPanel(QtWidgets.QFrame):
         self.summary = QtWidgets.QLabel("LtoR=0 / RtoL=0")
         self.summary.setStyleSheet("font-size:12px;")
         right.addWidget(self.summary)
-        self.label_threshold = QtWidgets.QLabel(f"閾値: {float(camera_cfg.get('congestion_threshold', 5)):.2f}")
-        self.label_stay = QtWidgets.QLabel(f"滞在: {int(camera_cfg.get('long_stay_minutes', 15))}分")
-        self.label_threshold.setStyleSheet("font-size:12px;color:#ffd166;")
-        self.label_stay.setStyleSheet("font-size:12px;color:#ff9fb0;")
-        right.addWidget(self.label_threshold)
+        self.label_stay = QtWidgets.QLabel(f"滞在時間閾値：{self.long_stay_minutes}分以上")
+        self.label_stay.setStyleSheet("font-size:13px;color:#ff9fb0;font-weight:bold;")
         right.addWidget(self.label_stay)
 
-        long_stay_title = QtWidgets.QLabel("15分以上滞在")
+        self.congestion_bar = CongestionIndexBar()
+        right.addWidget(self.congestion_bar)
+
+        self.long_stay_title = QtWidgets.QLabel("滞在時間閾値以上")
+        long_stay_title = self.long_stay_title
         long_stay_title.setStyleSheet("color:#ff8893;font-weight:bold;")
         right.addWidget(long_stay_title)
         self.long_stay_scroll = QtWidgets.QScrollArea()
@@ -1053,7 +1099,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.long_stay_scroll.setWidget(self.long_stay_container)
         right.addWidget(self.long_stay_scroll, 1)
 
-        top_row.addWidget(right_box, 2)
+        top_row.addWidget(right_box, 4)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1080,13 +1126,18 @@ class CameraPanel(QtWidgets.QFrame):
 
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
-        self.summary.setText(f"LtoR 合計={sum(ltor)} / RtoL 合計={sum(rtol)} | 渋滞指数={score:.2f} / 閾値={threshold:.2f}")
-        self.label_threshold.setText(f"閾値: {threshold:.2f}")
-        self.label_stay.setText(f"滞在: {int(payload.get('long_stay_minutes', 15))}分")
+        self.summary.setText(f"LtoR={sum(ltor)} / RtoL={sum(rtol)}")
+        self.long_stay_minutes = int(payload.get("long_stay_minutes", self.long_stay_minutes))
+        self.label_stay.setText(f"滞在時間閾値：{self.long_stay_minutes}分以上")
+        self.long_stay_title.setText("滞在時間閾値以上")
+        self._update_congestion_bar(score, threshold)
         self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
         self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
         self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
         self._rebuild_long_stay_cards(payload.get("long_stays", []))
+
+    def _update_congestion_bar(self, score: float, threshold: float) -> None:
+        self.congestion_bar.set_values(score, threshold)
 
     def _rebuild_long_stay_cards(self, long_stays: list[tuple[int, float]]) -> None:
         while self.long_stay_layout.count():
@@ -1096,9 +1147,6 @@ class CameraPanel(QtWidgets.QFrame):
                 widget.deleteLater()
 
         if not long_stays:
-            label = QtWidgets.QLabel("15分以上滞在なし")
-            label.setStyleSheet("color:#ffb7be;")
-            self.long_stay_layout.addWidget(label)
             self.long_stay_layout.addStretch()
             return
 
@@ -1107,7 +1155,7 @@ class CameraPanel(QtWidgets.QFrame):
             card.setStyleSheet("background:#1a1014;border:1px solid #ff5a6e;border-radius:6px;")
             card_layout = QtWidgets.QVBoxLayout(card)
             card_layout.setContentsMargins(8, 6, 8, 6)
-            id_label = QtWidgets.QLabel(f"ID:{tid}")
+            id_label = QtWidgets.QLabel(f"ID={tid:03d}")
             id_label.setStyleSheet("color:#ffd3d9;font-weight:bold;")
             min_label = QtWidgets.QLabel(f"{mins:.0f}min")
             min_label.setStyleSheet("color:#ff6678;")
@@ -1121,7 +1169,14 @@ class CameraPanel(QtWidgets.QFrame):
 
 
 def resolve_model_path(camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path) -> Path:
-    raw = camera_cfg.get("yolo_model") or system_cfg.get("model_path", "yolo11n.pt")
+    raw = (
+        camera_cfg.get("yolo_model")
+        or system_cfg.get("yolo_model")
+        or system_cfg.get("YOLO_MODEL")
+        or system_cfg.get("model_path")
+    )
+    if not raw:
+        raise FileNotFoundError("YOLO model is not configured. Set yolo_model / model_path in config.")
     p = Path(str(raw))
     if not p.is_absolute():
         candidates = [root_dir / p, root_dir / "models" / p, Path.cwd() / p]
@@ -1169,6 +1224,9 @@ class CameraWorker(QtCore.QObject):
         self.congestion = CongestionScorer(int(self.camera_cfg.get("congestion_calculation_interval", 10)))
         self.track_state = TrackState()
         self.track_class_memory: dict[int, dict[str, Any]] = {}
+        self.display_id_map: dict[int, int] = {}
+        self.display_id_counter = 1
+        self.cross_flash_frames: dict[int, int] = {}
 
         self.cap = None
         self.last_frame = None
@@ -1400,6 +1458,9 @@ class CameraWorker(QtCore.QObject):
         if now.date() == self.today:
             return
         self.today = now.date()
+        self.display_id_map.clear()
+        self.display_id_counter = 1
+        self.cross_flash_frames.clear()
         self.congestion_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
@@ -1408,6 +1469,12 @@ class CameraWorker(QtCore.QObject):
         self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
         self.congestion.state.frame_inverse_distances = [v for _, v in today_points]
         self.congestion.state.current_congestion_index = today_points[-1][1] if today_points else 0.0
+
+    def _get_display_id(self, track_id: int) -> int:
+        if track_id not in self.display_id_map:
+            self.display_id_map[track_id] = self.display_id_counter
+            self.display_id_counter += 1
+        return self.display_id_map[track_id]
 
     @staticmethod
     def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -1560,37 +1627,55 @@ class CameraWorker(QtCore.QObject):
                     conf = float(conf_array[i]) if len(conf_array) > i else 0.0
 
                     x1, y1, x2, y2 = box.tolist()
-                    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-                    if self._in_polygon((cx, cy), exclude_polygon):
+                    bbox_h = max(1.0, y2 - y1)
+                    judge_x = (x1 + x2) / 2
+                    judge_y = y2 - (bbox_h * 0.2)
+                    if self._in_polygon((judge_x, judge_y), exclude_polygon):
                         continue
 
                     track_id = int(tid)
+                    display_id = self._get_display_id(track_id)
                     raw_items.append({
                         "track_id": track_id,
+                        "display_id": display_id,
                         "cls_idx": cls_idx,
                         "cls_name": cls_name,
                         "conf": conf,
                         "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                        "center": (cx, cy),
+                        "center": (judge_x, judge_y),
+                        "judge_point": (judge_x, judge_y),
                     })
 
                 for item in self._deduplicate_overlapping_detections(raw_items):
                     track_id = int(item["track_id"])
+                    display_id = int(item.get("display_id", track_id))
                     cls_name = item["cls_name"]
-                    cx, cy = item["center"]
-                    tracks.append({"track_id": track_id, "center": (cx, cy), "bbox": item["bbox"], "class_name": cls_name})
+                    judge_x, judge_y = item["center"]
+                    tracks.append(
+                        {
+                            "track_id": track_id,
+                            "display_id": display_id,
+                            "center": (judge_x, judge_y),
+                            "judge_point": (judge_x, judge_y),
+                            "bbox": item["bbox"],
+                            "class_name": cls_name,
+                            "crossed": False,
+                        }
+                    )
 
-                    event = self.counter.update(track_id, (cx, cy), cls_name, now)
+                    event = self.counter.update(track_id, (judge_x, judge_y), cls_name, now)
                     if event:
                         pass_events.append(event)
+                        self.cross_flash_frames[track_id] = 12
+                        tracks[-1]["crossed"] = True
 
                     if track_id not in self.track_state.first_seen:
                         self.track_state.first_seen[track_id] = now
 
-                    if self._in_polygon((cx, cy), stay_zone):
+                    if self._in_polygon((judge_x, judge_y), stay_zone):
                         stay_mins = (now - self.track_state.first_seen[track_id]).total_seconds() / 60.0
                         if stay_mins >= float(self.camera_cfg.get("long_stay_minutes", 15)):
-                            long_stay_list.append((track_id, stay_mins))
+                            long_stay_list.append((display_id, stay_mins))
                             if track_id not in self.track_state.long_stay_emitted:
                                 self.track_state.long_stay_emitted.add(track_id)
                                 long_stay_events.append({
@@ -1601,6 +1686,13 @@ class CameraWorker(QtCore.QObject):
                                     "stay_minutes": round(stay_mins, 1),
                                     "class_name": cls_name,
                                 })
+                    elif self.cross_flash_frames.get(track_id, 0) > 0:
+                        tracks[-1]["crossed"] = True
+
+            for tid in list(self.cross_flash_frames):
+                self.cross_flash_frames[tid] -= 1
+                if self.cross_flash_frames[tid] <= 0:
+                    self.cross_flash_frames.pop(tid, None)
 
             frame_width = int(frame.shape[1]) if frame is not None else 1920
             prev_points_len = len(self.congestion.state.frame_time_stamps)
@@ -1680,15 +1772,28 @@ class CameraWorker(QtCore.QObject):
 
         poly = self.camera_cfg.get("exclude_polygon", [])
         if len(poly) >= 3:
-            cv2.polylines(frame, [np.array(poly, np.int32)], isClosed=True, color=(140, 140, 140), thickness=2)
+            cv2.polylines(frame, [np.array(poly, np.int32)], isClosed=True, color=(255, 255, 0), thickness=2)
+            cv2.putText(frame, "EXCLUDE", tuple(np.array(poly[0], dtype=int)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2, cv2.LINE_AA)
 
         for tr in tracks:
             x1, y1, x2, y2 = tr["bbox"]
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
-            cv2.putText(frame, f"ID:{tr['track_id']} {tr['class_name']}", (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
+            box_color = (0, 0, 255) if tr.get("crossed", False) or self.cross_flash_frames.get(int(tr["track_id"]), 0) > 0 else (0, 255, 0)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+            px, py = tr.get("judge_point", tr["center"])
+            cv2.circle(frame, (int(px), int(py)), 3, (255, 255, 255), -1)
+            cv2.putText(
+                frame,
+                f"ID:{int(tr.get('display_id', tr['track_id'])):03d} {tr['class_name']}",
+                (x1, max(20, y1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                box_color,
+                2,
+                cv2.LINE_AA,
+            )
 
         for i, (tid, mins) in enumerate(long_stays[:5]):
-            cv2.putText(frame, f"LONG STAY ID:{tid} {mins:.1f}m", (20, 40 + 22 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(frame, f"LONG STAY ID:{tid:03d} {mins:.1f}m", (20, 40 + 22 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return frame
 
 # =========================================
@@ -1743,9 +1848,16 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setSpacing(10)
         scroll.setWidget(content)
 
-        self.global_status = QtWidgets.QLabel("時刻 | device | GPU | FPS | model | LEVEL")
+        top_status_row = QtWidgets.QHBoxLayout()
+        self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
         self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:12px;")
-        layout.addWidget(self.global_status)
+        top_status_row.addWidget(self.global_status, 4)
+        self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
+        self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.level_badge.setMinimumHeight(46)
+        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;")
+        top_status_row.addWidget(self.level_badge, 2)
+        layout.addLayout(top_status_row)
 
         for cam in self.app_cfg.cameras:
             if not cam.get("enabled", True):
@@ -1839,17 +1951,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_global_status(self) -> None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        model_name = self.app_cfg.system.get("model_path", "yolo11n.pt")
+        model_name = (
+            self.app_cfg.system.get("yolo_model")
+            or self.app_cfg.system.get("YOLO_MODEL")
+            or self.app_cfg.system.get("model_path")
+            or "n/a"
+        )
         device = next(iter(self.latest_payloads.values()), {}).get("device", "n/a")
         gpu = next(iter(self.latest_payloads.values()), {}).get("gpu_name", "n/a")
-        fps_text = " ".join([f"cam{cid}={p.get('fps', 0):.1f}" for cid, p in sorted(self.latest_payloads.items())])
         cam1 = self.latest_payloads.get(1, {})
         cam2 = self.latest_payloads.get(2, {})
         cam3 = self.latest_payloads.get(3, {})
         cam2_cfg = next((c for c in self.app_cfg.cameras if c.get("camera_id") == 2), {})
         level = self.status_mgr.decide_level(bool(cam1.get("threshold_over", False)), int(cam2.get("long_stay_count", 0)), int(cam2_cfg.get("long_stay_trigger_count", 1)), bool(cam3.get("threshold_over", False)))
         self.global_status.setText(
-            f"{now} | device={device} | GPU={gpu} | FPS {fps_text} | model={model_name} | output={self.root_dir / 'data'} | {level}"
+            f"{now} | device={device} | GPU={gpu} | model={model_name} | output={self.root_dir / 'data'}"
+        )
+        style = LEVEL_STYLE_MAP.get(level, LEVEL_STYLE_MAP["LEVEL0"])
+        self.level_badge.setText(f"{style['icon']} {style['label']}")
+        self.level_badge.setStyleSheet(
+            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;"
         )
 
     def open_settings(self) -> None:
