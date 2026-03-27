@@ -44,14 +44,14 @@ else:
 APP_NAME = "TsuyamaST SuperAI Signage Controller"
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-CONFIG_DIR = ROOT_DIR / "config"
+CONFIG_DIR = ROOT_DIR / "11_config"
 CONTENT_DIR = ROOT_DIR.parent / "content"
 LOG_DIR = ROOT_DIR.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TELEMETRY_LOCAL_PATH = Path(r"C:\_TsuyamaSignage\app\logs\telemetry_local.json")
 
 REMOTE_APP_DIR = "app"
-REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\config"
+REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\11_config"
 REMOTE_LOGS_DIR = "logs"
 REMOTE_CONTENT_DIR = "content"
 

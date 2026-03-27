@@ -9,9 +9,9 @@ Controller は以下の構成を想定しています。
 ```
 TsuyamaST_digital\
 ├─ app\
-│  ├─ analysisPC\
-│  │  └─ playerTsuyamaST_SuperAI_Signage_Controller.py
-│  ├─ config\
+│  ├─ 02_SignageController\
+│  │  └─ analysisPCTsuyamaST_SuperAI_Signage_Controller.py
+│  ├─ 11_config\
 │  │  ├─ inventory.json
 │  │  ├─ controller_settings.json
 │  │  ├─ ai_status.json
@@ -25,8 +25,8 @@ TsuyamaST_digital\
 ```
 
 ## 起動方法
-1. `runtime\python\python.exe app\analysisPC\playerTsuyamaST_SuperAI_Signage_Controller.py` を実行します。
-2. 初回は PySide6 が必要です。`app/signagePC/requirements_controller.txt` に依存ライブラリがあります。
+1. `runtime\python\python.exe app\02_SignageController\analysisPCTsuyamaST_SuperAI_Signage_Controller.py` を実行します。
+2. 初回は PySide6 が必要です。`app/01_signagePC/requirements_controller.txt` に依存ライブラリがあります。
 
 ## 画面の見方
 - 上部ボタンで一斉操作を実行できます。
@@ -57,7 +57,7 @@ TsuyamaST_digital\
 - 現地 `logs` を `backup\logs\SignXX\YYYYMMDD_HHMMSS` にコピーします。
 
 ## command.json 仕様
-Controller がサイネージPCへ電源操作を依頼する場合は、`app/config/command.json` に以下の形式で書き込みます。
+Controller がサイネージPCへ電源操作を依頼する場合は、`app/11_config/command.json` に以下の形式で書き込みます。
 
 ```
 {
@@ -83,7 +83,7 @@ Controller がサイネージPCへ電源操作を依頼する場合は、`app/co
 3. 保存すると `config.json` が更新され、active_channel を再計算します。
 
 ## AI 判定
-- `app/config/ai_status.json` の変更を監視し、更新時に全台再計算します。
+- `app/11_config/ai_status.json` の変更を監視し、更新時に全台再計算します。
 - watchdog が無い場合は 10 秒間隔のポーリングで追従します。
 
 ## 休眠時間帯

@@ -17,12 +17,12 @@
 ```
 _TsuyamaSignage\
   app\
-    config\
+    11_config\
       Sign01\
         config.json
         active.json
       Sign02\ ...
-    signagePC\
+    01_signagePC\
       auto_play.py
       pc_agent.py
       start_auto_play.bat
@@ -69,11 +69,11 @@ import site
 - `runtime\mpv\mpv.exe` があることを確認する
 
 ### 4. アプリファイルを配置
-- `app\signagePC\auto_play.py` を配置する（このリポジトリから取得）
-- `app\config\SignXX` フォルダに `config.json` と `active.json` を配置する
+- `app\01_signagePC\auto_play.py` を配置する（このリポジトリから取得）
+- `app\11_config\SignXX` フォルダに `config.json` と `active.json` を配置する
 
 #### config.json テンプレート
-`app\config\SignXX\config.json`:
+`app\11_config\SignXX\config.json`:
 
 ```json
 {
@@ -84,18 +84,18 @@ import site
 ```
 
 #### active.json テンプレート
-`app\config\SignXX\active.json`:
+`app\11_config\SignXX\active.json`:
 
 ```json
 { "active_channel": "ch01" }
 ```
 
 #### start_auto_play.bat
-`app\signagePC\start_auto_play.bat` をそのまま利用：
+`app\01_signagePC\start_auto_play.bat` をそのまま利用：
 
 ```bat
 @echo off
-"C:\_TsuyamaSignage\runtime\python\python.exe" "C:\_TsuyamaSignage\app\signagePC\auto_play.py"
+"C:\_TsuyamaSignage\runtime\python\python.exe" "C:\_TsuyamaSignage\app\01_signagePC\auto_play.py"
 ```
 
 ### 5. コンテンツを配置
@@ -109,11 +109,11 @@ import site
 ### USB内チェックリスト
 - [ ] `runtime\python` に embeddable python 一式がある
 - [ ] `runtime\mpv` に mpv 一式がある
-- [ ] `app\signagePC\auto_play.py` がある
-- [ ] `app\config\SignXX\config.json` がある
-- [ ] `app\config\SignXX\active.json` がある
+- [ ] `app\01_signagePC\auto_play.py` がある
+- [ ] `app\11_config\SignXX\config.json` がある
+- [ ] `app\11_config\SignXX\active.json` がある
 - [ ] `content\ch01` に mp4 がある
-- [ ] `app\signagePC\start_auto_play.bat` がある
+- [ ] `app\01_signagePC\start_auto_play.bat` がある
 
 ### 作成用PCでの簡易検証（可能な場合）
 PowerShell で以下を実行：
@@ -133,8 +133,8 @@ D:\_TsuyamaSignage\runtime\mpv\mpv.exe --version
 - **mpv.exe が見つからない**
   - `runtime\mpv\mpv.exe` の位置を確認
 
-- **config/active が読み込まれない**
-  - `app\config\SignXX` 配下にあるか確認
+- **11_config/active が読み込まれない**
+  - `app\11_config\SignXX` 配下にあるか確認
   - JSONの形式が崩れていないか確認
 
 ## 変更運用（必要時）

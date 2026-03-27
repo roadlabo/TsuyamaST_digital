@@ -60,9 +60,9 @@ DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "device_preference": "auto",
     "metrics_save_interval_sec": 5,
     "ui_refresh_interval_ms": 500,
-    "ai_status_json_path": "app/config/ai_status.json",
+    "ai_status_json_path": "app/11_config/ai_status.json",
     "status_update_interval_sec": 3,
-    "output_root": "app/ai_monitor/data",
+    "output_root": "app/04_ai_monitor/data",
     "display_update_interval_ms": 800,
     "graph_update_interval_sec": 10,
 }
@@ -1209,7 +1209,7 @@ def resolve_model_path(camera_cfg: dict[str, Any], system_cfg: dict[str, Any], r
                 return c
         raise FileNotFoundError(
             f"YOLO model file not found: {raw}. "
-            "Place the model locally under ai_monitor or ai_monitor/models."
+            "Place the model locally under 04_ai_monitor or 04_ai_monitor/models."
         )
     if not p.exists():
         raise FileNotFoundError(f"YOLO model file not found: {p}")
@@ -1837,7 +1837,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
         self.reporter = ReportWriter(root_dir / "data")
-        raw_ai_status = Path(self.app_cfg.system.get("ai_status_json_path", "app/config/ai_status.json"))
+        raw_ai_status = Path(self.app_cfg.system.get("ai_status_json_path", "app/11_config/ai_status.json"))
         script_base = Path(__file__).resolve().parents[2]
         if raw_ai_status.is_absolute():
             ai_status_path = raw_ai_status
@@ -2121,7 +2121,7 @@ MonitorMainWindow = MainWindow
 # =========================================
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="3-camera AI congestion monitor")
-    p.add_argument("--root", default=str(Path(__file__).resolve().parent), help="ai_monitor root directory")
+    p.add_argument("--root", default=str(Path(__file__).resolve().parent), help="04_ai_monitor root directory")
     return p.parse_args()
 
 

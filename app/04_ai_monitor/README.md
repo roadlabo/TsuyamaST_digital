@@ -1,9 +1,9 @@
-# ai_monitor (たたき台実装)
+# 04_ai_monitor (たたき台実装)
 
 ## 起動方法
 ```bash
 cd /workspace/TsuyamaST_digital
-python app/ai_monitor/ai_congestion_monitor.py
+python app/04_ai_monitor/ai_congestion_monitor.py
 ```
 
 ## 構成
