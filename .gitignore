@@ -9,3 +9,5 @@ runtime/certs/*
 runtime/python/*
 !runtime/python/.gitkeep
 logs/runtime/python/ 
+/logs/
+/runtime/python/
