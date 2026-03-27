@@ -56,7 +56,7 @@ LEVEL_STYLE_MAP: dict[str, dict[str, str]] = {
 # Default Settings
 # =========================================
 DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
-    "model_path": "yolo11n.pt",
+    "model_path": "yolo11m.pt",
     "device_preference": "auto",
     "metrics_save_interval_sec": 5,
     "ui_refresh_interval_ms": 500,
@@ -83,7 +83,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "stay_zone_polygon": [],
             "reconnect_sec": 3,
             "tracking_method": "bytetrack",
-            "yolo_model": "yolo11n.pt",
+            "yolo_model": "yolo11m.pt",
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
@@ -98,7 +98,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
-            "display_scale": 0.8,
+            "display_scale": 0.85,
         },
         {
             "camera_id": 2,
@@ -114,7 +114,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "stay_zone_polygon": [],
             "reconnect_sec": 3,
             "tracking_method": "bytetrack",
-            "yolo_model": "yolo11n.pt",
+            "yolo_model": "yolo11m.pt",
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
@@ -129,7 +129,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
-            "display_scale": 0.8,
+            "display_scale": 0.85,
         },
         {
             "camera_id": 3,
@@ -145,7 +145,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "stay_zone_polygon": [],
             "reconnect_sec": 3,
             "tracking_method": "bytetrack",
-            "yolo_model": "yolo11n.pt",
+            "yolo_model": "yolo11m.pt",
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
@@ -160,7 +160,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
-            "display_scale": 0.8,
+            "display_scale": 0.85,
         },
     ]
 }
@@ -173,6 +173,7 @@ KEEP_CAMERA_KEYS = [
     "line_start",
     "line_end",
     "exclude_polygon",
+    "stay_zone_polygon",
     "congestion_threshold",
     "long_stay_minutes",
 ]
@@ -683,7 +684,7 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         tabs.addTab(ai_tab, "解析条件")
         ai_form = QtWidgets.QFormLayout(ai_tab)
 
-        self.yolo_model = QtWidgets.QLineEdit(str(camera_cfg.get("yolo_model", "")))
+        self.yolo_model = QtWidgets.QLineEdit(str(camera_cfg.get("yolo_model", "yolo11m.pt")))
         self.conf = QtWidgets.QDoubleSpinBox(); self.conf.setRange(0, 1); self.conf.setSingleStep(0.01); self.conf.setValue(float(camera_cfg.get("confidence_threshold", 0.25)))
         self.iou = QtWidgets.QDoubleSpinBox(); self.iou.setRange(0, 1); self.iou.setSingleStep(0.01); self.iou.setValue(float(camera_cfg.get("iou_threshold", 0.5)))
         self.frame_skip = QtWidgets.QSpinBox(); self.frame_skip.setRange(1, 30); self.frame_skip.setValue(int(camera_cfg.get("frame_skip", 1)))
@@ -699,7 +700,7 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         self.spin_threshold = QtWidgets.QDoubleSpinBox(); self.spin_threshold.setRange(0.0, 50.0); self.spin_threshold.setDecimals(2); self.spin_threshold.setSingleStep(0.1); self.spin_threshold.setValue(float(camera_cfg.get("congestion_threshold", 5)))
         self.spin_stay = QtWidgets.QSpinBox(); self.spin_stay.setRange(1, 120); self.spin_stay.setValue(int(camera_cfg.get("long_stay_minutes", 15)))
 
-        ai_form.addRow("yolo_model", self.yolo_model)
+        ai_form.addRow("yolo_model（未設定時のみ使用）", self.yolo_model)
         ai_form.addRow("confidence_threshold", self.conf)
         ai_form.addRow("iou_threshold", self.iou)
         ai_form.addRow("frame_skip", self.frame_skip)
@@ -834,7 +835,7 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         cfg["line_start"] = self.line_points[0]
         cfg["line_end"] = self.line_points[1]
         cfg["exclude_polygon"] = self.exclude_polygon
-        cfg["yolo_model"] = self.yolo_model.text().strip() or "yolo11n.pt"
+        cfg["yolo_model"] = self.yolo_model.text().strip() or "yolo11m.pt"
         cfg["confidence_threshold"] = float(self.conf.value())
         cfg["iou_threshold"] = float(self.iou.value())
         cfg["frame_skip"] = int(self.frame_skip.value())
@@ -864,8 +865,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         self.prev_values: list[float] = []
         self.threshold: float | None = None
         self.show_threshold = False
-        self.setMinimumHeight(78)
-        self.setMaximumHeight(92)
+        self.setFixedHeight(72)
 
     def set_line_data(self, prev_points: list[tuple[datetime, float]], today_points: list[tuple[datetime, float]], title: str, threshold: float | None = None, show_threshold: bool = True) -> None:
         self.mode = "line"
@@ -1033,25 +1033,25 @@ class CameraPanel(QtWidgets.QFrame):
         self.long_stay_minutes = int(camera_cfg.get("long_stay_minutes", 15))
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(6)
 
         top_row = QtWidgets.QHBoxLayout()
-        top_row.setSpacing(8)
+        top_row.setSpacing(6)
 
         self.video = QtWidgets.QLabel("video")
-        self.video.setMinimumSize(720, 405)
-        self.video.setMaximumHeight(336)
+        self.video.setMinimumSize(660, 370)
+        self.video.setMaximumHeight(370)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         top_row.addWidget(self.video, 6)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(420)
+        right_box.setFixedWidth(350)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(6, 6, 6, 6)
-        right.setSpacing(6)
+        right.setContentsMargins(4, 4, 4, 4)
+        right.setSpacing(4)
         self.title = QtWidgets.QLabel(camera_cfg["camera_name"])
         self.title.setStyleSheet("font-size:14px;color:#00D7FF;font-weight:bold;")
         right.addWidget(self.title)
@@ -1065,25 +1065,40 @@ class CameraPanel(QtWidgets.QFrame):
         self.btn_ai = QtWidgets.QPushButton("解析条件")
         self.btn_ai.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
         for btn in (self.btn_line, self.btn_exclude, self.btn_ai):
-            btn.setMinimumHeight(30)
+            btn.setFixedHeight(28)
             btn.setStyleSheet("font-size:12px;padding:4px;")
             btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             btn_col.addWidget(btn)
-        right.addLayout(btn_col)
 
         self.status_label = QtWidgets.QLabel("IDLE")
-        self.status_label.setStyleSheet("font-size:12px;font-weight:bold;color:#ffd166;")
+        self.status_label.setStyleSheet("font-size:13px;font-weight:bold;color:#ffd166;padding:0px;margin:0px;")
         right.addWidget(self.status_label)
-
-        self.summary = QtWidgets.QLabel("LtoR=0 / RtoL=0")
-        self.summary.setStyleSheet("font-size:12px;")
-        right.addWidget(self.summary)
-        self.label_stay = QtWidgets.QLabel(f"滞在時間閾値：{self.long_stay_minutes}分以上")
-        self.label_stay.setStyleSheet("font-size:13px;color:#ff9fb0;font-weight:bold;")
-        right.addWidget(self.label_stay)
 
         self.congestion_bar = CongestionIndexBar()
         right.addWidget(self.congestion_bar)
+
+        self.label_threshold = QtWidgets.QLabel("渋滞判定閾値：0.0")
+        self.label_threshold.setStyleSheet("font-size:12px;color:#ffd400;font-weight:bold;")
+        right.addWidget(self.label_threshold)
+
+        self.summary = QtWidgets.QLabel("交通量合計：0（L→R:0 / R→L:0）")
+        self.summary.setStyleSheet("font-size:12px;")
+        right.addWidget(self.summary)
+
+        self.label_stay = QtWidgets.QLabel(f"滞在時間閾値：{self.long_stay_minutes}分以上")
+        self.label_stay.setStyleSheet("font-size:12px;color:#ff9fb0;font-weight:bold;")
+        right.addWidget(self.label_stay)
+
+        self.logic_desc = QtWidgets.QLabel(
+            "渋滞指数ロジック\n"
+            "・検出対象（車・トラック・バス等）の中心点どうしの距離を使用\n"
+            "・近い組み合わせほど大きく加点\n"
+            "・各フレームの近接度を10秒ごとに平均化して渋滞指数を算出\n"
+            "・渋滞指数が設定閾値以上で「渋滞」と判定"
+        )
+        self.logic_desc.setWordWrap(True)
+        self.logic_desc.setStyleSheet("font-size:11px;color:#c7def5;line-height:1.3;")
+        right.addWidget(self.logic_desc)
 
         self.long_stay_title = QtWidgets.QLabel("滞在時間閾値以上")
         long_stay_title = self.long_stay_title
@@ -1091,13 +1106,14 @@ class CameraPanel(QtWidgets.QFrame):
         right.addWidget(long_stay_title)
         self.long_stay_scroll = QtWidgets.QScrollArea()
         self.long_stay_scroll.setWidgetResizable(True)
-        self.long_stay_scroll.setMinimumHeight(180)
+        self.long_stay_scroll.setFixedHeight(118)
         self.long_stay_container = QtWidgets.QWidget()
         self.long_stay_layout = QtWidgets.QVBoxLayout(self.long_stay_container)
         self.long_stay_layout.setContentsMargins(0, 0, 0, 0)
-        self.long_stay_layout.setSpacing(6)
+        self.long_stay_layout.setSpacing(4)
         self.long_stay_scroll.setWidget(self.long_stay_container)
         right.addWidget(self.long_stay_scroll, 1)
+        right.addLayout(btn_col)
 
         top_row.addWidget(right_box, 4)
         root.addLayout(top_row)
@@ -1126,7 +1142,10 @@ class CameraPanel(QtWidgets.QFrame):
 
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
-        self.summary.setText(f"LtoR={sum(ltor)} / RtoL={sum(rtol)}")
+        total_ltor = sum(ltor)
+        total_rtol = sum(rtol)
+        self.summary.setText(f"交通量合計：{total_ltor + total_rtol}（L→R:{total_ltor} / R→L:{total_rtol}）")
+        self.label_threshold.setText(f"渋滞判定閾値：{threshold:.2f}")
         self.long_stay_minutes = int(payload.get("long_stay_minutes", self.long_stay_minutes))
         self.label_stay.setText(f"滞在時間閾値：{self.long_stay_minutes}分以上")
         self.long_stay_title.setText("滞在時間閾値以上")
@@ -1169,12 +1188,7 @@ class CameraPanel(QtWidgets.QFrame):
 
 
 def resolve_model_path(camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path) -> Path:
-    raw = (
-        camera_cfg.get("yolo_model")
-        or system_cfg.get("yolo_model")
-        or system_cfg.get("YOLO_MODEL")
-        or system_cfg.get("model_path")
-    )
+    raw = system_cfg.get("model_path") or system_cfg.get("yolo_model") or system_cfg.get("YOLO_MODEL") or camera_cfg.get("yolo_model") or "yolo11m.pt"
     if not raw:
         raise FileNotFoundError("YOLO model is not configured. Set yolo_model / model_path in config.")
     p = Path(str(raw))
@@ -1238,7 +1252,7 @@ class CameraWorker(QtCore.QObject):
         self._next_infer_retry_time = 0.0
         self._last_warn_emit = 0.0
         self._status_text = "INIT"
-        self.display_scale = max(0.1, min(1.0, float(self.camera_cfg.get("display_scale", 0.8))))
+        self.display_scale = 0.85
         self.csv_error_state = {"congestion": False, "pass": False, "long_stay": False}
         self.read_fail_count = 0
         self.max_read_fail_before_reconnect = 5
@@ -1264,16 +1278,17 @@ class CameraWorker(QtCore.QObject):
 
     def update_camera_config(self, new_cfg: dict[str, Any]) -> None:
         prev_cfg = dict(self.camera_cfg)
-        old_model = self.camera_cfg.get("yolo_model")
+        old_model_path = self.model_path
         self.camera_cfg.update(new_cfg)
         self.camera_name = new_cfg.get("camera_name", self.camera_name)
         self.target_classes = set(int(x) for x in new_cfg.get("target_classes", [2, 3, 5, 7]))
         self.counter.update_line([new_cfg.get("line_start", [0, 0]), new_cfg.get("line_end", [100, 0])])
         self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 10)))
+        self.display_scale = 0.85
 
-        if new_cfg.get("yolo_model") and new_cfg.get("yolo_model") != old_model:
+        new_model_path = resolve_model_path(self.camera_cfg, self.system_cfg, self.root_dir)
+        if new_model_path != old_model_path:
             try:
-                new_model_path = resolve_model_path(new_cfg, self.system_cfg, self.root_dir)
                 new_model = YOLO(str(new_model_path))
                 self.model = new_model
                 self.model_path = new_model_path
@@ -1614,7 +1629,7 @@ class CameraWorker(QtCore.QObject):
             long_stay_events: list[dict[str, Any]] = []
             long_stay_list: list[tuple[int, float]] = []
             exclude_polygon = self.camera_cfg.get("exclude_polygon", [])
-            stay_zone = self.camera_cfg.get("stay_zone_polygon", []) or exclude_polygon
+            stay_zone = self.camera_cfg.get("stay_zone_polygon", [])
 
             if boxes is not None and boxes.id is not None:
                 cls_array = boxes.cls.cpu().numpy() if boxes.cls is not None else []
@@ -1672,7 +1687,8 @@ class CameraWorker(QtCore.QObject):
                     if track_id not in self.track_state.first_seen:
                         self.track_state.first_seen[track_id] = now
 
-                    if self._in_polygon((judge_x, judge_y), stay_zone):
+                    in_stay_zone = self._in_polygon((judge_x, judge_y), stay_zone) if stay_zone else True
+                    if in_stay_zone:
                         stay_mins = (now - self.track_state.first_seen[track_id]).total_seconds() / 60.0
                         if stay_mins >= float(self.camera_cfg.get("long_stay_minutes", 15)):
                             long_stay_list.append((display_id, stay_mins))
@@ -1805,6 +1821,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.root_dir = root_dir
         self.setWindowTitle("AI Congestion Monitor")
         self.setStyleSheet("background:#02060a;")
+        self.resize(1080, 1860)
+        self.setMinimumSize(980, 1600)
 
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
@@ -1844,8 +1862,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(scroll)
         content = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(content)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         scroll.setWidget(content)
 
         top_status_row = QtWidgets.QHBoxLayout()
