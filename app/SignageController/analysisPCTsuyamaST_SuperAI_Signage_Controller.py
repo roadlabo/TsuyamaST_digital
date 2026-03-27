@@ -1146,6 +1146,18 @@ QPushButton:pressed {
             )
 
 
+class UiDispatcher(QtCore.QObject):
+    invoke = QtCore.pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.invoke.connect(self._run, QtCore.Qt.ConnectionType.QueuedConnection)
+
+    @QtCore.pyqtSlot(object)
+    def _run(self, fn):
+        fn()
+
+
 class ControllerWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1180,7 +1192,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._remote_status_log_state: Dict[str, str] = {}
         self._ui_busy: bool = False
         self._busy_label: str = ""
-        self._ui_dispatcher = QtCore.QObject(self)
+        self._ui_dispatcher = UiDispatcher(self)
         # ---- Debug trace (root cause investigation) ----
         self._dbg_enabled = bool(self.settings.get("debug_trace_enabled", True))
         self._dbg_hang_seconds = int(self.settings.get("debug_hang_seconds", 60))
@@ -2053,25 +2065,11 @@ QPushButton:disabled {
 
     def _ui_call(self, fn, label: str = "") -> None:
         def enqueue(callback):
-            try:
-                # MainThread(=selfの所属スレッド)で確実に実行させる
-                QtCore.QTimer.singleShot(0, self, callback)
-                return
-            except TypeError:
-                pass
-            try:
-                # 環境によりオーバーロード解決できない場合のフォールバック
-                QtCore.QMetaObject.invokeMethod(
-                    self, callback, QtCore.Qt.ConnectionType.QueuedConnection
-                )
-                return
-            except TypeError:
-                pass
             dispatcher = getattr(self, "_ui_dispatcher", None)
             if dispatcher is None:
-                dispatcher = QtCore.QObject(self)
+                dispatcher = UiDispatcher(self)
                 self._ui_dispatcher = dispatcher
-            QtCore.QTimer.singleShot(0, dispatcher, callback)
+            dispatcher.invoke.emit(callback)
 
         if not getattr(self, "_dbg_enabled", False):
             def wrapped_no_dbg():
