@@ -8,4 +8,4 @@ runtime/certs/*
 !runtime/python/
 runtime/python/*
 !runtime/python/.gitkeep
-logs/
+logs/runtime/python/ 
