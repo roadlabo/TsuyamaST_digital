@@ -192,11 +192,13 @@ class AppConfig:
 
 @dataclass
 class CongestionState:
-    frame_inverse_distances: list[float] = field(default_factory=list)
+    frame_motion_scores: list[float] = field(default_factory=list)
     frame_time_stamps: list[datetime] = field(default_factory=list)
-    frame_cumulative_inverse_distance: float = 0.0
+    frame_cumulative_motion_score: float = 0.0
     current_congestion_index: float = 0.0
     window_start: datetime | None = None
+    previous_positions: dict[int, tuple[float, float]] = field(default_factory=dict)
+    last_seen_at: dict[int, datetime] = field(default_factory=dict)
 
 
 @dataclass
@@ -286,37 +288,49 @@ class CongestionScorer:
     def update_interval(self, interval_sec: int) -> None:
         self.interval_sec = max(1, int(interval_sec))
 
-    def _compute_frame_inverse_distance(self, tracks: list[dict], frame_width: int) -> float:
-        if len(tracks) < 2 or frame_width <= 0:
+    def _compute_frame_motion_score(self, tracks: list[dict], frame_width: int, now: datetime) -> float:
+        if frame_width <= 0:
             return 0.0
+
         total = 0.0
-        for i in range(len(tracks)):
-            x1, y1 = tracks[i]["center"]
-            for j in range(i + 1, len(tracks)):
-                x2, y2 = tracks[j]["center"]
-                distance = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
-                total += 1 / (1 + (distance / frame_width) * 500)
+        for tr in tracks:
+            track_id = int(tr["track_id"])
+            cx, cy = tr["center"]
+            prev_x, prev_y = self.state.previous_positions.get(track_id, (cx, cy))
+            distance = ((cx - prev_x) ** 2 + (cy - prev_y) ** 2) ** 0.5
+            total += 1.0 / (1.0 + (distance / frame_width) * 500.0)
+
+            self.state.previous_positions[track_id] = (cx, cy)
+            self.state.last_seen_at[track_id] = now
+
+        stale_before = now - timedelta(seconds=max(10, self.interval_sec * 3))
+        stale_ids = [tid for tid, ts in self.state.last_seen_at.items() if ts < stale_before]
+        for tid in stale_ids:
+            self.state.last_seen_at.pop(tid, None)
+            self.state.previous_positions.pop(tid, None)
+
         return total
 
     def update(self, tracks: list[dict], now: datetime, frame_width: int) -> float:
         if self.state.window_start is None:
             self.state.window_start = now
-        self.state.frame_cumulative_inverse_distance += self._compute_frame_inverse_distance(tracks, frame_width)
+        frame_score = self._compute_frame_motion_score(tracks, frame_width, now)
+        self.state.frame_cumulative_motion_score += frame_score
         elapsed = (now - self.state.window_start).total_seconds()
         if elapsed < self.interval_sec:
             return self.state.current_congestion_index
 
-        value = round(self.state.frame_cumulative_inverse_distance / self.interval_sec, 3)
-        self.state.frame_inverse_distances.append(value)
+        value = round(self.state.frame_cumulative_motion_score / self.interval_sec, 3)
+        self.state.frame_motion_scores.append(value)
         self.state.frame_time_stamps.append(now)
         self.state.current_congestion_index = value
-        self.state.frame_cumulative_inverse_distance = 0.0
+        self.state.frame_cumulative_motion_score = 0.0
         self.state.window_start = now
 
         day_ago = now - timedelta(days=self.day_keep)
         while self.state.frame_time_stamps and self.state.frame_time_stamps[0] < day_ago:
             self.state.frame_time_stamps.pop(0)
-            self.state.frame_inverse_distances.pop(0)
+            self.state.frame_motion_scores.pop(0)
         return value
 
 
@@ -1090,13 +1104,9 @@ class CameraPanel(QtWidgets.QFrame):
         right.addWidget(self.label_stay)
 
         self.logic_desc = QtWidgets.QLabel(
-            "渋滞指数ロジック\n"
-            "・検出対象（車・トラック・バス等）の中心点どうしの距離を使用\n"
-            "・近い組み合わせほど大きく加点\n"
-            "・各フレームの近接度を10秒ごとに平均化して渋滞指数を算出\n"
-            "・渋滞指数が設定閾値以上で「渋滞」と判定"
+            "渋滞指数＝Σ[1/(1+(d/W)×500)]　d:各IDの前フレームからの移動距離、W:画面幅、各カメラ独立計算"
         )
-        self.logic_desc.setWordWrap(True)
+        self.logic_desc.setWordWrap(False)
         self.logic_desc.setStyleSheet("font-size:11px;color:#c7def5;line-height:1.3;")
         right.addWidget(self.logic_desc)
 
@@ -1269,7 +1279,7 @@ class CameraWorker(QtCore.QObject):
         self.counter.state.pass_bins_rtol = today_rtol
         today_points = self._load_today_congestion_points()
         self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
-        self.congestion.state.frame_inverse_distances = [v for _, v in today_points]
+        self.congestion.state.frame_motion_scores = [v for _, v in today_points]
         if today_points:
             self.congestion.state.current_congestion_index = today_points[-1][1]
 
@@ -1482,7 +1492,7 @@ class CameraWorker(QtCore.QObject):
         self.counter.state.pass_bins_ltor, self.counter.state.pass_bins_rtol = self._load_today_pass_histogram()
         today_points = self._load_today_congestion_points()
         self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
-        self.congestion.state.frame_inverse_distances = [v for _, v in today_points]
+        self.congestion.state.frame_motion_scores = [v for _, v in today_points]
         self.congestion.state.current_congestion_index = today_points[-1][1] if today_points else 0.0
 
     def _get_display_id(self, track_id: int) -> int:
@@ -1753,7 +1763,7 @@ class CameraWorker(QtCore.QObject):
                 "congestion_score": congestion_score,
                 "threshold": threshold,
                 "threshold_over": threshold_over,
-                "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_inverse_distances)),
+                "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores)),
                 "prev_congestion_points": self.previous_day_congestion_points,
                 "pass_bins_ltor": self.counter.state.pass_bins_ltor,
                 "pass_bins_rtol": self.counter.state.pass_bins_rtol,
