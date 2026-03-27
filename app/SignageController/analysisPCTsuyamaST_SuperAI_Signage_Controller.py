@@ -410,6 +410,33 @@ def read_active(sign_dir: Path) -> dict:
     return load_json(sign_dir / "active.json", {"active_channel": None})
 
 
+def normalize_congestion_level(value) -> int:
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        try:
+            return int(value)
+        except Exception:
+            return 1
+
+    s = str(value).strip().upper()
+    mapping = {
+        "LEVEL0": 0,
+        "LEVEL1": 1,
+        "LEVEL2": 2,
+        "LEVEL3": 3,
+        "LEVEL4": 4,
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3,
+        "4": 4,
+    }
+    return mapping.get(s, 1)
+
+
 def compute_active_channel(
     sign_config: dict,
     ai_status: dict,
@@ -425,7 +452,7 @@ def compute_active_channel(
         except Exception:
             continue
 
-    level = int(ai_status.get("congestion_level", 1))
+    level = normalize_congestion_level(ai_status.get("congestion_level", 1))
     if level >= 2:
         ai_channels = sign_config.get("ai_channels", {})
         key = f"level{level}"
@@ -2373,19 +2400,20 @@ QPushButton:disabled {
         )
 
     def build_ai_text(self) -> str:
-        level = self.ai_status.get("congestion_level", 1)
+        level = normalize_congestion_level(self.ai_status.get("congestion_level", 1))
         mapping = {
+            0: "良好",
             1: "良好",
             2: "渋滞（LV2）",
             3: "渋滞（LV3）",
             4: "渋滞（LV4）",
         }
-        return mapping.get(level, str(level))
+        return mapping.get(level, f"渋滞LEVEL{level}")
 
     def update_ai_badge(self) -> None:
         if not self.ai_level_badge:
             return
-        level = int(self.ai_status.get("congestion_level", 1))
+        level = normalize_congestion_level(self.ai_status.get("congestion_level", 1))
         if level <= 1:
             self.ai_level_badge.setText("渋滞LEVEL1")
             self.ai_level_badge.setStyleSheet(
@@ -2685,6 +2713,9 @@ QPushButton:disabled {
     def recompute_all(self, auto_distribute: bool = True) -> None:
         with self._update_lock:
             self.ai_status = load_json(AI_STATUS_PATH, self.ai_status)
+            raw_level = self.ai_status.get("congestion_level", 1)
+            level = normalize_congestion_level(raw_level)
+            logging.info("[AI] congestion_level raw=%r normalized=%s", raw_level, level)
             self.update_ai_badge()
             now = datetime.now()
             updated_any = False
