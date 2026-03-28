@@ -965,6 +965,9 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         self.prev_values: list[float] = []
         self.threshold: float | None = None
         self.show_threshold = False
+        self.y_min_override: float | None = None
+        self.y_max_override: float | None = None
+        self.y_axis_labels: dict[float, str] = {}
         self.setFixedHeight(72)
 
     def set_line_data(self, prev_points: list[tuple[datetime, float]], today_points: list[tuple[datetime, float]], title: str, threshold: float | None = None, show_threshold: bool = True) -> None:
@@ -987,6 +990,12 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         self.title = title
         self.threshold = None
         self.show_threshold = False
+        self.update()
+
+    def set_y_axis_config(self, y_min: float | None = None, y_max: float | None = None, labels: dict[float, str] | None = None) -> None:
+        self.y_min_override = y_min
+        self.y_max_override = y_max
+        self.y_axis_labels = labels or {}
         self.update()
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
@@ -1013,17 +1022,27 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
             ys = self.prev_values[:] + self.today_values[:]
         if self.show_threshold and self.threshold is not None:
             ys.append(float(self.threshold))
-        y_max = max(1.0, max(ys) if ys else 1.0)
-        y_min = 0.0
+        y_max = float(self.y_max_override) if self.y_max_override is not None else max(1.0, max(ys) if ys else 1.0)
+        y_min = float(self.y_min_override) if self.y_min_override is not None else 0.0
+        if y_max <= y_min:
+            y_max = y_min + 1.0
 
-        for i in range(5):
-            ratio = i / 4.0
+        if self.y_axis_labels:
+            ticks = [(float(v), str(lbl)) for v, lbl in sorted(self.y_axis_labels.items(), key=lambda x: x[0]) if y_min <= float(v) <= y_max]
+        else:
+            ticks = []
+            for i in range(5):
+                ratio = i / 4.0
+                value = y_min + (y_max - y_min) * ratio
+                ticks.append((value, f"{value:.1f}"))
+
+        for value, tick_label in ticks:
+            ratio = (value - y_min) / (y_max - y_min)
             y = plot.bottom() - ratio * plot.height()
             painter.setPen(QtGui.QPen(QtGui.QColor("#274457"), 1))
             painter.drawLine(QtCore.QPointF(plot.left(), y), QtCore.QPointF(plot.right(), y))
             painter.setPen(QtGui.QColor("#8db6c7"))
-            value = y_min + (y_max - y_min) * ratio
-            painter.drawText(2, int(y) + 4, f"{value:.1f}")
+            painter.drawText(2, int(y) + 4, tick_label)
 
         x_ticks = list(range(25))
         for h in x_ticks:
@@ -1141,9 +1160,11 @@ class CameraPanel(QtWidgets.QFrame):
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
         self._status_connected = False
+        self.video_target_w = 640
+        self.video_target_h = 360
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)
+        root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
 
         top_row = QtWidgets.QHBoxLayout()
@@ -1156,13 +1177,13 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.setSpacing(4)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
-        self.video.setMinimumSize(360, 204)
-        self.video.setMaximumHeight(250)
+        self.video.setFixedSize(self.video_target_w, self.video_target_h)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        video_layout.addStretch(1)
+        video_box.setMinimumWidth(self.video_target_w)
+        video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         top_row.addWidget(video_box, 1)
 
         right_box = QtWidgets.QWidget()
@@ -1218,29 +1239,30 @@ class CameraPanel(QtWidgets.QFrame):
 
         count_row = QtWidgets.QHBoxLayout()
         count_row.setSpacing(6)
-        self.ltor_card = QtWidgets.QLabel("LtoR\n0")
-        self.rtol_card = QtWidgets.QLabel("RtoL\n0")
+        self.ltor_card = QtWidgets.QLabel("LtoR 0")
+        self.rtol_card = QtWidgets.QLabel("RtoL 0")
         for card in (self.ltor_card, self.rtol_card):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet("font-size:10px;font-weight:bold;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:4px;")
+            card.setStyleSheet("font-size:18px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:4px;")
             count_row.addWidget(card, 1)
         right.addLayout(count_row)
 
-        stay_head = QtWidgets.QLabel("滞在時間閾値以上")
+        stay_head = QtWidgets.QLabel("1分以上滞在ID")
         stay_head.setStyleSheet("font-size:10px;font-weight:bold;color:#9de7ff;")
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
-        self.stay_grid.setHorizontalSpacing(6)
-        self.stay_grid.setVerticalSpacing(6)
+        self.stay_grid.setContentsMargins(4, 4, 4, 4)
+        self.stay_grid.setHorizontalSpacing(5)
+        self.stay_grid.setVerticalSpacing(5)
+        self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         stay_box = QtWidgets.QWidget()
         stay_box.setLayout(self.stay_grid)
         stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
-        stay_box.setMinimumHeight(58)
+        stay_box.setMinimumHeight(70)
         right.addWidget(stay_box)
         self._render_stay_cards([])
 
         right.addLayout(btn_col)
-        right.addStretch(1)
 
         top_row.addWidget(right_box, 1)
         root.addLayout(top_row)
@@ -1298,7 +1320,16 @@ class CameraPanel(QtWidgets.QFrame):
     def _update_video_pixmap(self) -> None:
         if self._latest_pixmap is None:
             return
-        self.video.setPixmap(self._latest_pixmap.scaled(self.video.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
+        scaled = self._latest_pixmap.scaled(
+            self.video_target_w,
+            self.video_target_h,
+            QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        x = max(0, (scaled.width() - self.video_target_w) // 2)
+        y = max(0, (scaled.height() - self.video_target_h) // 2)
+        cropped = scaled.copy(x, y, self.video_target_w, self.video_target_h)
+        self.video.setPixmap(cropped)
 
     def _stream_short_name(self, stream_name: str) -> str:
         text = stream_name.strip()
@@ -1336,8 +1367,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.threshold_changed.emit(self.camera_id, float(value))
 
     def _update_count_cards(self, ltor_total: int, rtol_total: int) -> None:
-        self.ltor_card.setText(f"LtoR\n{ltor_total}")
-        self.rtol_card.setText(f"RtoL\n{rtol_total}")
+        self.ltor_card.setText(f"LtoR {ltor_total}")
+        self.rtol_card.setText(f"RtoL {rtol_total}")
 
     def _render_stay_cards(self, entries: list[list[float] | tuple[int, float]]) -> None:
         self._clear_layout(self.stay_grid)
@@ -1345,7 +1376,9 @@ class CameraPanel(QtWidgets.QFrame):
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;")
-            self.stay_grid.addWidget(empty_label, 0, 0, 1, 2)
+            empty_label.setFixedWidth(160)
+            empty_label.setFixedHeight(54)
+            self.stay_grid.addWidget(empty_label, 0, 0)
             return
         for idx, item in enumerate(entries[:6]):
             track_id = int(item[0])
@@ -1353,7 +1386,9 @@ class CameraPanel(QtWidgets.QFrame):
             card = QtWidgets.QLabel(f"ID={track_id:03d}\n{stay_mins:03.0f}min")
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setStyleSheet("font-size:10px;background:#061726;border:1px solid #16b8d8;border-radius:6px;color:#95f6ff;padding:3px;font-weight:bold;")
-            self.stay_grid.addWidget(card, idx // 2, idx % 2)
+            card.setFixedWidth(160)
+            card.setFixedHeight(54)
+            self.stay_grid.addWidget(card, idx // 3, idx % 3)
 
     def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
         while layout.count():
@@ -2066,6 +2101,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.latest_payloads: dict[int, dict[str, Any]] = {}
         self.pending_report_update = False
         self.report_warning_shown = False
+        self.system_level_history_today: list[tuple[datetime, float]] = []
+        self.system_level_history_yesterday: list[tuple[datetime, float]] = []
+        self.system_level_history_date = datetime.now().date()
+        self.last_system_level_record_ts = 0.0
 
         toolbar = QtWidgets.QToolBar("Main", self)
         toolbar.setMovable(False)
@@ -2090,6 +2129,15 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setSpacing(6)
         scroll.setWidget(content)
 
+        self.system_level_graph = CombinedTimelineGraph("line")
+        self.system_level_graph.setFixedHeight(118)
+        self.system_level_graph.set_y_axis_config(
+            y_min=1.0,
+            y_max=4.0,
+            labels={1.0: "LEVEL1", 2.0: "LEVEL2", 3.0: "LEVEL3", 4.0: "LEVEL4"},
+        )
+        layout.addWidget(self.system_level_graph)
+
         top_status_row = QtWidgets.QHBoxLayout()
         info_block = QtWidgets.QVBoxLayout()
         self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
@@ -2102,6 +2150,9 @@ class MainWindow(QtWidgets.QMainWindow):
         level_block = QtWidgets.QVBoxLayout()
         level_block.setContentsMargins(0, 0, 0, 0)
         level_block.setSpacing(4)
+        level_block_widget = QtWidgets.QWidget()
+        level_block_widget.setLayout(level_block)
+        level_block_widget.setMinimumWidth(420)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(46)
@@ -2117,8 +2168,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:11px;")
         level_block.addWidget(self.level_badge)
         level_block.addWidget(self.level_rule_label)
-        top_status_row.addLayout(level_block, 2)
+        top_status_row.addWidget(level_block_widget, 3)
         layout.addLayout(top_status_row)
+        self.system_level_history_yesterday = self._load_system_level_history(self.system_level_history_date - timedelta(days=1))
+        self.system_level_history_today = self._load_system_level_history(self.system_level_history_date)
+        self.update_level_rule_text()
+        self._refresh_system_level_graph()
 
         for cam in self.app_cfg.cameras:
             if not cam.get("enabled", True):
@@ -2163,8 +2218,16 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._show_on_target_screen)
 
     def tick(self) -> None:
+        now = datetime.now()
+        self._rollover_system_level_history_if_needed(now)
         self._update_status_level()
         self._update_global_status()
+        interval_sec = max(1, int(self.app_cfg.system.get("graph_update_interval_sec", 10)))
+        now_ts = time.time()
+        if now_ts - self.last_system_level_record_ts >= interval_sec:
+            self._record_system_level(self.compute_system_level(), now)
+            self.last_system_level_record_ts = now_ts
+            self._refresh_system_level_graph()
 
     @QtCore.pyqtSlot(dict)
     def on_camera_payload(self, payload: dict[str, Any]) -> None:
@@ -2226,9 +2289,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 {
                     "congestion_level": int(overall_level),
                     "smoothed_congestion_index": round(overall_smoothed, 3),
-                    "level2_threshold": 5.0,
-                    "level3_threshold": 3.0,
-                    "level4_threshold": 3.0,
+                    "level2_threshold": round(self.get_camera_threshold("Camera2"), 2),
+                    "level3_threshold": round(self.get_camera_threshold("Camera1"), 2),
+                    "level4_threshold": round(self.get_camera_threshold("Camera3"), 2),
                     "camera_states": camera_states,
                     "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
@@ -2262,18 +2325,38 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
         return count
 
+    def get_camera_threshold(self, camera_name: str) -> float:
+        for cam in self.app_cfg.cameras:
+            if str(cam.get("camera_name", "")).strip() == camera_name:
+                return float(cam.get("congestion_threshold", 5.0))
+        return 5.0
+
     def compute_system_level(self) -> int:
         cam1_score = self.get_camera_congestion_score("Camera1")
         cam2_score = self.get_camera_congestion_score("Camera2")
         cam3_score = self.get_camera_congestion_score("Camera3")
+        cam1_th = self.get_camera_threshold("Camera1")
+        cam2_th = self.get_camera_threshold("Camera2")
+        cam3_th = self.get_camera_threshold("Camera3")
         cam2_long_stay_5min = self.get_camera_long_stay_count("Camera2", minutes=5)
-        if cam1_score >= 3 and cam3_score >= 3:
+        if cam1_score >= cam1_th and cam3_score >= cam3_th:
             return 4
-        if cam1_score >= 3:
+        if cam1_score >= cam1_th:
             return 3
-        if cam2_score >= 5 and cam2_long_stay_5min >= 3:
+        if cam2_score >= cam2_th and cam2_long_stay_5min >= 3:
             return 2
         return 1
+
+    def update_level_rule_text(self) -> None:
+        cam1_th = self.get_camera_threshold("Camera1")
+        cam2_th = self.get_camera_threshold("Camera2")
+        cam3_th = self.get_camera_threshold("Camera3")
+        self.level_rule_label.setText(
+            "LEVEL1：通常時\n"
+            f"LEVEL2：[Camera2]渋滞指数{cam2_th:.1f}以上＋5分以上滞在台数3台以上\n"
+            f"LEVEL3：[Camera1]渋滞指数{cam1_th:.1f}以上\n"
+            f"LEVEL4：[Camera1]渋滞指数{cam1_th:.1f}以上＋[Camera3]渋滞指数{cam3_th:.1f}以上"
+        )
 
     @QtCore.pyqtSlot(int, float)
     def on_threshold_changed(self, camera_id: int, value: float) -> None:
@@ -2286,6 +2369,9 @@ class MainWindow(QtWidgets.QMainWindow):
             worker = self.workers.get(camera_id)
             if worker is not None:
                 worker.update_camera_config({"congestion_threshold": float(value)})
+            self.update_level_rule_text()
+            self._update_status_level()
+            self._update_global_status()
         except Exception as exc:
             logging.warning("cam%s threshold update failed: %s", camera_id, exc)
 
@@ -2307,6 +2393,64 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_badge.setText(f"{style['icon']} 渋滞LEVEL{level}")
         self.level_badge.setStyleSheet(
             f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;"
+        )
+
+    def _system_level_metrics_dir(self) -> Path:
+        metrics_dir = self.root_dir / "data" / "metrics" / "system"
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        return metrics_dir
+
+    def _system_level_history_csv_path(self, target_date: date) -> Path:
+        return self._system_level_metrics_dir() / f"system_level_history_{target_date.isoformat()}.csv"
+
+    def _ensure_system_level_history_csv(self, target_date: date) -> Path:
+        csv_path = self._system_level_history_csv_path(target_date)
+        if csv_path.exists():
+            return csv_path
+        with csv_path.open("w", newline="", encoding="utf-8") as fh:
+            csv.writer(fh).writerow(["timestamp", "system_level"])
+        return csv_path
+
+    def _load_system_level_history(self, target_date: date) -> list[tuple[datetime, float]]:
+        csv_path = self._system_level_history_csv_path(target_date)
+        points: list[tuple[datetime, float]] = []
+        if not csv_path.exists():
+            return points
+        with csv_path.open("r", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                try:
+                    ts = datetime.strptime(str(row.get("timestamp", "")), "%Y-%m-%d %H:%M:%S")
+                    level = float(row.get("system_level", "0"))
+                    if 1.0 <= level <= 4.0:
+                        points.append((ts, level))
+                except Exception:
+                    continue
+        return points
+
+    def _rollover_system_level_history_if_needed(self, now: datetime) -> None:
+        if now.date() == self.system_level_history_date:
+            return
+        self.system_level_history_date = now.date()
+        self.system_level_history_yesterday = self._load_system_level_history(now.date() - timedelta(days=1))
+        self.system_level_history_today = self._load_system_level_history(now.date())
+
+    def _record_system_level(self, level: int, now: datetime) -> None:
+        level_val = float(max(1, min(4, int(level))))
+        if self.system_level_history_today and (now - self.system_level_history_today[-1][0]).total_seconds() < 1.0:
+            self.system_level_history_today[-1] = (now, level_val)
+            return
+        self.system_level_history_today.append((now, level_val))
+        csv_path = self._ensure_system_level_history_csv(now.date())
+        with csv_path.open("a", newline="", encoding="utf-8") as fh:
+            csv.writer(fh).writerow([now.strftime("%Y-%m-%d %H:%M:%S"), int(level_val)])
+
+    def _refresh_system_level_graph(self) -> None:
+        self.system_level_graph.set_line_data(
+            self.system_level_history_yesterday,
+            self.system_level_history_today,
+            "全体渋滞レベル履歴（0-24時）",
+            threshold=None,
+            show_threshold=False,
         )
 
     def open_settings(self) -> None:
