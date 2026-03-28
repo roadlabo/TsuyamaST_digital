@@ -21,4 +21,7 @@ python app/04_ai_monitor/ai_congestion_monitor.py
 ## メモ
 - 解析結果動画は保存しません。
 - 保存対象はCSV/Excel/JSONのみです。
-- LEVEL2条件の強さを考慮し、`long_stay_trigger_count` を設定化しています。
+- 渋滞LEVELは `app/10_common/congestion_common.py` の共通ロジックで判定します（LEVEL1〜4）。
+- LONG STAY は内部判定・CSV記録のみで、画面上には表示しません。
+- 画面上部情報帯の2段目に、渋滞指数式を1回だけ表示します。
+- UIは「動画約80%表示」「右カード小型化」「THラベル左寄せ」を基準に整理しています。

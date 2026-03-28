@@ -73,3 +73,20 @@ TsuyamaST_digital\
 venv固定：C:\_TsuyamaSignage\runtime\venv\Scripts\python(w).exe
 
 ログ：C:\_TsuyamaSignage\logs\controller_start_*.log
+
+## AI Monitor / SignageController の渋滞表示ルール（統一仕様）
+- 渋滞レベルは **渋滞LEVEL1〜渋滞LEVEL4** の4段階固定。
+  - LEVEL1: 通常時
+  - LEVEL2: 軽度渋滞
+  - LEVEL3: 中度渋滞
+  - LEVEL4: 重度渋滞
+- LEVEL判定は `app/10_common/congestion_common.py` の共通関数で統一。
+  - `congestion_level_from_index(...)`
+  - `compute_level_from_status(...)`
+- しきい値は config 側（`level2_threshold`, `level3_threshold`, `level4_threshold`）から読み取り可能。判定処理自体は common 側のみで実行。
+- LONG STAY は内部判定・記録のみ（画面表示しない）。
+- 渋滞指数の式説明は、画面上部情報帯の2段目に1回だけ表示（カメラごとの重複表示はしない）。
+- UI整理方針
+  - 動画表示を約80%スケールで表示（アスペクト比維持）
+  - 各カメラ右側カードを小型化（横並び運用を見据えたコンパクト表示）
+  - 渋滞指数グラフのTHラベル/凡例は左側表示に統一し、右端の重なりを回避

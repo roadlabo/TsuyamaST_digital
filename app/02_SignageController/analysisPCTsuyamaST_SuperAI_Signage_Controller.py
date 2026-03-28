@@ -44,6 +44,14 @@ else:
 APP_NAME = "TsuyamaST SuperAI Signage Controller"
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+_congestion_common = importlib.import_module("10_common.congestion_common")
+compute_level_from_status = _congestion_common.compute_level_from_status
+get_level_thresholds = _congestion_common.get_level_thresholds
+level_style = _congestion_common.level_style
+normalize_congestion_level = _congestion_common.normalize_congestion_level
 CONFIG_DIR = ROOT_DIR / "11_config"
 CONTENT_DIR = ROOT_DIR.parent / "content"
 LOG_DIR = ROOT_DIR.parent / "logs"
@@ -410,33 +418,6 @@ def read_active(sign_dir: Path) -> dict:
     return load_json(sign_dir / "active.json", {"active_channel": None})
 
 
-def normalize_congestion_level(value) -> int:
-    if isinstance(value, bool):
-        return 1
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        try:
-            return int(value)
-        except Exception:
-            return 1
-
-    s = str(value).strip().upper()
-    mapping = {
-        "LEVEL0": 0,
-        "LEVEL1": 1,
-        "LEVEL2": 2,
-        "LEVEL3": 3,
-        "LEVEL4": 4,
-        "0": 0,
-        "1": 1,
-        "2": 2,
-        "3": 3,
-        "4": 4,
-    }
-    return mapping.get(s, 1)
-
-
 def compute_active_channel(
     sign_config: dict,
     ai_status: dict,
@@ -452,7 +433,7 @@ def compute_active_channel(
         except Exception:
             continue
 
-    level = normalize_congestion_level(ai_status.get("congestion_level", 1))
+    level = compute_level_from_status(ai_status, get_level_thresholds())
     if level >= 2:
         ai_channels = sign_config.get("ai_channels", {})
         key = f"level{level}"
@@ -2400,40 +2381,18 @@ QPushButton:disabled {
         )
 
     def build_ai_text(self) -> str:
-        level = normalize_congestion_level(self.ai_status.get("congestion_level", 1))
-        mapping = {
-            0: "良好",
-            1: "良好",
-            2: "渋滞（LV2）",
-            3: "渋滞（LV3）",
-            4: "渋滞（LV4）",
-        }
-        return mapping.get(level, f"渋滞LEVEL{level}")
+        level = compute_level_from_status(self.ai_status, get_level_thresholds())
+        return f"渋滞LEVEL{level}"
 
     def update_ai_badge(self) -> None:
         if not self.ai_level_badge:
             return
-        level = normalize_congestion_level(self.ai_status.get("congestion_level", 1))
-        if level <= 1:
-            self.ai_level_badge.setText("渋滞LEVEL1")
-            self.ai_level_badge.setStyleSheet(
-                "background:#7fd0ff; color:#000; border-radius:8px; font-weight:900; font-size:16px;"
-            )
-        elif level == 2:
-            self.ai_level_badge.setText("渋滞LEVEL2")
-            self.ai_level_badge.setStyleSheet(
-                "background:#ffb347; color:#000; border-radius:8px; font-weight:900; font-size:16px;"
-            )
-        elif level == 3:
-            self.ai_level_badge.setText("渋滞LEVEL3")
-            self.ai_level_badge.setStyleSheet(
-                "background:#e53935; color:#fff; border-radius:8px; font-weight:900; font-size:16px;"
-            )
-        else:
-            self.ai_level_badge.setText("渋滞LEVEL4")
-            self.ai_level_badge.setStyleSheet(
-                "background:#000; color:#fff; border-radius:8px; font-weight:900; font-size:16px;"
-            )
+        level = compute_level_from_status(self.ai_status, get_level_thresholds())
+        style = level_style(level)
+        self.ai_level_badge.setText(style["label"])
+        self.ai_level_badge.setStyleSheet(
+            f"background:{style['bg']}; color:{style['fg']}; border-radius:8px; font-weight:900; font-size:16px;"
+        )
 
     def _display_ai_channel(self, value: Optional[str]) -> str:
         if value == "same_as_normal":
@@ -2714,7 +2673,7 @@ QPushButton:disabled {
         with self._update_lock:
             self.ai_status = load_json(AI_STATUS_PATH, self.ai_status)
             raw_level = self.ai_status.get("congestion_level", 1)
-            level = normalize_congestion_level(raw_level)
+            level = compute_level_from_status(self.ai_status, get_level_thresholds())
             logging.info("[AI] congestion_level raw=%r normalized=%s", raw_level, level)
             self.update_ai_badge()
             now = datetime.now()
