@@ -40,8 +40,6 @@ if str(APP_DIR) not in sys.path:
 from importlib import import_module
 _congestion_common = import_module("10_common.congestion_common")
 CongestionSmoother = _congestion_common.CongestionSmoother
-congestion_level_from_index = _congestion_common.congestion_level_from_index
-get_level_thresholds = _congestion_common.get_level_thresholds
 level_style = _congestion_common.level_style
 
 
@@ -1141,34 +1139,46 @@ class CameraPanel(QtWidgets.QFrame):
         self.camera_cfg = camera_cfg
         self.camera_id = camera_cfg["camera_id"]
         self._latest_pixmap: QtGui.QPixmap | None = None
+        self._last_frame_size: tuple[int | None, int | None] = (None, None)
+        self._status_connected = False
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(6)
+        root.setSpacing(4)
 
         top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(6)
 
+        video_box = QtWidgets.QWidget()
+        video_layout = QtWidgets.QVBoxLayout(video_box)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(4)
+        video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
         self.video.setMinimumSize(360, 204)
         self.video.setMaximumHeight(250)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
-        top_row.addWidget(self.video, 4)
+        video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        video_layout.addStretch(1)
+        top_row.addWidget(video_box, 1)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(300)
+        right_box.setMinimumWidth(260)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(8, 6, 8, 6)
-        right.setSpacing(6)
+        right.setContentsMargins(6, 4, 6, 4)
+        right.setSpacing(4)
+        right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        self.title = QtWidgets.QLabel()
-        self.title.setStyleSheet("font-size:12px;color:#00D7FF;font-weight:bold;")
-        right.addWidget(self.title)
+        self.title = QtWidgets.QLabel("")
+        self.title.setStyleSheet("font-size:11px;color:#00D7FF;font-weight:bold;")
+        self.title.setWordWrap(True)
+        right.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         btn_col = QtWidgets.QVBoxLayout()
-        btn_col.setSpacing(6)
+        btn_col.setSpacing(4)
         self.btn_line = QtWidgets.QPushButton("ライン設定")
         self.btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
         self.btn_exclude = QtWidgets.QPushButton("除外エリア")
@@ -1181,31 +1191,30 @@ class CameraPanel(QtWidgets.QFrame):
             btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             btn_col.addWidget(btn)
 
-        self.status_label = QtWidgets.QLabel("RUNNING")
-        self.status_label.setStyleSheet("font-size:10px;font-weight:bold;color:#ffd166;padding:0px;margin:0px;")
-        right.addWidget(self.status_label)
-
         self.congestion_bar = CongestionIndexBar()
-        right.addWidget(self.congestion_bar)
+        self.congestion_bar.setMinimumHeight(26)
 
-        th_row = QtWidgets.QHBoxLayout()
-        th_row.setSpacing(6)
+        level_row = QtWidgets.QHBoxLayout()
+        level_row.setContentsMargins(0, 0, 0, 0)
+        level_row.setSpacing(6)
+
+        level_row.addWidget(self.congestion_bar, 2)
+
+        th_box = QtWidgets.QWidget()
+        th_box_layout = QtWidgets.QHBoxLayout(th_box)
+        th_box_layout.setContentsMargins(0, 0, 0, 0)
+        th_box_layout.setSpacing(4)
         th_label = QtWidgets.QLabel("TH")
         th_label.setStyleSheet("font-size:11px;color:#00d9ff;font-weight:bold;")
-        self.threshold_spin = QtWidgets.QDoubleSpinBox()
-        self.threshold_spin.setRange(0.0, 20.0)
-        self.threshold_spin.setDecimals(1)
-        self.threshold_spin.setSingleStep(0.1)
-        self.threshold_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.PlusMinus)
-        self.threshold_spin.setStyleSheet("QDoubleSpinBox{background:#08121c;color:#8ff6ff;border:1px solid #00a9d6;padding:2px 6px;border-radius:4px;font-weight:bold;}")
-        self.threshold_spin.valueChanged.connect(self._on_threshold_changed)
-        th_row.addWidget(th_label)
-        th_row.addWidget(self.threshold_spin, 1)
-        right.addLayout(th_row)
-
-        self.label_threshold = QtWidgets.QLabel("TH2/3/4: 0/0/0")
-        self.label_threshold.setStyleSheet("font-size:9px;color:#ffd400;font-weight:bold;")
-        right.addWidget(self.label_threshold)
+        self.threshold_edit = QtWidgets.QLineEdit()
+        self.threshold_edit.setStyleSheet("QLineEdit{background:#08121c;color:#8ff6ff;border:1px solid #00a9d6;padding:2px 6px;border-radius:4px;font-weight:bold;}")
+        self.threshold_edit.setValidator(QtGui.QDoubleValidator(0.0, 20.0, 1, self.threshold_edit))
+        self.threshold_edit.setPlaceholderText("0.0-20.0")
+        self.threshold_edit.returnPressed.connect(self._on_threshold_enter_pressed)
+        th_box_layout.addWidget(th_label)
+        th_box_layout.addWidget(self.threshold_edit, 1)
+        level_row.addWidget(th_box, 1)
+        right.addLayout(level_row)
 
         count_row = QtWidgets.QHBoxLayout()
         count_row.setSpacing(6)
@@ -1233,7 +1242,7 @@ class CameraPanel(QtWidgets.QFrame):
         right.addLayout(btn_col)
         right.addStretch(1)
 
-        top_row.addWidget(right_box, 7)
+        top_row.addWidget(right_box, 1)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1247,30 +1256,27 @@ class CameraPanel(QtWidgets.QFrame):
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
         self._update_title()
-        self.threshold_spin.blockSignals(True)
-        self.threshold_spin.setValue(float(self.camera_cfg.get("congestion_threshold", 5.0)))
-        self.threshold_spin.blockSignals(False)
+        self.threshold_edit.setText(f"{float(self.camera_cfg.get('congestion_threshold', 5.0)):.1f}")
 
     def update_view(self, payload: dict[str, Any]) -> None:
         frame = payload.get("frame")
         if frame is not None:
             h, w, _ = frame.shape
+            self._last_frame_size = (int(w), int(h))
             qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
             self._latest_pixmap = QtGui.QPixmap.fromImage(qimg)
             self._update_video_pixmap()
 
         score = float(payload.get("congestion_score", 0))
         threshold = float(payload.get("threshold", 5))
-        self.status_label.setText(payload.get("status", "RUNNING"))
+        status_raw = str(payload.get("status", ""))
+        self._status_connected = status_raw == "RUNNING"
 
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
-        th2, th3, th4 = payload.get("level_thresholds", (0.0, 0.0, 0.0))
-        self.label_threshold.setText(f"TH2/3/4: {th2:.1f}/{th3:.1f}/{th4:.1f}")
-        self.threshold_spin.blockSignals(True)
-        self.threshold_spin.setValue(threshold)
-        self.threshold_spin.blockSignals(False)
         self._update_title(payload.get("camera_name"), payload.get("stream_name"))
+        if not self.threshold_edit.hasFocus():
+            self.threshold_edit.setText(f"{threshold:.1f}")
         self._update_count_cards(int(sum(ltor)), int(sum(rtol)))
         self._render_stay_cards(payload.get("long_stay_list", []))
         self._update_congestion_bar(score, threshold)
@@ -1282,7 +1288,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.congestion_bar.set_values(score, threshold)
 
     def set_status(self, status_text: str) -> None:
-        self.status_label.setText(status_text)
+        self._status_connected = status_text == "RUNNING"
+        self._update_title()
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -1301,16 +1308,30 @@ class CameraPanel(QtWidgets.QFrame):
 
     def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
         cam_name = camera_name or self.camera_cfg.get("camera_name", f"Camera{self.camera_id}")
-        raw_stream = stream_name or self.camera_cfg.get("stream_name") or self.camera_cfg.get("stream_url", "")
-        if raw_stream.startswith("rtsp://"):
-            tail = raw_stream.rsplit("/", 1)[-1]
-            stream = self._stream_short_name(tail or raw_stream)
+        raw_stream = stream_name or self.camera_cfg.get("stream_name")
+        if raw_stream:
+            stream = self._stream_short_name(str(raw_stream))
         else:
-            stream = self._stream_short_name(str(raw_stream)) if raw_stream else "-"
-        self.title.setText(f"{cam_name}  {stream}")
+            stream = f"stream{self.camera_id}"
+        w, h = self._last_frame_size
+        res_text = f"{w}×{h}" if w and h else "---×---"
+        status_text = "rtsp受信中" if self._status_connected else "通信無し"
+        self.title.setText(f"{cam_name} / {stream} ({res_text}) / {status_text}")
 
-    def _on_threshold_changed(self, value: float) -> None:
+    def _on_threshold_enter_pressed(self) -> None:
+        current = float(self.camera_cfg.get("congestion_threshold", 5.0))
+        text = self.threshold_edit.text().strip()
+        if not text:
+            self.threshold_edit.setText(f"{current:.1f}")
+            return
+        try:
+            value = float(text)
+        except ValueError:
+            self.threshold_edit.setText(f"{current:.1f}")
+            return
+        value = max(0.0, min(20.0, value))
         self.camera_cfg["congestion_threshold"] = float(value)
+        self.threshold_edit.setText(f"{value:.1f}")
         self._update_congestion_bar(self.congestion_bar.score, float(value))
         self.threshold_changed.emit(self.camera_id, float(value))
 
@@ -1941,9 +1962,7 @@ class CameraWorker(QtCore.QObject):
             except Exception as exc:
                 self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} long_stay list sort skipped: {exc}")
                 long_stay_list = []
-            th2, th3, th4 = get_level_thresholds(self.system_cfg)
             smoothed_score = float(self.congestion.state.current_smoothed_index)
-            level = congestion_level_from_index(smoothed_score, th2, th3, th4)
 
             return {
                 "camera_id": self.camera_id,
@@ -1952,8 +1971,7 @@ class CameraWorker(QtCore.QObject):
                 "frame": self.last_frame,
                 "congestion_score": congestion_score,
                 "smoothed_congestion_score": smoothed_score,
-                "congestion_level": level,
-                "level_thresholds": (th2, th3, th4),
+                "congestion_level": 1,
                 "threshold": threshold,
                 "threshold_over": threshold_over,
                 "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores)),
@@ -1967,7 +1985,7 @@ class CameraWorker(QtCore.QObject):
                 "debug_metrics": {
                     "raw_congestion_index": round(float(congestion_score), 3),
                     "smoothed_congestion_index": round(smoothed_score, 3),
-                    "level": int(level),
+                    "level": 1,
                     "last_update_timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
                 },
                 "fps": self.fps,
@@ -2081,11 +2099,25 @@ class MainWindow(QtWidgets.QMainWindow):
         info_block.addWidget(self.global_status)
         info_block.addWidget(self.formula_status)
         top_status_row.addLayout(info_block, 4)
+        level_block = QtWidgets.QVBoxLayout()
+        level_block.setContentsMargins(0, 0, 0, 0)
+        level_block.setSpacing(4)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(46)
         self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;")
-        top_status_row.addWidget(self.level_badge, 2)
+        self.level_rule_label = QtWidgets.QLabel(
+            "LEVEL1：通常時\n"
+            "LEVEL2：[Camera2]渋滞指数5以上＋5分以上滞在台数3台以上\n"
+            "LEVEL3：[Camera1]渋滞指数3以上\n"
+            "LEVEL4：[Camera1]渋滞指数3以上＋[Camera3]渋滞指数3以上"
+        )
+        self.level_rule_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        self.level_rule_label.setWordWrap(True)
+        self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:11px;")
+        level_block.addWidget(self.level_badge)
+        level_block.addWidget(self.level_rule_label)
+        top_status_row.addLayout(level_block, 2)
         layout.addLayout(top_status_row)
 
         for cam in self.app_cfg.cameras:
@@ -2175,7 +2207,6 @@ class MainWindow(QtWidgets.QMainWindow):
             panel.set_status(status_text)
 
     def _update_status_level(self) -> None:
-        th2, th3, th4 = get_level_thresholds(self.app_cfg.system)
         camera_states = []
         for cid, payload in sorted(self.latest_payloads.items()):
             camera_states.append(
@@ -2189,21 +2220,60 @@ class MainWindow(QtWidgets.QMainWindow):
                 }
             )
         overall_smoothed = max((item["smoothed_congestion_index"] for item in camera_states), default=0.0)
-        overall_level = congestion_level_from_index(overall_smoothed, th2, th3, th4)
+        overall_level = self.compute_system_level()
         try:
             self.status_mgr.update_if_needed(
                 {
                     "congestion_level": int(overall_level),
                     "smoothed_congestion_index": round(overall_smoothed, 3),
-                    "level2_threshold": th2,
-                    "level3_threshold": th3,
-                    "level4_threshold": th4,
+                    "level2_threshold": 5.0,
+                    "level3_threshold": 3.0,
+                    "level4_threshold": 3.0,
                     "camera_states": camera_states,
                     "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
             )
         except Exception as exc:
             logging.warning("ai_status update skipped: %s", exc)
+
+    def _find_payload_by_camera_name(self, camera_name: str) -> dict[str, Any] | None:
+        for payload in self.latest_payloads.values():
+            if str(payload.get("camera_name", "")).strip() == camera_name:
+                return payload
+        return None
+
+    def get_camera_congestion_score(self, camera_name: str) -> float:
+        payload = self._find_payload_by_camera_name(camera_name)
+        if payload is None:
+            return 0.0
+        return float(payload.get("congestion_score", 0.0))
+
+    def get_camera_long_stay_count(self, camera_name: str, minutes: int = 5) -> int:
+        payload = self._find_payload_by_camera_name(camera_name)
+        if payload is None:
+            return 0
+        long_stay_list = payload.get("long_stay_list", [])
+        count = 0
+        for entry in long_stay_list:
+            try:
+                if float(entry[1]) >= float(minutes):
+                    count += 1
+            except (TypeError, ValueError, IndexError):
+                continue
+        return count
+
+    def compute_system_level(self) -> int:
+        cam1_score = self.get_camera_congestion_score("Camera1")
+        cam2_score = self.get_camera_congestion_score("Camera2")
+        cam3_score = self.get_camera_congestion_score("Camera3")
+        cam2_long_stay_5min = self.get_camera_long_stay_count("Camera2", minutes=5)
+        if cam1_score >= 3 and cam3_score >= 3:
+            return 4
+        if cam1_score >= 3:
+            return 3
+        if cam2_score >= 5 and cam2_long_stay_5min >= 3:
+            return 2
+        return 1
 
     @QtCore.pyqtSlot(int, float)
     def on_threshold_changed(self, camera_id: int, value: float) -> None:
@@ -2232,11 +2302,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.global_status.setText(
             f"{now} | device={device} | GPU={gpu} | model={model_name} | output={self.root_dir / 'data'}"
         )
-        th2, th3, th4 = get_level_thresholds(self.app_cfg.system)
-        overall_smoothed = max((float(p.get("smoothed_congestion_score", 0.0)) for p in self.latest_payloads.values()), default=0.0)
-        level = congestion_level_from_index(overall_smoothed, th2, th3, th4)
+        level = self.compute_system_level()
         style = level_style(level)
-        self.level_badge.setText(f"{style['icon']} {style['label']}")
+        self.level_badge.setText(f"{style['icon']} 渋滞LEVEL{level}")
         self.level_badge.setStyleSheet(
             f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;"
         )
