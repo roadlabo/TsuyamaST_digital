@@ -31,6 +31,17 @@ from openpyxl.worksheet.page import PageMargins
 from PyQt6 import QtCore, QtGui, QtWidgets
 from ultralytics import YOLO
 
+APP_DIR = Path(__file__).resolve().parents[1]
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from importlib import import_module
+_congestion_common = import_module("10_common.congestion_common")
+CongestionSmoother = _congestion_common.CongestionSmoother
+congestion_level_from_index = _congestion_common.congestion_level_from_index
+get_level_thresholds = _congestion_common.get_level_thresholds
+level_style = _congestion_common.level_style
+
 # =========================================
 # Constants / CLASS_MAP
 # =========================================
@@ -43,13 +54,6 @@ CLASS_MAP = {
     5: "バス",
     6: "電車",
     7: "トラック",
-}
-
-LEVEL_STYLE_MAP: dict[str, dict[str, str]] = {
-    "LEVEL0": {"label": "渋滞LEVEL1", "bg": "#7fd0ff", "fg": "#000000", "icon": "🟢"},
-    "LEVEL1": {"label": "渋滞LEVEL2", "bg": "#ffb347", "fg": "#000000", "icon": "🟠"},
-    "LEVEL2": {"label": "渋滞LEVEL3", "bg": "#e53935", "fg": "#ffffff", "icon": "🔴"},
-    "LEVEL3": {"label": "渋滞LEVEL4", "bg": "#000000", "fg": "#ffffff", "icon": "⚫"},
 }
 
 # =========================================
@@ -65,6 +69,10 @@ DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "output_root": "app/04_ai_monitor/data",
     "display_update_interval_ms": 800,
     "graph_update_interval_sec": 10,
+    "level2_threshold": 8.0,
+    "level3_threshold": 12.0,
+    "level4_threshold": 16.0,
+    "congestion_smoothing_window": 6,
 }
 
 DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
@@ -98,7 +106,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
-            "display_scale": 0.85,
+            "display_scale": 0.8,
         },
         {
             "camera_id": 2,
@@ -129,7 +137,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
-            "display_scale": 0.85,
+            "display_scale": 0.8,
         },
         {
             "camera_id": 3,
@@ -160,7 +168,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "congestion_calculation_interval": 10,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
-            "display_scale": 0.85,
+            "display_scale": 0.8,
         },
     ]
 }
@@ -193,9 +201,11 @@ class AppConfig:
 @dataclass
 class CongestionState:
     frame_motion_scores: list[float] = field(default_factory=list)
+    smoothed_motion_scores: list[float] = field(default_factory=list)
     frame_time_stamps: list[datetime] = field(default_factory=list)
     frame_cumulative_motion_score: float = 0.0
     current_congestion_index: float = 0.0
+    current_smoothed_index: float = 0.0
     window_start: datetime | None = None
     previous_positions: dict[int, tuple[float, float]] = field(default_factory=dict)
     last_seen_at: dict[int, datetime] = field(default_factory=dict)
@@ -280,13 +290,17 @@ class ConfigManager:
 class CongestionScorer:
     """AICount11.py の congestion 算出式を監視向けに時間窓化して適用。"""
 
-    def __init__(self, interval_sec: int = 10, day_keep: int = 1):
+    def __init__(self, interval_sec: int = 10, day_keep: int = 1, smoothing_window: int = 6):
         self.interval_sec = max(1, int(interval_sec))
         self.day_keep = max(1, day_keep)
         self.state = CongestionState()
+        self.smoother = CongestionSmoother(smoothing_window)
 
     def update_interval(self, interval_sec: int) -> None:
         self.interval_sec = max(1, int(interval_sec))
+
+    def update_smoothing_window(self, window_size: int) -> None:
+        self.smoother.update_window_size(window_size)
 
     def _compute_frame_motion_score(self, tracks: list[dict], frame_width: int, now: datetime) -> float:
         if frame_width <= 0:
@@ -324,6 +338,8 @@ class CongestionScorer:
         self.state.frame_motion_scores.append(value)
         self.state.frame_time_stamps.append(now)
         self.state.current_congestion_index = value
+        self.state.current_smoothed_index = round(self.smoother.add(value), 3)
+        self.state.smoothed_motion_scores.append(self.state.current_smoothed_index)
         self.state.frame_cumulative_motion_score = 0.0
         self.state.window_start = now
 
@@ -331,6 +347,8 @@ class CongestionScorer:
         while self.state.frame_time_stamps and self.state.frame_time_stamps[0] < day_ago:
             self.state.frame_time_stamps.pop(0)
             self.state.frame_motion_scores.pop(0)
+            if self.state.smoothed_motion_scores:
+                self.state.smoothed_motion_scores.pop(0)
         return value
 
 
@@ -387,26 +405,16 @@ class LineCounter:
 # Status Manager
 # =========================================
 class StatusManager:
-    def __init__(self, ai_status_path: Path):
+    def __init__(self, ai_status_path: Path, system_cfg: dict[str, Any]):
         self.ai_status_path = ai_status_path
-        self.last_level = None
+        self.system_cfg = system_cfg
+        self.last_payload: dict[str, Any] | None = None
 
-    def decide_level(self, cam1_over: bool, cam2_long_stay_count: int, cam2_long_stay_trigger_count: int, cam3_over: bool) -> str:
-        if cam3_over:
-            return "LEVEL3"
-        if cam1_over:
-            return "LEVEL1"
-        if cam2_long_stay_count >= cam2_long_stay_trigger_count:
-            return "LEVEL2"
-        return "LEVEL0"
-
-    def update_if_needed(self, level: str) -> None:
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        payload = {"congestion_level": level, "updated_at": now_str}
-        if self.last_level == level and self.ai_status_path.exists():
+    def update_if_needed(self, payload: dict[str, Any]) -> None:
+        if self.last_payload == payload and self.ai_status_path.exists():
             return
         self._atomic_write_json(self.ai_status_path, payload)
-        self.last_level = level
+        self.last_payload = payload
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict) -> None:
@@ -969,7 +977,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
                 painter.setPen(QtGui.QPen(QtGui.QColor("#ffd400"), 2.0))
                 painter.drawLine(QtCore.QPointF(plot.left(), th_y), QtCore.QPointF(plot.right(), th_y))
                 painter.setPen(QtGui.QColor("#ffd400"))
-                painter.drawText(int(plot.right()) - 82, int(th_y) - 4, f"TH={self.threshold:.2f}")
+                painter.drawText(int(plot.left()) + 6, int(th_y) - 4, f"TH={self.threshold:.2f}")
         elif self.mode == "bar" and (self.prev_values or self.today_values):
             n = max(1, len(self.prev_values), len(self.today_values))
             slot_w = plot.width() / n
@@ -989,7 +997,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         legend = [("前日", QtGui.QColor("#2f7dff")), ("当日", QtGui.QColor("#ff3b3b"))]
         if self.mode == "line" and self.show_threshold:
             legend.append(("閾値", QtGui.QColor("#ffd400")))
-        x = int(plot.right()) - 80
+        x = int(plot.left()) + 8
         y = int(plot.top()) + 10
         for label, color in legend:
             painter.setPen(QtGui.QPen(color, 2))
@@ -1044,7 +1052,6 @@ class CameraPanel(QtWidgets.QFrame):
     def __init__(self, camera_cfg: dict[str, Any], parent=None):
         super().__init__(parent)
         self.camera_id = camera_cfg["camera_id"]
-        self.long_stay_minutes = int(camera_cfg.get("long_stay_minutes", 15))
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -1054,20 +1061,20 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.setSpacing(6)
 
         self.video = QtWidgets.QLabel("video")
-        self.video.setMinimumSize(660, 370)
-        self.video.setMaximumHeight(370)
+        self.video.setMinimumSize(528, 296)
+        self.video.setMaximumHeight(296)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         top_row.addWidget(self.video, 6)
 
         right_box = QtWidgets.QWidget()
-        right_box.setFixedWidth(350)
+        right_box.setFixedWidth(96)
         right = QtWidgets.QVBoxLayout(right_box)
         right.setContentsMargins(4, 4, 4, 4)
         right.setSpacing(4)
         self.title = QtWidgets.QLabel(camera_cfg["camera_name"])
-        self.title.setStyleSheet("font-size:14px;color:#00D7FF;font-weight:bold;")
+        self.title.setStyleSheet("font-size:11px;color:#00D7FF;font-weight:bold;")
         right.addWidget(self.title)
 
         btn_col = QtWidgets.QVBoxLayout()
@@ -1079,50 +1086,32 @@ class CameraPanel(QtWidgets.QFrame):
         self.btn_ai = QtWidgets.QPushButton("解析条件")
         self.btn_ai.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
         for btn in (self.btn_line, self.btn_exclude, self.btn_ai):
-            btn.setFixedHeight(28)
-            btn.setStyleSheet("font-size:12px;padding:4px;")
+            btn.setFixedHeight(22)
+            btn.setStyleSheet("font-size:10px;padding:2px;")
             btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             btn_col.addWidget(btn)
 
         self.status_label = QtWidgets.QLabel("IDLE")
-        self.status_label.setStyleSheet("font-size:13px;font-weight:bold;color:#ffd166;padding:0px;margin:0px;")
+        self.status_label.setStyleSheet("font-size:10px;font-weight:bold;color:#ffd166;padding:0px;margin:0px;")
         right.addWidget(self.status_label)
 
         self.congestion_bar = CongestionIndexBar()
         right.addWidget(self.congestion_bar)
 
-        self.label_threshold = QtWidgets.QLabel("渋滞判定閾値：0.0")
-        self.label_threshold.setStyleSheet("font-size:12px;color:#ffd400;font-weight:bold;")
+        self.level_label = QtWidgets.QLabel("渋滞LEVEL1")
+        self.level_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.level_label.setStyleSheet("font-size:12px;font-weight:900;background:#7fd0ff;color:#000;border-radius:6px;")
+        right.addWidget(self.level_label)
+
+        self.label_threshold = QtWidgets.QLabel("TH2/3/4: 0/0/0")
+        self.label_threshold.setStyleSheet("font-size:9px;color:#ffd400;font-weight:bold;")
         right.addWidget(self.label_threshold)
-
-        self.summary = QtWidgets.QLabel("交通量合計：0（L→R:0 / R→L:0）")
-        self.summary.setStyleSheet("font-size:12px;")
-        right.addWidget(self.summary)
-
-        self.label_stay = QtWidgets.QLabel(f"滞在時間閾値：{self.long_stay_minutes}分以上")
-        self.label_stay.setStyleSheet("font-size:12px;color:#ff9fb0;font-weight:bold;")
-        right.addWidget(self.label_stay)
-
-        self.logic_desc = QtWidgets.QLabel(
-            "渋滞指数＝Σ[1/(1+(d/W)×500)]　d:各IDの前フレームからの移動距離、W:画面幅、各カメラ独立計算"
-        )
-        self.logic_desc.setWordWrap(False)
-        self.logic_desc.setStyleSheet("font-size:11px;color:#c7def5;line-height:1.3;")
-        right.addWidget(self.logic_desc)
-
-        self.long_stay_title = QtWidgets.QLabel("滞在時間閾値以上")
-        long_stay_title = self.long_stay_title
-        long_stay_title.setStyleSheet("color:#ff8893;font-weight:bold;")
-        right.addWidget(long_stay_title)
-        self.long_stay_scroll = QtWidgets.QScrollArea()
-        self.long_stay_scroll.setWidgetResizable(True)
-        self.long_stay_scroll.setFixedHeight(118)
-        self.long_stay_container = QtWidgets.QWidget()
-        self.long_stay_layout = QtWidgets.QVBoxLayout(self.long_stay_container)
-        self.long_stay_layout.setContentsMargins(0, 0, 0, 0)
-        self.long_stay_layout.setSpacing(4)
-        self.long_stay_scroll.setWidget(self.long_stay_container)
-        right.addWidget(self.long_stay_scroll, 1)
+        self.raw_index_label = QtWidgets.QLabel("Raw: 0.00")
+        self.raw_index_label.setStyleSheet("font-size:10px;")
+        right.addWidget(self.raw_index_label)
+        self.smoothed_index_label = QtWidgets.QLabel("Smooth: 0.00")
+        self.smoothed_index_label.setStyleSheet("font-size:10px;color:#9af2ff;")
+        right.addWidget(self.smoothed_index_label)
         right.addLayout(btn_col)
 
         top_row.addWidget(right_box, 4)
@@ -1152,46 +1141,23 @@ class CameraPanel(QtWidgets.QFrame):
 
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
-        total_ltor = sum(ltor)
-        total_rtol = sum(rtol)
-        self.summary.setText(f"交通量合計：{total_ltor + total_rtol}（L→R:{total_ltor} / R→L:{total_rtol}）")
-        self.label_threshold.setText(f"渋滞判定閾値：{threshold:.2f}")
-        self.long_stay_minutes = int(payload.get("long_stay_minutes", self.long_stay_minutes))
-        self.label_stay.setText(f"滞在時間閾値：{self.long_stay_minutes}分以上")
-        self.long_stay_title.setText("滞在時間閾値以上")
+        smoothed_score = float(payload.get("smoothed_congestion_score", score))
+        level = int(payload.get("congestion_level", 1))
+        style = level_style(level)
+        th2, th3, th4 = payload.get("level_thresholds", (0.0, 0.0, 0.0))
+        self.label_threshold.setText(f"TH2/3/4: {th2:.1f}/{th3:.1f}/{th4:.1f}")
+        self.raw_index_label.setText(f"Raw: {score:.2f}")
+        self.smoothed_index_label.setText(f"Smooth: {smoothed_score:.2f}")
+        self.level_label.setText(style["label"])
+        self.level_label.setStyleSheet(
+            f"font-size:12px;font-weight:900;background:{style['bg']};color:{style['fg']};border-radius:6px;"
+        )
         self._update_congestion_bar(score, threshold)
         self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
         self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
         self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
-        self._rebuild_long_stay_cards(payload.get("long_stays", []))
-
     def _update_congestion_bar(self, score: float, threshold: float) -> None:
         self.congestion_bar.set_values(score, threshold)
-
-    def _rebuild_long_stay_cards(self, long_stays: list[tuple[int, float]]) -> None:
-        while self.long_stay_layout.count():
-            child = self.long_stay_layout.takeAt(0)
-            widget = child.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        if not long_stays:
-            self.long_stay_layout.addStretch()
-            return
-
-        for tid, mins in long_stays:
-            card = QtWidgets.QFrame()
-            card.setStyleSheet("background:#1a1014;border:1px solid #ff5a6e;border-radius:6px;")
-            card_layout = QtWidgets.QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 6, 8, 6)
-            id_label = QtWidgets.QLabel(f"ID={tid:03d}")
-            id_label.setStyleSheet("color:#ffd3d9;font-weight:bold;")
-            min_label = QtWidgets.QLabel(f"{mins:.0f}min")
-            min_label.setStyleSheet("color:#ff6678;")
-            card_layout.addWidget(id_label)
-            card_layout.addWidget(min_label)
-            self.long_stay_layout.addWidget(card)
-        self.long_stay_layout.addStretch()
 
     def set_status(self, status_text: str) -> None:
         self.status_label.setText(status_text)
@@ -1245,7 +1211,10 @@ class CameraWorker(QtCore.QObject):
 
         line = [self.camera_cfg.get("line_start", [0, 0]), self.camera_cfg.get("line_end", [100, 0])]
         self.counter = LineCounter(line)
-        self.congestion = CongestionScorer(int(self.camera_cfg.get("congestion_calculation_interval", 10)))
+        self.congestion = CongestionScorer(
+            int(self.camera_cfg.get("congestion_calculation_interval", 10)),
+            smoothing_window=int(self.system_cfg.get("congestion_smoothing_window", 6)),
+        )
         self.track_state = TrackState()
         self.track_class_memory: dict[int, dict[str, Any]] = {}
         self.display_id_map: dict[int, int] = {}
@@ -1262,7 +1231,7 @@ class CameraWorker(QtCore.QObject):
         self._next_infer_retry_time = 0.0
         self._last_warn_emit = 0.0
         self._status_text = "INIT"
-        self.display_scale = 0.85
+        self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
         self.csv_error_state = {"congestion": False, "pass": False, "long_stay": False}
         self.read_fail_count = 0
         self.max_read_fail_before_reconnect = 5
@@ -1280,8 +1249,13 @@ class CameraWorker(QtCore.QObject):
         today_points = self._load_today_congestion_points()
         self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
         self.congestion.state.frame_motion_scores = [v for _, v in today_points]
+        self.congestion.state.smoothed_motion_scores = []
+        for _, score in today_points:
+            self.congestion.smoother.add(float(score))
+            self.congestion.state.smoothed_motion_scores.append(self.congestion.smoother.current())
         if today_points:
             self.congestion.state.current_congestion_index = today_points[-1][1]
+            self.congestion.state.current_smoothed_index = self.congestion.state.smoothed_motion_scores[-1]
 
     def get_latest_raw_frame(self):
         return None if self.last_raw_frame is None else self.last_raw_frame.copy()
@@ -1294,7 +1268,8 @@ class CameraWorker(QtCore.QObject):
         self.target_classes = set(int(x) for x in new_cfg.get("target_classes", [2, 3, 5, 7]))
         self.counter.update_line([new_cfg.get("line_start", [0, 0]), new_cfg.get("line_end", [100, 0])])
         self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 10)))
-        self.display_scale = 0.85
+        self.congestion.update_smoothing_window(int(self.system_cfg.get("congestion_smoothing_window", 6)))
+        self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
 
         new_model_path = resolve_model_path(self.camera_cfg, self.system_cfg, self.root_dir)
         if new_model_path != old_model_path:
@@ -1493,7 +1468,13 @@ class CameraWorker(QtCore.QObject):
         today_points = self._load_today_congestion_points()
         self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
         self.congestion.state.frame_motion_scores = [v for _, v in today_points]
+        self.congestion.state.smoothed_motion_scores = []
+        self.congestion.smoother = CongestionSmoother(int(self.system_cfg.get("congestion_smoothing_window", 6)))
+        for _, score in today_points:
+            self.congestion.smoother.add(float(score))
+            self.congestion.state.smoothed_motion_scores.append(self.congestion.smoother.current())
         self.congestion.state.current_congestion_index = today_points[-1][1] if today_points else 0.0
+        self.congestion.state.current_smoothed_index = self.congestion.state.smoothed_motion_scores[-1] if today_points else 0.0
 
     def _get_display_id(self, track_id: int) -> int:
         if track_id not in self.display_id_map:
@@ -1753,14 +1734,20 @@ class CameraWorker(QtCore.QObject):
                     kind="congestion",
                 )
 
-            self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks, long_stay_list))
+            self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks))
             long_stay_list.sort(key=lambda x: x[1], reverse=True)
+            th2, th3, th4 = get_level_thresholds(self.system_cfg)
+            smoothed_score = float(self.congestion.state.current_smoothed_index)
+            level = congestion_level_from_index(smoothed_score, th2, th3, th4)
 
             return {
                 "camera_id": self.camera_id,
                 "camera_name": self.camera_name,
                 "frame": self.last_frame,
                 "congestion_score": congestion_score,
+                "smoothed_congestion_score": smoothed_score,
+                "congestion_level": level,
+                "level_thresholds": (th2, th3, th4),
                 "threshold": threshold,
                 "threshold_over": threshold_over,
                 "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores)),
@@ -1769,9 +1756,13 @@ class CameraWorker(QtCore.QObject):
                 "pass_bins_rtol": self.counter.state.pass_bins_rtol,
                 "hist_prev_ltor": self.previous_day_hist_ltor,
                 "hist_prev_rtol": self.previous_day_hist_rtol,
-                "long_stays": long_stay_list[:10],
                 "long_stay_count": len(long_stay_list),
-                "long_stay_minutes": int(self.camera_cfg.get("long_stay_minutes", 15)),
+                "debug_metrics": {
+                    "raw_congestion_index": round(float(congestion_score), 3),
+                    "smoothed_congestion_index": round(smoothed_score, 3),
+                    "level": int(level),
+                    "last_update_timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                },
                 "fps": self.fps,
                 "status": self._status_text,
                 "device": self.device,
@@ -1792,7 +1783,7 @@ class CameraWorker(QtCore.QObject):
         new_h = max(1, int(h * self.display_scale))
         return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    def _draw_overlay(self, frame: np.ndarray, tracks: list[dict[str, Any]], long_stays: list[tuple[int, float]]) -> np.ndarray:
+    def _draw_overlay(self, frame: np.ndarray, tracks: list[dict[str, Any]]) -> np.ndarray:
         line = [self.camera_cfg.get("line_start", [10, 10]), self.camera_cfg.get("line_end", [100, 10])]
         cv2.line(frame, tuple(line[0]), tuple(line[1]), (0, 255, 255), 2)
 
@@ -1818,8 +1809,6 @@ class CameraWorker(QtCore.QObject):
                 cv2.LINE_AA,
             )
 
-        for i, (tid, mins) in enumerate(long_stays[:5]):
-            cv2.putText(frame, f"LONG STAY ID:{tid:03d} {mins:.1f}m", (20, 40 + 22 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return frame
 
 # =========================================
@@ -1844,7 +1833,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             ai_status_path = script_base / raw_ai_status
         ai_status_path.parent.mkdir(parents=True, exist_ok=True)
-        self.status_mgr = StatusManager(ai_status_path)
+        self.status_mgr = StatusManager(ai_status_path, self.app_cfg.system)
 
         self.threads: dict[int, QtCore.QThread] = {}
         self.workers: dict[int, CameraWorker] = {}
@@ -1877,9 +1866,14 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll.setWidget(content)
 
         top_status_row = QtWidgets.QHBoxLayout()
+        info_block = QtWidgets.QVBoxLayout()
         self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
         self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:12px;")
-        top_status_row.addWidget(self.global_status, 4)
+        self.formula_status = QtWidgets.QLabel("渋滞指数 = Σ(1 / (1 + d/W × 500))  d:各IDの前フレームからの移動距離, W:画面幅")
+        self.formula_status.setStyleSheet("color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:4px;font-size:11px;")
+        info_block.addWidget(self.global_status)
+        info_block.addWidget(self.formula_status)
+        top_status_row.addLayout(info_block, 4)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(46)
@@ -1965,17 +1959,32 @@ class MainWindow(QtWidgets.QMainWindow):
             panel.set_status(status_text)
 
     def _update_status_level(self) -> None:
-        cam1 = self.latest_payloads.get(1, {})
-        cam2 = self.latest_payloads.get(2, {})
-        cam3 = self.latest_payloads.get(3, {})
-        cam2_cfg = next((c for c in self.app_cfg.cameras if c.get("camera_id") == 2), {})
-        level = self.status_mgr.decide_level(
-            cam1_over=bool(cam1.get("threshold_over", False)),
-            cam2_long_stay_count=int(cam2.get("long_stay_count", 0)),
-            cam2_long_stay_trigger_count=int(cam2_cfg.get("long_stay_trigger_count", 1)),
-            cam3_over=bool(cam3.get("threshold_over", False)),
+        th2, th3, th4 = get_level_thresholds(self.app_cfg.system)
+        camera_states = []
+        for cid, payload in sorted(self.latest_payloads.items()):
+            camera_states.append(
+                {
+                    "camera_id": cid,
+                    "camera_name": payload.get("camera_name", f"Camera{cid}"),
+                    "raw_congestion_index": round(float(payload.get("congestion_score", 0.0)), 3),
+                    "smoothed_congestion_index": round(float(payload.get("smoothed_congestion_score", 0.0)), 3),
+                    "level": int(payload.get("congestion_level", 1)),
+                    "last_update_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+        overall_smoothed = max((item["smoothed_congestion_index"] for item in camera_states), default=0.0)
+        overall_level = congestion_level_from_index(overall_smoothed, th2, th3, th4)
+        self.status_mgr.update_if_needed(
+            {
+                "congestion_level": int(overall_level),
+                "smoothed_congestion_index": round(overall_smoothed, 3),
+                "level2_threshold": th2,
+                "level3_threshold": th3,
+                "level4_threshold": th4,
+                "camera_states": camera_states,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
         )
-        self.status_mgr.update_if_needed(level)
 
     def _update_global_status(self) -> None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1987,15 +1996,13 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         device = next(iter(self.latest_payloads.values()), {}).get("device", "n/a")
         gpu = next(iter(self.latest_payloads.values()), {}).get("gpu_name", "n/a")
-        cam1 = self.latest_payloads.get(1, {})
-        cam2 = self.latest_payloads.get(2, {})
-        cam3 = self.latest_payloads.get(3, {})
-        cam2_cfg = next((c for c in self.app_cfg.cameras if c.get("camera_id") == 2), {})
-        level = self.status_mgr.decide_level(bool(cam1.get("threshold_over", False)), int(cam2.get("long_stay_count", 0)), int(cam2_cfg.get("long_stay_trigger_count", 1)), bool(cam3.get("threshold_over", False)))
         self.global_status.setText(
             f"{now} | device={device} | GPU={gpu} | model={model_name} | output={self.root_dir / 'data'}"
         )
-        style = LEVEL_STYLE_MAP.get(level, LEVEL_STYLE_MAP["LEVEL0"])
+        th2, th3, th4 = get_level_thresholds(self.app_cfg.system)
+        overall_smoothed = max((float(p.get("smoothed_congestion_score", 0.0)) for p in self.latest_payloads.values()), default=0.0)
+        level = congestion_level_from_index(overall_smoothed, th2, th3, th4)
+        style = level_style(level)
         self.level_badge.setText(f"{style['icon']} {style['label']}")
         self.level_badge.setStyleSheet(
             f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;"
