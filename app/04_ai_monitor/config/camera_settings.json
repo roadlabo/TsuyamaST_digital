@@ -1,17 +1,6 @@
 {
   "cameras": [
     {
-      "camera_id": 1,
-      "camera_name": "Camera1",
-      "stream_url": "rtsp://admin:admin123@192.168.1.101:554/snl/live/1/2",
-      "enabled": true,
-      "line_start": [220,189],
-      "line_end": [51,100],
-      "exclude_polygon": [[0,0], [640,0], [640,361], [155,359], [153,315], [183,240], [263,161], [314,127], [389,90], [452,55], [490,44], [503,22], [391,14], [302,7], [243,7], [241,24], [234,37], [211,46], [69,92], [0,123], [0,0]],
-      "congestion_threshold": 10,
-      "long_stay_minutes": 1
-    },
-    {
       "camera_id": 2,
       "camera_name": "Camera2",
       "stream_url": "rtsp://admin:admin123@192.168.1.102:554/snl/live/1/2",
@@ -19,6 +8,17 @@
       "line_start": [161,356], 
       "line_end": [245,128], 
       "exclude_polygon": [[0,176], [150,180], [212,166], [242,149], [291,29], [291,10], [409,7], [409,27], [639,132], [639,0], [0,0]],
+      "congestion_threshold": 10,
+      "long_stay_minutes": 1
+    },
+    {
+      "camera_id": 1,
+      "camera_name": "Camera1",
+      "stream_url": "rtsp://admin:admin123@192.168.1.101:554/snl/live/1/2",
+      "enabled": true,
+      "line_start": [220,189],
+      "line_end": [51,100],
+      "exclude_polygon": [[0,0], [640,0], [640,361], [155,359], [153,315], [183,240], [263,161], [314,127], [389,90], [452,55], [490,44], [503,22], [391,14], [302,7], [243,7], [241,24], [234,37], [211,46], [69,92], [0,123], [0,0]],
       "congestion_threshold": 10,
       "long_stay_minutes": 1
     },
