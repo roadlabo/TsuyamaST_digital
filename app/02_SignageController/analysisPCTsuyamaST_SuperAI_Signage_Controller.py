@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from dataclasses import dataclass
 from datetime import datetime, time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -208,17 +208,6 @@ def safe_read_json(path: Path, default, *, retries: int = 3):
     return default
 
 
-def safe_path_exists(path: Path, *, retries: int = 3, backoff_cap: float = 0.2) -> bool:
-    last_exc = None
-    for i in range(max(1, int(retries))):
-        try:
-            return path.exists()
-        except OSError as exc:
-            last_exc = exc
-            _sleep_backoff(i, cap=backoff_cap)
-    raise RuntimeError(f"path_exists_failed: {path} ({last_exc})")
-
-
 def stat_fingerprint(path: Path) -> Tuple[int, int, int]:
     st = path.stat()
     mtime = int(st.st_mtime * 1000)
@@ -240,8 +229,8 @@ def is_same_file(master: Path, remote: Path, compare_ctime: bool = True) -> bool
 
 def copy_file_atomic(src: Path, dst: Path) -> None:
     ensure_dir(dst.parent)
-    tmp = dst.parent / f"{dst.name}.tmp.{os.getpid()}.{threading.get_ident()}.{int(time_module.time() * 1000)}"
-    if safe_path_exists(tmp, retries=1):
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    if tmp.exists():
         try:
             tmp.unlink()
         except Exception:
@@ -249,9 +238,9 @@ def copy_file_atomic(src: Path, dst: Path) -> None:
     shutil.copy2(src, tmp)
     bak = dst.with_suffix(dst.suffix + ".bak")
     try:
-        if safe_path_exists(dst, retries=2):
+        if dst.exists():
             try:
-                if safe_path_exists(bak, retries=2):
+                if bak.exists():
                     bak.unlink()
             except Exception:
                 pass
@@ -261,49 +250,7 @@ def copy_file_atomic(src: Path, dst: Path) -> None:
                 pass
     except Exception:
         pass
-    try:
-        safe_replace(tmp, dst, retries=12)
-    finally:
-        try:
-            if safe_path_exists(tmp, retries=1):
-                tmp.unlink()
-        except Exception:
-            pass
-
-
-def copy_file_atomic_remote(src: Path, dst: Path, *, retries: int = 6) -> None:
-    parent = dst.parent
-    tmp = parent / f"{dst.name}.tmp.{os.getpid()}.{threading.get_ident()}.{int(time_module.time() * 1000)}"
-    try:
-        if safe_path_exists(tmp, retries=1):
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
-        shutil.copy2(src, tmp)
-        bak = dst.with_suffix(dst.suffix + ".bak")
-        try:
-            if safe_path_exists(dst, retries=2):
-                try:
-                    if safe_path_exists(bak, retries=2):
-                        bak.unlink()
-                except Exception:
-                    pass
-                try:
-                    shutil.copy2(dst, bak)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        safe_replace(tmp, dst, retries=retries)
-    except Exception as exc:
-        raise RuntimeError(f"copy_file_atomic_remote_failed: {src} -> {dst} ({exc})") from exc
-    finally:
-        try:
-            if safe_path_exists(tmp, retries=1):
-                tmp.unlink()
-        except Exception:
-            pass
+    safe_replace(tmp, dst, retries=12)
 
 
 SYNC_EXTS = {".mp4", ".mov", ".jpg", ".jpeg", ".png", ".webp"}
@@ -314,72 +261,6 @@ def _is_sample_video(name: str) -> bool:
     return name.lower().endswith(SYNC_SAMPLE_SUFFIX)
 
 
-def _is_sync_target_name(name: str) -> bool:
-    lower = name.lower()
-    if lower.startswith("."):
-        return False
-    if ".tmp." in lower:
-        return False
-    if lower.endswith(".tmp") or lower.endswith(".bak"):
-        return False
-    if lower.startswith("~$"):
-        return False
-    return True
-
-
-def safe_stat(path: Path, *, retries: int = 3):
-    last_exc = None
-    for i in range(max(1, int(retries))):
-        try:
-            return path.stat()
-        except OSError as exc:
-            last_exc = exc
-            _sleep_backoff(i, cap=0.2)
-    raise RuntimeError(f"stat_failed: {path} ({last_exc})")
-
-
-def safe_unlink(path: Path, *, retries: int = 3) -> None:
-    last_exc = None
-    for i in range(max(1, int(retries))):
-        try:
-            path.unlink(missing_ok=True)
-            return
-        except OSError as exc:
-            last_exc = exc
-            _sleep_backoff(i, cap=0.2)
-    raise RuntimeError(f"unlink_failed: {path} ({last_exc})")
-
-
-def safe_iter_files(
-    directory: Path,
-    allowed_exts: Set[str],
-    *,
-    retries: int = 3,
-) -> List[Path]:
-    last_exc = None
-    for i in range(max(1, int(retries))):
-        try:
-            files: List[Path] = []
-            for entry in directory.iterdir():
-                try:
-                    if not entry.is_file():
-                        continue
-                    if entry.suffix.lower() not in allowed_exts:
-                        continue
-                    if not _is_sync_target_name(entry.name):
-                        continue
-                    if _is_sample_video(entry.name):
-                        continue
-                    files.append(entry)
-                except OSError:
-                    continue
-            return sorted(files, key=lambda p: p.name.lower())
-        except OSError as exc:
-            last_exc = exc
-            _sleep_backoff(i, cap=0.2)
-    raise RuntimeError(f"iter_failed: {directory} ({last_exc})")
-
-
 def sync_mirror_dir(
     master_dir: Path,
     remote_dir: Path,
@@ -388,51 +269,36 @@ def sync_mirror_dir(
     compare_ctime: bool = True,
 ) -> Dict[str, int]:
     result = {"copied": 0, "updated": 0, "deleted": 0, "skipped": 0, "errors": 0}
-    if not str(remote_dir).startswith("\\\\"):
-        ensure_dir(remote_dir)
+    ensure_dir(remote_dir)
 
-    master_files: Dict[str, dict] = {}
-    try:
-        for entry in safe_iter_files(master_dir, SYNC_EXTS):
-            try:
-                st = safe_stat(entry)
-                master_files[entry.name] = {"size": int(st.st_size), "mtime": int(st.st_mtime)}
-            except Exception as exc:
-                if logger:
-                    logger(f"[ERR] master stat {entry.name}: {exc}")
-                result["errors"] += 1
-    except Exception as exc:
-        if logger:
-            logger(f"[ERR] master list failed: {exc}")
-        result["errors"] += 1
-        return result
+    master_files: Dict[str, int] = {}
+    for entry in master_dir.iterdir():
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in SYNC_EXTS:
+            continue
+        if _is_sample_video(entry.name):
+            continue
+        master_files[entry.name] = entry.stat().st_size
 
-    remote_files: Dict[str, dict] = {}
-    try:
-        for entry in safe_iter_files(remote_dir, SYNC_EXTS):
-            try:
-                st = safe_stat(entry)
-                remote_files[entry.name] = {"size": int(st.st_size), "mtime": int(st.st_mtime)}
-            except Exception:
-                remote_files[entry.name] = {"size": None, "mtime": None}
-    except Exception as exc:
-        if logger:
-            logger(f"[ERR] remote list failed: {exc}")
-        result["errors"] += 1
-        return result
+    remote_files: Dict[str, int] = {}
+    for entry in remote_dir.iterdir():
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in SYNC_EXTS:
+            continue
+        if _is_sample_video(entry.name):
+            continue
+        remote_files[entry.name] = entry.stat().st_size
 
     to_copy: List[str] = []
-    for name, m_meta in master_files.items():
-        r_meta = remote_files.get(name)
-        if r_meta is None:
-            to_copy.append(name)
-            continue
-        if r_meta.get("size") is None:
-            to_copy.append(name)
-            continue
-        if m_meta["size"] != r_meta.get("size") or m_meta["mtime"] != r_meta.get("mtime"):
+    for name, msize in master_files.items():
+        tsize = remote_files.get(name)
+        if tsize is None or tsize != msize:
             to_copy.append(name)
         else:
+            if logger:
+                logger(f"[SKIP] {name}")
             result["skipped"] += 1
 
     to_delete = [name for name in remote_files.keys() if name not in master_files]
@@ -441,14 +307,10 @@ def sync_mirror_dir(
         src = master_dir / name
         dst = remote_dir / name
         try:
-            is_large = master_files.get(name, {}).get("size", 0) >= int(50 * 1024 * 1024)
-            if logger and is_large:
+            if logger:
                 logger(f"[COPY] {name}")
             if not dry_run:
-                if str(remote_dir).startswith("\\\\"):
-                    copy_file_atomic_remote(src, dst)
-                else:
-                    copy_file_atomic(src, dst)
+                copy_file_atomic(src, dst)
             if name in remote_files:
                 result["updated"] += 1
             else:
@@ -460,8 +322,10 @@ def sync_mirror_dir(
 
     for name in sorted(to_delete):
         try:
+            if logger:
+                logger(f"[DEL] {name}")
             if not dry_run:
-                safe_unlink((remote_dir / name), retries=3)
+                (remote_dir / name).unlink()
             result["deleted"] += 1
         except Exception as exc:
             if logger:
@@ -472,34 +336,14 @@ def sync_mirror_dir(
 
 def write_json_atomic(path: Path, payload: dict) -> None:
     ensure_dir(path.parent)
-    tmp_path = path.parent / f"{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{int(time_module.time() * 1000)}"
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
     bak_path = path.with_suffix(path.suffix + ".bak")
-    if safe_path_exists(tmp_path, retries=1):
-        try:
-            tmp_path.unlink()
-        except Exception:
-            pass
-    try:
-        if safe_path_exists(path, retries=2):
-            try:
-                shutil.copy2(path, bak_path)
-            except Exception:
-                pass
-        with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
-            fh.flush()
-            try:
-                os.fsync(fh.fileno())
-            except OSError:
-                pass
-        safe_replace(tmp_path, path, retries=10)
-    finally:
-        try:
-            if safe_path_exists(tmp_path, retries=1):
-                tmp_path.unlink()
-        except Exception:
-            pass
+    if path.exists():
+        shutil.copy2(path, bak_path)
+    with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    safe_replace(tmp_path, path, retries=10)
 
 
 def write_json_atomic_remote(path: Path, payload: dict) -> None:
@@ -507,44 +351,28 @@ def write_json_atomic_remote(path: Path, payload: dict) -> None:
     UNC(ネットワーク共有)向け: 親ディレクトリ作成はしない。
     （リモート側のフォルダ構成は前提として存在する）
     """
-    bak_path = path.with_suffix(path.suffix + ".bak")
-    tmp_path = path.parent / f"{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{int(time_module.time() * 1000)}"
     last_exc = None
-    try:
-        for i in range(8):
-            try:
-                if safe_path_exists(tmp_path, retries=1):
-                    safe_unlink(tmp_path, retries=1)
-                break
-            except Exception:
-                _sleep_backoff(i, cap=0.1)
+    for i in range(10):
         try:
-            if safe_path_exists(path, retries=2):
-                try:
+            bak_path = path.with_suffix(path.suffix + ".bak")
+            try:
+                if path.exists():
                     shutil.copy2(path, bak_path)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
-            fh.flush()
-            try:
-                os.fsync(fh.fileno())
-            except OSError:
+            except Exception:
                 pass
-        safe_replace(tmp_path, path, retries=8)
-        return True, ""
-    except Exception as exc:
-        last_exc = exc
-    finally:
-        try:
-            if safe_path_exists(tmp_path, retries=1):
-                safe_unlink(tmp_path, retries=2)
-        except Exception:
-            pass
-    raise RuntimeError(f"remote_write_failed: {path} ({last_exc})")
+            with path.open("w", encoding="utf-8", newline="\n") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+                fh.write("\n")
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
+            return
+        except (PermissionError, OSError) as exc:
+            last_exc = exc
+            _sleep_backoff(i)
+    logging.error("write_json_remote_overwrite failed: %s (%s)", path, last_exc)
 
 
 def parse_time(value: str) -> time:
@@ -1350,9 +1178,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
 
         self.sign_states: Dict[str, SignState] = {}
         self._preview_enabled = self.settings.get("preview_enabled", True)
-        self._net_executor_small = ThreadPoolExecutor(max_workers=self.settings.get("net_small_workers", 4))
-        self._net_executor_heavy = ThreadPoolExecutor(max_workers=self.settings.get("net_heavy_workers", 2))
-        self._preview_executor = ThreadPoolExecutor(max_workers=self.settings.get("preview_workers", 1))
+        self._executor = ThreadPoolExecutor(max_workers=self.settings.get("thread_workers", 8))
         self._update_lock = threading.Lock()
         self._observer = None
         self._ai_status_mtime: Optional[float] = None
@@ -1361,8 +1187,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._last_log_text = ""
         self._last_log_count = 0
         self._log_buffer = ""
-        self._log_line_queue: List[str] = []
-        self._log_flush_timer: Optional[QtCore.QTimer] = None
         self._header_labels: Dict[str, QtWidgets.QPushButton] = {}
         self._column_widgets: Dict[str, SignageColumnWidget] = {}
         self.ai_level_badge: Optional[QtWidgets.QLabel] = None
@@ -1407,17 +1231,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
         # per-sign last log state is already self._remote_status_log_state
         self._telemetry_timer: Optional[QtCore.QTimer] = None
         self._connectivity_timer: Optional[QtCore.QTimer] = None
-        self._connectivity_busy = False
-        self._silent_poll_busy = False
-        self._heavy_job_busy = False
-        self._op_generation = 0
-        self._op_ignore_before_generation = -1
-        self._preview_request_seq = 0
-        self._preview_request_by_sign: Dict[str, int] = {}
-        self._preview_cache: Dict[str, List[Path]] = {}
-        self._preview_fail_meta: Dict[str, dict] = {}
-        self._telemetry_generation = 0
-        self._connectivity_generation = 0
 
         self._init_ui()
         QtCore.QTimer.singleShot(0, self.apply_dynamic_column_widths)
@@ -1441,10 +1254,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._connectivity_timer.setInterval(10000)
         self._connectivity_timer.timeout.connect(self.poll_connectivity_silent)
         self._connectivity_timer.start()
-        self._log_flush_timer = QtCore.QTimer(self)
-        self._log_flush_timer.setInterval(200)
-        self._log_flush_timer.timeout.connect(self._flush_log_queue)
-        self._log_flush_timer.start()
 
         # watchdog: UI busy が一定時間続く場合にスレッドダンプをログ出力（挙動変更なし）
         self._dbg_watchdog_timer = QtCore.QTimer(self)
@@ -2003,10 +1812,8 @@ QPushButton:disabled {
                 continue
 
             # ここまで来たらUNCを触る（ワーカーへ）
-            self._telemetry_generation += 1
-            generation = self._telemetry_generation
-            future = self._net_executor_small.submit(self.load_pc_status, state)
-            self._remote_status_pending[state.name] = {"future": future, "started": now, "generation": generation}
+            future = self._executor.submit(self.load_pc_status, state)
+            self._remote_status_pending[state.name] = {"future": future, "started": now}
 
     def _apply_remote_status(self, state: SignState, result: dict) -> None:
         now = time_module.monotonic()
@@ -2059,15 +1866,6 @@ QPushButton:disabled {
         self._log_buffer += text
         while "\n" in self._log_buffer:
             line, self._log_buffer = self._log_buffer.split("\n", 1)
-            if line:
-                self._log_line_queue.append(line)
-
-    def _flush_log_queue(self) -> None:
-        if not self._log_line_queue:
-            return
-        lines = self._log_line_queue[:40]
-        self._log_line_queue = self._log_line_queue[40:]
-        for line in lines:
             self._append_log_line(line)
 
     def _append_log_line(self, line: str) -> None:
@@ -2150,11 +1948,8 @@ QPushButton:disabled {
             "phase": phase,
         }
 
-    def _apply_pc_results(self, op_id: str, results: List[dict], generation: Optional[int] = None) -> None:
+    def _apply_pc_results(self, op_id: str, results: List[dict]) -> None:
         if not op_id:
-            return
-        if generation is not None and generation <= self._op_ignore_before_generation:
-            logging.info("[DROP] op result ignored (generation=%s)", generation)
             return
         for result in results:
             sign = result.get("pc_id") or ""
@@ -2365,8 +2160,6 @@ QPushButton:disabled {
         self._dbg("interaction disabled title=%s", title)
 
         op_id = self._log_op_start(title)
-        self._op_generation += 1
-        run_generation = self._op_generation
         try:
             self._dbg_last_progress = {
                 "op_id": op_id,
@@ -2419,9 +2212,6 @@ QPushButton:disabled {
             self._dbg("finish_ok called op_id=%s title=%s", op_id, title)
             if finished.is_set():
                 return
-            if run_generation <= self._op_ignore_before_generation:
-                logging.info("[DROP] finish_ok ignored title=%s generation=%s", title, run_generation)
-                return
             if timeout_timer.isActive():
                 timeout_timer.stop()
             finished.set()
@@ -2436,9 +2226,6 @@ QPushButton:disabled {
             self._dbg("finish_err called op_id=%s title=%s reason=%s", op_id, title, reason)
             if finished.is_set():
                 return
-            if run_generation <= self._op_ignore_before_generation:
-                logging.info("[DROP] finish_err ignored title=%s generation=%s", title, run_generation)
-                return
             if timeout_timer.isActive():
                 timeout_timer.stop()
             finished.set()
@@ -2451,7 +2238,6 @@ QPushButton:disabled {
 
         def handle_timeout() -> None:
             cancel_event.set()
-            self._op_ignore_before_generation = max(self._op_ignore_before_generation, run_generation)
             try:
                 pending = len(getattr(self, "_dbg_ui_post_pending", {}))
                 last_dequeue = float(getattr(self, "_dbg_ui_post_last_dequeue_ts", 0.0) or 0.0)
@@ -2629,25 +2415,22 @@ QPushButton:disabled {
             return False
         return self._tcp_probe(ip, 445, timeout=timeout_sec)
 
-    def is_share_reachable(self, state: SignState, mode: str = "tcp_only", ping: bool = False) -> Tuple[bool, str]:
+    def is_share_reachable(self, state: SignState) -> Tuple[bool, str]:
         t0 = time_module.monotonic()
         self._dbg("share_reachable start sign=%s ip=%s share=%s", state.name, state.ip, state.share_name)
-        if ping:
-            ok_ping = is_reachable(state.ip)
-            self._dbg("share_reachable ping sign=%s ok=%s dt=%.3fs", state.name, ok_ping, time_module.monotonic() - t0)
-            if not ok_ping:
-                return False, "到達不可（ping）"
+        ok_ping = is_reachable(state.ip)
+        self._dbg("share_reachable ping sign=%s ok=%s dt=%.3fs", state.name, ok_ping, time_module.monotonic() - t0)
+        if not ok_ping:
+            return False, "到達不可（ping）"
         t1 = time_module.monotonic()
         ok_tcp = self._tcp_probe(state.ip, 445, timeout=1.0)
         self._dbg("share_reachable tcp445 sign=%s ok=%s dt=%.3fs", state.name, ok_tcp, time_module.monotonic() - t1)
         if not ok_tcp:
             return False, "到達不可（tcp445）"
-        if mode == "tcp_only":
-            return True, ""
         root = build_unc_path(state.ip, state.share_name, "")
         try:
             t2 = time_module.monotonic()
-            exists = safe_path_exists(Path(root), retries=2)
+            exists = Path(root).exists()
             self._dbg("share_reachable unc_exists sign=%s ok=%s dt=%.3fs path=%s", state.name, exists, time_module.monotonic() - t2, root)
             if exists:
                 return True, ""
@@ -2724,84 +2507,53 @@ QPushButton:disabled {
             column.sample_list = []
             column.show_preview_message("プレビューOFF")
             return
-        meta = self._preview_fail_meta.get(state.name, {})
-        if time_module.monotonic() < float(meta.get("pause_until", 0.0)):
-            column.show_preview_message("プレビュー取得失敗")
+        samples = self.list_sample_videos(state.active_channel)
+        if not samples:
+            column.show_preview_message("サンプルなし")
             return
-        self._preview_request_seq += 1
-        request_id = self._preview_request_seq
-        self._preview_request_by_sign[state.name] = request_id
-        cached = self._preview_cache.get(state.name, [])
-        if cached:
-            column.show_preview_message(f"読込中: {cached[0].name}")
-        else:
-            column.show_preview_message("読込中")
-        self._preview_executor.submit(self._preview_worker, state, column, request_id, state.active_channel)
 
-    def _preview_worker(self, state: SignState, column: SignageColumnWidget, request_id: int, channel: str) -> None:
-        try:
-            samples = self.list_sample_videos(channel)
-            frame = None
-            sample = samples[0] if samples else None
-            if sample and (not HAS_QTMULTIMEDIA) and cv2 is not None:
-                frame = self.read_sample_frame(sample)
-        except Exception as exc:
-            samples = []
-            frame = None
-            logging.warning("preview worker failed %s (%s)", state.name, exc)
-        def apply_result() -> None:
-            if self._preview_request_by_sign.get(state.name) != request_id:
-                return
-            if not samples:
-                fail = self._preview_fail_meta.get(state.name, {"count": 0})
-                fail["count"] = int(fail.get("count", 0)) + 1
-                if fail["count"] >= 3:
-                    fail["pause_until"] = time_module.monotonic() + min(120.0, 10.0 * fail["count"])
-                self._preview_fail_meta[state.name] = fail
-                column.show_preview_message("サンプルなし")
-                return
-            self._preview_fail_meta[state.name] = {"count": 0, "pause_until": 0.0}
-            self._preview_cache[state.name] = samples
-            if HAS_QTMULTIMEDIA:
-                if column.current_channel != channel or samples != column.sample_list:
-                    column.current_channel = channel
-                    column.set_sample_list(samples)
-                return
-            sample = samples[0]
-            if cv2 is None or frame is None:
-                column.show_preview_message(f"サンプル: {sample.name}")
-                return
-            height, width, _ = frame.shape
-            image = QtGui.QImage(frame.data, width, height, QtGui.QImage.Format_BGR888)
-            pixmap = QtGui.QPixmap.fromImage(image).scaled(
-                200, 120, QtCore.Qt.AspectRatioMode.KeepAspectRatio
-            )
-            column.show_preview_pixmap(pixmap)
-        self._ui_call(apply_result)
+        if HAS_QTMULTIMEDIA:
+            if column.current_channel != state.active_channel or samples != column.sample_list:
+                column.current_channel = state.active_channel
+                column.set_sample_list(samples)
+            return
+
+        sample = samples[0]
+        if cv2 is None:
+            column.show_preview_message(f"サンプル: {sample.name}")
+            return
+
+        frame = self.read_sample_frame(sample)
+        if frame is None:
+            column.show_preview_message(f"サンプル: {sample.name}")
+            return
+
+        height, width, _ = frame.shape
+        image = QtGui.QImage(frame.data, width, height, QtGui.QImage.Format_BGR888)
+        pixmap = QtGui.QPixmap.fromImage(image).scaled(
+            200, 120, QtCore.Qt.AspectRatioMode.KeepAspectRatio
+        )
+        column.show_preview_pixmap(pixmap)
 
     def list_sample_videos(self, channel: str) -> List[Path]:
         path = CONTENT_DIR / channel
-        if not safe_path_exists(path, retries=1):
+        if not path.exists():
             return []
         samples: List[Path] = []
         for entry in sorted(path.glob("*.mp4")):
-            if entry.is_file() and "sample" in entry.name.lower() and _is_sync_target_name(entry.name):
+            if entry.is_file() and "sample" in entry.name.lower():
                 samples.append(entry)
         return samples
 
     def read_sample_frame(self, file_path: Path):
         capture = cv2.VideoCapture(str(file_path))
-        try:
-            ok, frame = capture.read()
-        finally:
-            capture.release()
+        ok, frame = capture.read()
+        capture.release()
         if not ok:
             return None
         return frame
 
     def check_connectivity(self) -> None:
-        if self._silent_poll_busy:
-            logging.info("[SKIP] silent poll busy -> manual connectivity prioritized")
         self.run_exclusive_task(
             "サイネージPC通信確認",
             self._task_check_connectivity,
@@ -2809,10 +2561,7 @@ QPushButton:disabled {
             detail="通信確認 指示送信",
         )
 
-    def _task_check_connectivity(self, progress, op_id: Optional[str] = None, cancel_event=None) -> None:
-        if self._connectivity_busy:
-            return
-        self._connectivity_busy = True
+    def _task_check_connectivity(self, progress, op_id: Optional[str] = None) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
         timeout = float(timeout)
         timeout = max(0.2, min(timeout, 5.0))
@@ -2826,99 +2575,87 @@ QPushButton:disabled {
             deadline_seconds,
         )
 
-        try:
-            future_to_state = {
-                self._net_executor_small.submit(self.check_single_connectivity, state): state
-                for state in targets
-            }
-            pending = set(future_to_state.keys())
-            while pending:
-                if cancel_event is not None and cancel_event.is_set():
-                    break
-                remaining = deadline - time_module.time()
-                if remaining <= 0:
-                    break
-                try:
-                    for future in as_completed(pending, timeout=remaining):
-                        pending.discard(future)
-                        state = future_to_state[future]
-                        progress(state.name)
-                        try:
-                            online, error, status_note = future.result(timeout=0)
-                        except Exception as exc:
-                            online, error, status_note = False, str(exc), ""
-                        state.online = bool(online)
-                        state.last_error = error or ""
-                        state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if status_note and online:
-                            logging.info("[WARN] %s 状態未取得 (%s)", state.name, status_note)
-                        if op_id:
-                            reason = error or ""
-                            self._apply_pc_results(op_id, [self._build_pc_result(state, online, reason, "sent")], self._op_generation)
-                        self._ui_call(
-                            lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s)
-                        )
-                except FuturesTimeoutError:
-                    break
-
-            if pending:
-                for future in pending:
-                    future.cancel()
+        future_to_state = {
+            self._executor.submit(self.check_single_connectivity, state): state
+            for state in targets
+        }
+        pending = set(future_to_state.keys())
+        while pending:
+            remaining = deadline - time_module.time()
+            if remaining <= 0:
+                break
+            try:
+                for future in as_completed(pending, timeout=remaining):
+                    pending.discard(future)
                     state = future_to_state[future]
                     progress(state.name)
-                    state.online = False
-                    state.last_error = "timeout"
+                    try:
+                        online, error, status_note = future.result(timeout=0)
+                    except Exception as exc:
+                        online, error, status_note = False, str(exc), ""
+                    state.online = bool(online)
+                    state.last_error = error or ""
                     state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    if status_note and online:
+                        logging.info("[WARN] %s 状態未取得 (%s)", state.name, status_note)
                     if op_id:
-                        self._apply_pc_results(
-                            op_id,
-                            [self._build_pc_result(state, False, state.last_error, "sent")],
-                            self._op_generation,
-                        )
+                        reason = error or ""
+                        self._apply_pc_results(op_id, [self._build_pc_result(state, online, reason, "sent")])
                     self._ui_call(
                         lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s)
                     )
-        finally:
-            self._connectivity_busy = False
+            except FuturesTimeoutError:
+                break
+
+        if pending:
+            for future in pending:
+                future.cancel()
+                state = future_to_state[future]
+                progress(state.name)
+                state.online = False
+                state.last_error = "timeout"
+                state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if op_id:
+                    self._apply_pc_results(
+                        op_id,
+                        [self._build_pc_result(state, False, state.last_error, "sent")],
+                    )
+                self._ui_call(
+                    lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s)
+                )
 
     def poll_connectivity_silent(self) -> None:
-        if self._connectivity_busy or self._heavy_job_busy or self._silent_poll_busy:
-            return
-        self._silent_poll_busy = True
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
-        try:
-            for state in self.sign_states.values():
-                if not state.exists or not state.enabled:
-                    if state.online:
-                        state.online = False
-                        state.last_error = ""
-                        state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
-                    continue
-                futures[self._net_executor_small.submit(self.check_single_connectivity, state)] = state
-
-            for future, state in futures.items():
-                try:
-                    online, error, status_note = future.result(timeout=timeout)
-                except FuturesTimeoutError:
-                    online, error, status_note = False, "timeout", ""
-                except Exception as exc:
-                    online, error, status_note = False, str(exc), ""
-
-                if online != state.online:
-                    state.online = online
-                    state.last_error = error or ""
+        for state in self.sign_states.values():
+            if not state.exists or not state.enabled:
+                if state.online:
+                    state.online = False
+                    state.last_error = ""
                     state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    if online:
-                        logging.info("[POLL] %s オンライン", state.name)
-                    else:
-                        logging.info("[POLL] %s オフライン (%s)", state.name, error or "offline")
                     self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
-                if status_note and online:
-                    logging.info("[POLL] %s 状態未取得 (%s)", state.name, status_note)
-        finally:
-            self._silent_poll_busy = False
+                continue
+            futures[self._executor.submit(self.check_single_connectivity, state)] = state
+
+        for future, state in futures.items():
+            try:
+                online, error, status_note = future.result(timeout=timeout)
+            except FuturesTimeoutError:
+                online, error, status_note = False, "timeout", ""
+            except Exception as exc:
+                online, error, status_note = False, str(exc), ""
+
+            if online != state.online:
+                state.online = online
+                state.last_error = error or ""
+                state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if online:
+                    logging.info("[POLL] %s オンライン", state.name)
+                else:
+                    logging.info("[POLL] %s オフライン (%s)", state.name, error or "offline")
+                self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
+            if status_note and online:
+                logging.info("[POLL] %s 状態未取得 (%s)", state.name, status_note)
 
     def check_single_connectivity(self, state: SignState) -> Tuple[bool, str, str]:
         if not self._tcp_probe(state.ip, 445, timeout=1.0):
@@ -3009,7 +2746,6 @@ QPushButton:disabled {
             self._ui_call(lambda: self._log_reject("配布処理", "すでに配布中"))
             return [], 0, 0, 0
         self._distribute_busy = True
-        self._heavy_job_busy = True
         try:
             timeout = self.settings.get("network_timeout_seconds", 4)
             futures = {}
@@ -3028,7 +2764,7 @@ QPushButton:disabled {
                     if log_label:
                         self._log_sign_skip(state, "非アクティブ")
                     continue
-                futures[self._net_executor_heavy.submit(self.distribute_active, state)] = state
+                futures[self._executor.submit(self.distribute_active, state)] = state
 
             for future, state in futures.items():
                 try:
@@ -3059,7 +2795,6 @@ QPushButton:disabled {
             return results, ok_count, skip_count, err_count
         finally:
             self._distribute_busy = False
-            self._heavy_job_busy = False
 
     def distribute_all(self, log_label: Optional[str] = None) -> Tuple[int, int, int]:
         _, ok_count, skip_count, err_count = self._distribute_all_results(log_label)
@@ -3071,7 +2806,7 @@ QPushButton:disabled {
             return False, "active_channel missing"
         t0 = time_module.monotonic()
         self._dbg("distribute_active start sign=%s", state.name)
-        ok, msg = self.is_share_reachable(state, mode="tcp_only", ping=False)
+        ok, msg = self.is_share_reachable(state)
         self._dbg(
             "distribute_active share_check sign=%s ok=%s dt=%.3fs msg=%s",
             state.name,
@@ -3107,44 +2842,37 @@ QPushButton:disabled {
     def start_sync(self) -> None:
         self.run_exclusive_task("動画同期", self._task_sync_all, detail="同期 指示送信")
 
-    def _task_sync_all(self, progress, op_id: Optional[str] = None, cancel_event=None) -> None:
-        self._heavy_job_busy = True
+    def _task_sync_all(self, progress, op_id: Optional[str] = None) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
-        max_workers = self.settings.get("sync_workers", 2)
+        max_workers = self.settings.get("sync_workers", 4)
         futures = {}
-        try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for state in self.sign_states.values():
-                    if cancel_event is not None and cancel_event.is_set():
-                        break
-                    if not state.exists or not state.enabled:
-                        continue
-                    futures[executor.submit(self.sync_sign_content, state, progress, cancel_event)] = state
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for state in self.sign_states.values():
+                if not state.exists or not state.enabled:
+                    continue
+                futures[executor.submit(self.sync_sign_content, state, progress)] = state
 
-                results: List[dict] = []
-                for future, state in futures.items():
-                    if cancel_event is not None and cancel_event.is_set():
-                        break
-                    try:
-                        ok, message = future.result(timeout=timeout)
-                    except FuturesTimeoutError:
-                        ok, message = False, "timeout"
-                    except Exception as exc:
-                        ok, message = False, str(exc)
-                    state.last_error = message if not ok else ""
-                    self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
-                    results.append(self._build_pc_result(state, ok, message or "", "sent"))
-                    if not ok:
-                        logging.warning("[ERR] %s 同期失敗 (%s)", state.name, message)
-            self._apply_pc_results(op_id or "", results, self._op_generation)
-        finally:
-            self._heavy_job_busy = False
+            results: List[dict] = []
+            for future, state in futures.items():
+                try:
+                    ok, message = future.result(timeout=timeout)
+                except FuturesTimeoutError:
+                    ok, message = False, "timeout"
+                except Exception as exc:
+                    ok, message = False, str(exc)
+                state.last_error = message if not ok else ""
+                self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
+                results.append(self._build_pc_result(state, ok, message or "", "sent"))
+                if not ok:
+                    logging.warning("[ERR] %s 同期失敗 (%s)", state.name, message)
 
-    def sync_sign_content(self, state: SignState, progress_channel=None, cancel_event=None) -> Tuple[bool, str]:
+        self._apply_pc_results(op_id or "", results)
+
+    def sync_sign_content(self, state: SignState, progress_channel=None) -> Tuple[bool, str]:
         logging.info("[RUN] %s 同期開始", state.name)
         self._dbg("sync start sign=%s", state.name)
         t0 = time_module.monotonic()
-        ok, msg = self.is_share_reachable(state, mode="path_check", ping=False)
+        ok, msg = self.is_share_reachable(state)
         self._dbg("sync share_check sign=%s ok=%s dt=%.3fs msg=%s", state.name, ok, time_module.monotonic() - t0, msg)
         if not ok:
             return False, msg
@@ -3158,18 +2886,13 @@ QPushButton:disabled {
             logging.info("%s", text)
 
         for channel in CHANNELS:
-            if cancel_event is not None and cancel_event.is_set():
-                return False, "cancelled"
             local_dir = CONTENT_DIR / channel
             if not local_dir.exists():
                 continue
             remote_content = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONTENT_DIR}\\{channel}")
             remote_dir = Path(remote_content)
             t1 = time_module.monotonic()
-            try:
-                exists = safe_path_exists(remote_dir, retries=2)
-            except Exception:
-                exists = False
+            exists = remote_dir.exists()
             self._dbg(
                 "sync ch=%s remote_exists sign=%s exists=%s dt=%.3fs path=%s",
                 channel,
@@ -3217,41 +2940,33 @@ QPushButton:disabled {
     def collect_logs(self) -> None:
         self.run_exclusive_task("LOG回収中", self._task_collect_logs, detail="ログ回収 指示送信")
 
-    def _task_collect_logs(self, progress, op_id: Optional[str] = None, cancel_event=None) -> None:
-        self._heavy_job_busy = True
+    def _task_collect_logs(self, progress, op_id: Optional[str] = None) -> None:
         timeout = self.settings.get("network_timeout_seconds", 4)
         futures = {}
         results: List[dict] = []
-        try:
-            for state in self.sign_states.values():
-                if cancel_event is not None and cancel_event.is_set():
-                    break
-                if not state.exists or not state.enabled:
-                    continue
-                futures[self._net_executor_heavy.submit(self.fetch_logs_for_sign, state)] = state
-            for future, state in futures.items():
-                if cancel_event is not None and cancel_event.is_set():
-                    break
-                progress(state.name)
-                try:
-                    ok, message = future.result(timeout=timeout)
-                except FuturesTimeoutError:
-                    ok, message = False, "timeout"
-                except Exception as exc:
-                    ok, message = False, str(exc)
-                state.last_error = message if not ok else ""
-                results.append(self._build_pc_result(state, ok, message or "", "sent"))
-                if not ok:
-                    logging.warning("[ERR] %s LOG回収失敗 (%s)", state.name, message)
-                self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
-            self._apply_pc_results(op_id or "", results, self._op_generation)
-        finally:
-            self._heavy_job_busy = False
+        for state in self.sign_states.values():
+            if not state.exists or not state.enabled:
+                continue
+            futures[self._executor.submit(self.fetch_logs_for_sign, state)] = state
+        for future, state in futures.items():
+            progress(state.name)
+            try:
+                ok, message = future.result(timeout=timeout)
+            except FuturesTimeoutError:
+                ok, message = False, "timeout"
+            except Exception as exc:
+                ok, message = False, str(exc)
+            state.last_error = message if not ok else ""
+            results.append(self._build_pc_result(state, ok, message or "", "sent"))
+            if not ok:
+                logging.warning("[ERR] %s LOG回収失敗 (%s)", state.name, message)
+            self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
+        self._apply_pc_results(op_id or "", results)
 
     def fetch_logs_for_sign(self, state: SignState) -> Tuple[bool, str]:
         self._dbg("fetch_logs start sign=%s", state.name)
         t0 = time_module.monotonic()
-        ok, msg = self.is_share_reachable(state, mode="path_check", ping=False)
+        ok, msg = self.is_share_reachable(state)
         self._dbg("fetch_logs share_check sign=%s ok=%s dt=%.3fs msg=%s", state.name, ok, time_module.monotonic() - t0, msg)
         if not ok:
             return False, msg
@@ -3262,7 +2977,7 @@ QPushButton:disabled {
         remote_logs = build_unc_path(state.ip, state.share_name, REMOTE_LOGS_DIR)
         try:
             t1 = time_module.monotonic()
-            exists = safe_path_exists(Path(remote_logs), retries=2)
+            exists = Path(remote_logs).exists()
             self._dbg(
                 "fetch_logs exists sign=%s exists=%s dt=%.3fs path=%s",
                 state.name,
@@ -3274,27 +2989,21 @@ QPushButton:disabled {
                 return False, "remote logs missing"
             t2 = time_module.monotonic()
             copied = 0
-            failed = 0
-            files = safe_iter_files(Path(remote_logs), {".log", ".txt", ".json"}, retries=2)
-            for entry in files[: int(self.settings.get("log_fetch_limit", 200))]:
-                try:
-                    copy_file_atomic(entry, dest / entry.name)
+            entries = 0
+            for entry in Path(remote_logs).iterdir():
+                entries += 1
+                if entry.is_file():
+                    shutil.copy2(entry, dest / entry.name)
                     copied += 1
-                except Exception:
-                    failed += 1
             self._dbg(
                 "fetch_logs iterdir sign=%s files=%d copied=%d dt=%.3fs",
                 state.name,
-                len(files),
+                entries,
                 copied,
                 time_module.monotonic() - t2,
             )
-            logging.info("Logs fetched for %s copied=%d failed=%d", state.name, copied, failed)
-            if copied > 0:
-                return True, ""
-            if failed > 0:
-                return False, "all_files_failed"
-            return False, "no_log_files"
+            logging.info("Logs fetched for %s", state.name)
+            return True, ""
         except Exception as exc:
             logging.exception("Failed log fetch for %s", state.name)
             return False, str(exc)
@@ -3322,7 +3031,7 @@ QPushButton:disabled {
         if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         op_id = self._log_op_start("電源操作", f"{state.name} {cmd_label} 指示送信（確認中）")
-        ok, msg = self.is_share_reachable(state, mode="tcp_only", ping=False)
+        ok, msg = self.is_share_reachable(state)
         if not ok:
             state.last_error = msg
             self._update_column(int(state.name.replace("Sign", "")) - 1, state)
@@ -3346,15 +3055,12 @@ QPushButton:disabled {
             self._pc_status_skip_until[state.name] = time_module.monotonic() + 60
 
             def monitor_offline() -> None:
-                try:
-                    deadline = time_module.monotonic() + 120
-                    while time_module.monotonic() < deadline:
-                        if not self._tcp_probe(state.ip, 445, timeout=1.0):
-                            self._ui_call(lambda oid=op_id: self._log_op_append(oid, " 実行確認OK"))
-                            break
-                        time_module.sleep(3)
-                except Exception as exc:
-                    logging.info("monitor_offline skipped: %s", exc)
+                deadline = time_module.monotonic() + 120
+                while time_module.monotonic() < deadline:
+                    if not self._tcp_probe(state.ip, 445, timeout=1.0):
+                        self._ui_call(lambda oid=op_id: self._log_op_append(oid, " 実行確認OK"))
+                        break
+                    time_module.sleep(3)
             threading.Thread(target=monitor_offline, daemon=True).start()
             self._log_op_done(op_id)
         except Exception as exc:
@@ -3451,9 +3157,7 @@ QPushButton:disabled {
         if self._observer:
             self._observer.stop()
             self._observer.join()
-        self._net_executor_small.shutdown(wait=False)
-        self._net_executor_heavy.shutdown(wait=False)
-        self._preview_executor.shutdown(wait=False)
+        self._executor.shutdown(wait=False)
         if self._log_handler:
             logging.getLogger().removeHandler(self._log_handler)
         super().closeEvent(event)
