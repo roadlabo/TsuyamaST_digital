@@ -278,11 +278,12 @@ class StreamPlayer(QObject):
         try:
             worker.stop()
             worker.quit()
-            finished = worker.wait(5000)
+            finished = worker.wait(800)
             if not finished:
                 logger.warning("Stream worker did not finish in timeout. force terminate.")
                 worker.terminate()
-                worker.wait(1000)
+                logger.warning("force terminate executed for stream worker")
+                worker.wait(500)
             worker.deleteLater()
             self._worker = None
         finally:
@@ -430,6 +431,7 @@ class AspectRatioVideoLabel(QLabel):
 
 class CameraTile(QWidget):
     clicked = pyqtSignal(dict)
+    first_frame_ready = pyqtSignal(str)
 
     def __init__(self, camera_config: dict, parent: QWidget | None = None):
         super().__init__(parent)
@@ -443,6 +445,7 @@ class CameraTile(QWidget):
         self._status_text = "接続待機"
         self._last_frame_monotonic = 0.0
         self._stream_type = "SUB"
+        self._has_emitted_first_frame = False
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(1000)
         self._update_timer.timeout.connect(self._update_info_panel)
@@ -492,6 +495,16 @@ class CameraTile(QWidget):
         self.stream_player.status_changed.connect(self._update_status)
 
     def start_stream(self) -> None:
+        self.stream_player.stop()
+        self._last_status = "INIT"
+        self._status_text = "接続待機"
+        self._last_image = None
+        self._fps = 0.0
+        self._frame_count = 0
+        self._last_fps_update = time.monotonic()
+        self._last_frame_monotonic = 0.0
+        self._has_emitted_first_frame = False
+
         if not self.camera_config.get("enabled", True):
             self.show_offline()
             self._update_status("OFF")
@@ -525,6 +538,9 @@ class CameraTile(QWidget):
 
     def _update_frame(self, image: QImage) -> None:
         self._last_image = image
+        if not self._has_emitted_first_frame:
+            self._has_emitted_first_frame = True
+            self.first_frame_ready.emit(self.camera_config.get("id", ""))
         self._frame_count += 1
         now = time.monotonic()
         self._last_frame_monotonic = now
@@ -722,11 +738,22 @@ class MainWindow(QMainWindow):
         self.fullscreen_window: FullscreenWindow | None = None
         self.tiles_by_camera_id: dict[str, CameraTile] = {}
         self.mode_buttons: dict[str, QPushButton] = {}
-        self.current_mode = "all"
-        self._switching_group = False
+        self.current_mode = ""
+        self._switch_in_progress = False
+        self._pending_mode: str | None = None
+        self._mode_switch_token = 0
+        self._switch_cooldown_timer = QTimer(self)
+        self._switch_cooldown_timer.setSingleShot(True)
+        self._switch_cooldown_timer.timeout.connect(self._process_pending_mode)
+        self._group_load_timeout_timer = QTimer(self)
+        self._group_load_timeout_timer.setSingleShot(True)
+        self._group_load_timeout_timer.timeout.connect(self._on_group_load_timeout)
+        self._loading_camera_ids: set[str] = set()
+        self._loaded_camera_ids: set[str] = set()
+        self._current_visible_ids: list[str] = []
         self.loop_enabled = False
         self.loop_timer = QTimer(self)
-        self.loop_timer.setInterval(10_000)
+        self.loop_timer.setInterval(60_000)
         self.loop_timer.timeout.connect(self._advance_group_loop)
         self.loop_button: QPushButton | None = None
 
@@ -764,7 +791,7 @@ class MainWindow(QMainWindow):
         self._build_tiles()
 
         startup_mode = config.get("app", {}).get("startup_mode", "all")
-        self.switch_mode(startup_mode)
+        self.request_mode_switch(startup_mode)
 
     def _build_mode_buttons(self) -> None:
         modes = [("all", "18画面一括")] + [(f"group{i}", f"{i}グループ") for i in range(1, 7)]
@@ -784,39 +811,58 @@ class MainWindow(QMainWindow):
         for cam in self.cameras:
             tile = CameraTile(cam)
             tile.clicked.connect(self.open_fullscreen)
+            tile.first_frame_ready.connect(self._on_tile_first_frame)
             self.tiles_by_camera_id[cam["id"]] = tile
 
-    def switch_mode(self, mode: str) -> None:
-        if self._switching_group:
-            logger.info("group switch skipped (already switching): requested_mode=%s", mode)
+    def request_mode_switch(self, mode: str) -> None:
+        logger.info("mode switch request received: mode=%s current=%s in_progress=%s", mode, self.current_mode, self._switch_in_progress)
+        if mode not in self.mode_buttons:
+            logger.warning("Unknown mode request: %s", mode)
             return
 
-        self._switching_group = True
-        logger.info("group switch start: from=%s to=%s", self.current_mode, mode)
-        try:
-            self._switch_mode_internal(mode)
-        finally:
-            self._switching_group = False
-            logger.info("group switch completed: current=%s", self.current_mode)
+        if self._switch_in_progress:
+            self._pending_mode = mode
+            logger.info("mode switch queued: %s", mode)
+            return
 
-    def _switch_mode_internal(self, mode: str) -> None:
-        if mode not in self.mode_buttons:
-            logger.warning("Unknown startup/mode '%s'. fallback to all", mode)
-            mode = "all"
+        if mode == self.current_mode:
+            logger.info("mode switch ignored (same mode): %s", mode)
+            return
 
-        logger.info("loading new group mode=%s", mode)
+        self._start_mode_switch(mode)
+
+    def _start_mode_switch(self, mode: str) -> None:
+        self._switch_in_progress = True
+        self._mode_switch_token += 1
+        token = self._mode_switch_token
+        self._set_mode_buttons_enabled(False)
+        logger.info("group switch start: token=%d from=%s to=%s", token, self.current_mode, mode)
+
         self.current_mode = mode
         for key, button in self.mode_buttons.items():
             button.setChecked(key == mode)
 
-        self._clear_current_group()
-
         visible_ids = self._visible_camera_ids(mode)
+        self._current_visible_ids = visible_ids
+        self._loading_camera_ids = {
+            cam_id
+            for cam_id in visible_ids
+            if self.tiles_by_camera_id.get(cam_id) and self.tiles_by_camera_id[cam_id].camera_config.get("enabled", True)
+        }
+        self._loaded_camera_ids = set()
+
+        self._clear_current_group()
         self._stop_fullscreen_stream()
         self._layout_tiles(visible_ids)
+        logger.info("starting target camera streams: mode=%s count=%d", mode, len(visible_ids))
         self._update_streams(visible_ids)
+        self._group_load_timeout_timer.start(15_000)
+        if not self._loading_camera_ids:
+            logger.info("group load complete (no enabled cameras to wait): mode=%s", mode)
+            self._finish_mode_switch()
 
     def _clear_current_group(self) -> None:
+        stop_count = 0
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             widget = item.widget()
@@ -827,8 +873,9 @@ class MainWindow(QMainWindow):
                 logger.info("stopping tile camera_id=%s", camera_id)
                 widget.stop_stream()
                 logger.info("stream stopped camera_id=%s", camera_id)
+                stop_count += 1
             widget.setParent(None)
-        logger.info("clearing old group completed")
+        logger.info("clearing old group completed: stopped_count=%d", stop_count)
 
     def _stop_fullscreen_stream(self) -> None:
         if self.fullscreen_window is None:
@@ -865,15 +912,16 @@ class MainWindow(QMainWindow):
     def _manual_switch_mode(self, mode: str) -> None:
         if mode != self.current_mode and self.loop_enabled:
             self._stop_loop()
-        self.switch_mode(mode)
+        self.request_mode_switch(mode)
 
     def _toggle_loop_mode(self, checked: bool) -> None:
         if checked:
             self.loop_enabled = True
+            logger.info("loop mode ON")
             self.loop_button.setText("ループ表示: ON")
             self.loop_button.setStyleSheet("background-color: #145d7b; border: 1px solid #7fe8ff;")
             if self.current_mode == "all":
-                self.switch_mode("group1")
+                self.request_mode_switch("group1")
             self.loop_timer.start()
         else:
             self._stop_loop()
@@ -881,6 +929,7 @@ class MainWindow(QMainWindow):
     def _stop_loop(self) -> None:
         self.loop_enabled = False
         self.loop_timer.stop()
+        logger.info("loop mode OFF")
         if self.loop_button is not None:
             self.loop_button.blockSignals(True)
             self.loop_button.setChecked(False)
@@ -891,11 +940,11 @@ class MainWindow(QMainWindow):
     def _advance_group_loop(self) -> None:
         group_modes = [f"group{i}" for i in range(1, 7)]
         if self.current_mode not in group_modes:
-            self.switch_mode("group1")
+            self.request_mode_switch("group1")
             return
         current_idx = group_modes.index(self.current_mode)
         next_mode = group_modes[(current_idx + 1) % len(group_modes)]
-        self.switch_mode(next_mode)
+        self.request_mode_switch(next_mode)
 
     def _update_streams(self, visible_ids: list[str]) -> None:
         visible = set(visible_ids)
@@ -904,6 +953,60 @@ class MainWindow(QMainWindow):
                 tile.start_stream()
             else:
                 tile.stop_stream()
+        logger.info("stream update complete: start_count=%d stop_count=%d", len(visible), len(self.tiles_by_camera_id) - len(visible))
+
+    def _finish_mode_switch(self) -> None:
+        if not self._switch_in_progress:
+            return
+        self._switch_in_progress = False
+        self._group_load_timeout_timer.stop()
+        self._set_mode_buttons_enabled(True)
+        logger.info(
+            "group load complete: mode=%s loaded=%d expected=%d",
+            self.current_mode,
+            len(self._loaded_camera_ids),
+            len(self._current_visible_ids),
+        )
+        if self._pending_mode and self._pending_mode != self.current_mode:
+            self._switch_cooldown_timer.start(300)
+        elif self._pending_mode == self.current_mode:
+            self._pending_mode = None
+
+    def _process_pending_mode(self) -> None:
+        if not self._pending_mode:
+            return
+        next_mode = self._pending_mode
+        self._pending_mode = None
+        logger.info("processing pending mode: %s", next_mode)
+        self.request_mode_switch(next_mode)
+
+    def _set_mode_buttons_enabled(self, enabled: bool) -> None:
+        for button in self.mode_buttons.values():
+            button.setEnabled(enabled)
+        if self.loop_button is not None:
+            self.loop_button.setEnabled(enabled)
+
+    def _on_tile_first_frame(self, camera_id: str) -> None:
+        if not self._switch_in_progress:
+            return
+        if camera_id not in self._loading_camera_ids:
+            return
+        self._loaded_camera_ids.add(camera_id)
+        self._loading_camera_ids.discard(camera_id)
+        logger.info(
+            "first frame arrived: mode=%s camera_id=%s remaining=%d",
+            self.current_mode,
+            camera_id,
+            len(self._loading_camera_ids),
+        )
+        if not self._loading_camera_ids:
+            self._finish_mode_switch()
+
+    def _on_group_load_timeout(self) -> None:
+        if not self._switch_in_progress:
+            return
+        logger.warning("group load timeout: mode=%s pending_unloaded=%s", self.current_mode, sorted(self._loading_camera_ids))
+        self._finish_mode_switch()
 
     def open_fullscreen(self, camera_config: dict) -> None:
         if self.single_instance and self.fullscreen_window is not None:
