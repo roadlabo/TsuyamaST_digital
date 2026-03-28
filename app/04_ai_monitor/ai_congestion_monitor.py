@@ -1136,10 +1136,10 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QtGui.QColor("#0f1620"))
 
-        y_axis_w = 34
-        right_margin = 8
-        top_margin = 24
-        bottom_margin = 22
+        y_axis_w = 28
+        right_margin = 5
+        top_margin = 18
+        bottom_margin = 16
         plot = QtCore.QRectF(y_axis_w, top_margin, max(10, self.width() - y_axis_w - right_margin), max(10, self.height() - top_margin - bottom_margin))
 
         painter.setPen(QtGui.QPen(QtGui.QColor("#1d6f8b"), 1))
@@ -1292,21 +1292,21 @@ class CameraPanel(QtWidgets.QFrame):
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
         self._status_connected = False
-        self.video_target_w = int(640 * 0.8)
-        self.video_target_h = int(360 * 0.8)
+        self.video_target_w = 560
+        self.video_target_h = 315
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(3, 3, 3, 3)
-        root.setSpacing(2)
+        root.setSpacing(1)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(4)
+        top_row.setSpacing(3)
 
         video_box = QtWidgets.QWidget()
         video_layout = QtWidgets.QVBoxLayout(video_box)
         video_layout.setContentsMargins(0, 0, 0, 0)
-        video_layout.setSpacing(2)
+        video_layout.setSpacing(1)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
         self.video.setFixedSize(self.video_target_w, self.video_target_h)
@@ -1316,13 +1316,15 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         video_box.setMinimumWidth(self.video_target_w)
         video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-        top_row.addWidget(video_box, 1)
+        top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(232)
+        right_box.setMinimumWidth(190)
+        right_box.setMaximumWidth(190)
+        right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(4, 2, 4, 2)
-        right.setSpacing(3)
+        right.setContentsMargins(3, 1, 3, 1)
+        right.setSpacing(2)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.title = QtWidgets.QLabel("")
@@ -1331,7 +1333,7 @@ class CameraPanel(QtWidgets.QFrame):
         right.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         btn_col = QtWidgets.QVBoxLayout()
-        btn_col.setSpacing(3)
+        btn_col.setSpacing(2)
         self.btn_line = QtWidgets.QPushButton("ライン設定")
         self.btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
         self.btn_exclude = QtWidgets.QPushButton("除外エリア")
@@ -1349,14 +1351,14 @@ class CameraPanel(QtWidgets.QFrame):
 
         level_row = QtWidgets.QHBoxLayout()
         level_row.setContentsMargins(0, 0, 0, 0)
-        level_row.setSpacing(6)
+        level_row.setSpacing(4)
 
         level_row.addWidget(self.congestion_bar, 2)
 
         th_box = QtWidgets.QWidget()
         th_box_layout = QtWidgets.QHBoxLayout(th_box)
         th_box_layout.setContentsMargins(0, 0, 0, 0)
-        th_box_layout.setSpacing(4)
+        th_box_layout.setSpacing(3)
         th_label = QtWidgets.QLabel("TH")
         th_label.setStyleSheet("font-size:11px;color:#00d9ff;font-weight:bold;")
         self.threshold_edit = QtWidgets.QLineEdit()
@@ -1370,7 +1372,7 @@ class CameraPanel(QtWidgets.QFrame):
         right.addLayout(level_row)
 
         count_row = QtWidgets.QHBoxLayout()
-        count_row.setSpacing(4)
+        count_row.setSpacing(3)
         self.ltor_card = QtWidgets.QLabel("LtoR：0")
         self.rtol_card = QtWidgets.QLabel("RtoL：0")
         for card in (self.ltor_card, self.rtol_card):
@@ -1383,9 +1385,9 @@ class CameraPanel(QtWidgets.QFrame):
         stay_head.setStyleSheet("font-size:10px;font-weight:bold;color:#9de7ff;")
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
-        self.stay_grid.setContentsMargins(2, 2, 2, 2)
-        self.stay_grid.setHorizontalSpacing(3)
-        self.stay_grid.setVerticalSpacing(3)
+        self.stay_grid.setContentsMargins(1, 1, 1, 1)
+        self.stay_grid.setHorizontalSpacing(2)
+        self.stay_grid.setVerticalSpacing(2)
         self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         stay_box = QtWidgets.QWidget()
         stay_box.setLayout(self.stay_grid)
@@ -1396,17 +1398,18 @@ class CameraPanel(QtWidgets.QFrame):
 
         right.addLayout(btn_col)
 
-        top_row.addWidget(right_box, 1)
+        top_row.addWidget(right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        top_row.addStretch(1)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
         graphs_box = QtWidgets.QWidget()
         graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
-        graphs_layout.setContentsMargins(2, 0, 2, 0)
-        graphs_layout.setSpacing(2)
+        graphs_layout.setContentsMargins(1, 0, 1, 0)
+        graphs_layout.setSpacing(1)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
-            g.setFixedHeight(54)
+            g.setFixedHeight(62)
             self.graphs.append(g)
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
@@ -1466,9 +1469,9 @@ class CameraPanel(QtWidgets.QFrame):
 
     def _stream_short_name(self, stream_name: str) -> str:
         text = stream_name.strip()
-        if len(text) <= 22:
+        if len(text) <= 18:
             return text
-        return f"{text[:9]}...{text[-10:]}"
+        return f"{text[:7]}...{text[-8:]}"
 
     def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
         cam_name = camera_name or self.camera_cfg.get("camera_name", f"Camera{self.camera_id}")
@@ -1508,9 +1511,9 @@ class CameraPanel(QtWidgets.QFrame):
         if not entries:
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;")
-            empty_label.setFixedWidth(124)
-            empty_label.setFixedHeight(40)
+            empty_label.setStyleSheet("font-size:9px;color:#5fa2b8;")
+            empty_label.setFixedWidth(98)
+            empty_label.setFixedHeight(36)
             self.stay_grid.addWidget(empty_label, 0, 0)
             return
         for idx, item in enumerate(entries[:6]):
@@ -1518,9 +1521,9 @@ class CameraPanel(QtWidgets.QFrame):
             stay_mins = float(item[1])
             card = QtWidgets.QLabel(f"ID={track_id:03d}\n{stay_mins:03.0f}min")
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet("font-size:10px;background:#061726;border:1px solid #16b8d8;border-radius:6px;color:#95f6ff;padding:3px;font-weight:bold;")
-            card.setFixedWidth(124)
-            card.setFixedHeight(40)
+            card.setStyleSheet("font-size:9px;background:#061726;border:1px solid #16b8d8;border-radius:6px;color:#95f6ff;padding:2px;font-weight:bold;")
+            card.setFixedWidth(98)
+            card.setFixedHeight(36)
             self.stay_grid.addWidget(card, idx // 3, idx % 3)
 
     def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
@@ -2303,7 +2306,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addLayout(top_status_row)
 
         self.system_level_graph = CombinedTimelineGraph("line")
-        self.system_level_graph.setFixedHeight(60)
+        self.system_level_graph.setFixedHeight(64)
         self.system_level_graph.set_y_axis_config(
             y_min=1.0,
             y_max=4.0,
