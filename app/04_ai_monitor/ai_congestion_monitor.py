@@ -923,7 +923,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
 
         y_axis_w = 34
         right_margin = 8
-        top_margin = 20
+        top_margin = 24
         bottom_margin = 22
         plot = QtCore.QRectF(y_axis_w, top_margin, max(10, self.width() - y_axis_w - right_margin), max(10, self.height() - top_margin - bottom_margin))
 
@@ -931,7 +931,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 3, 3)
         painter.drawRect(plot)
         painter.setPen(QtGui.QColor("#cfefff"))
-        painter.drawText(8, 14, self.title)
+        painter.drawText(8, 16, self.title)
 
         if self.mode == "line":
             ys = [v for _, v in self.prev_points] + [v for _, v in self.today_points]
@@ -981,19 +981,22 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
                 painter.setPen(QtGui.QPen(QtGui.QColor("#ffd400"), 2.0))
                 painter.drawLine(QtCore.QPointF(plot.left(), th_y), QtCore.QPointF(plot.right(), th_y))
                 painter.setPen(QtGui.QColor("#ffd400"))
-                painter.drawText(int(plot.left()) + 6, int(th_y) - 4, f"TH={self.threshold:.2f}")
+                painter.drawText(int(plot.left()) + 6, int(plot.top()) + 12, f"TH={self.threshold:.2f}")
         elif self.mode == "bar" and (self.prev_values or self.today_values):
             n = max(1, len(self.prev_values), len(self.today_values))
             slot_w = plot.width() / n
-            bar_w = max(1.5, slot_w * 0.42)
+            bar_w = max(1.8, slot_w * 0.38)
             for i in range(n):
                 prev_val = self.prev_values[i] if i < len(self.prev_values) else 0.0
                 today_val = self.today_values[i] if i < len(self.today_values) else 0.0
-                base_x = plot.left() + i * slot_w
+                center_x = plot.left() + (i + 0.5) * slot_w
                 prev_h = ((prev_val - y_min) / (y_max - y_min)) * plot.height()
                 today_h = ((today_val - y_min) / (y_max - y_min)) * plot.height()
-                painter.fillRect(QtCore.QRectF(base_x, plot.bottom() - prev_h, bar_w, prev_h), QtGui.QColor("#2f7dff"))
-                painter.fillRect(QtCore.QRectF(base_x + bar_w + 0.5, plot.bottom() - today_h, bar_w, today_h), QtGui.QColor("#ff3b3b"))
+                offset = min(slot_w * 0.22, max(2.0, bar_w * 0.7))
+                prev_x = center_x - offset - bar_w / 2
+                today_x = center_x + offset - bar_w / 2
+                painter.fillRect(QtCore.QRectF(prev_x, plot.bottom() - prev_h, bar_w, prev_h), QtGui.QColor("#2f7dff"))
+                painter.fillRect(QtCore.QRectF(today_x, plot.bottom() - today_h, bar_w, today_h), QtGui.QColor("#ff3b3b"))
 
         self._draw_legend(painter, plot)
 
@@ -1001,14 +1004,17 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         legend = [("前日", QtGui.QColor("#2f7dff")), ("当日", QtGui.QColor("#ff3b3b"))]
         if self.mode == "line" and self.show_threshold:
             legend.append(("閾値", QtGui.QColor("#ffd400")))
-        x = int(plot.left()) + 8
         y = int(plot.top()) + 10
-        for label, color in legend:
+        x = int(plot.right()) - 8
+        for label, color in reversed(legend):
+            text_w = painter.fontMetrics().horizontalAdvance(label)
+            x -= text_w
+            painter.setPen(QtGui.QColor("#d9ecff"))
+            painter.drawText(x, y + 4, label)
+            x -= 16
             painter.setPen(QtGui.QPen(color, 2))
             painter.drawLine(x, y, x + 12, y)
-            painter.setPen(QtGui.QColor("#d9ecff"))
-            painter.drawText(x + 15, y + 4, label)
-            y += 12
+            x -= 10
 
 
 class CongestionIndexBar(QtWidgets.QWidget):
@@ -1055,7 +1061,9 @@ class CameraPanel(QtWidgets.QFrame):
 
     def __init__(self, camera_cfg: dict[str, Any], parent=None):
         super().__init__(parent)
+        self.camera_cfg = camera_cfg
         self.camera_id = camera_cfg["camera_id"]
+        self._latest_pixmap: QtGui.QPixmap | None = None
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -1065,20 +1073,21 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.setSpacing(6)
 
         self.video = QtWidgets.QLabel("video")
-        self.video.setMinimumSize(528, 296)
-        self.video.setMaximumHeight(296)
+        self.video.setMinimumSize(360, 204)
+        self.video.setMaximumHeight(250)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
-        top_row.addWidget(self.video, 6)
+        top_row.addWidget(self.video, 4)
 
         right_box = QtWidgets.QWidget()
-        right_box.setFixedWidth(96)
+        right_box.setMinimumWidth(300)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(4, 4, 4, 4)
-        right.setSpacing(4)
-        self.title = QtWidgets.QLabel(camera_cfg["camera_name"])
-        self.title.setStyleSheet("font-size:11px;color:#00D7FF;font-weight:bold;")
+        right.setContentsMargins(8, 6, 8, 6)
+        right.setSpacing(6)
+
+        self.title = QtWidgets.QLabel()
+        self.title.setStyleSheet("font-size:12px;color:#00D7FF;font-weight:bold;")
         right.addWidget(self.title)
 
         btn_col = QtWidgets.QVBoxLayout()
@@ -1095,30 +1104,62 @@ class CameraPanel(QtWidgets.QFrame):
             btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             btn_col.addWidget(btn)
 
-        self.status_label = QtWidgets.QLabel("IDLE")
+        self.status_label = QtWidgets.QLabel("RUNNING")
         self.status_label.setStyleSheet("font-size:10px;font-weight:bold;color:#ffd166;padding:0px;margin:0px;")
         right.addWidget(self.status_label)
 
         self.congestion_bar = CongestionIndexBar()
         right.addWidget(self.congestion_bar)
 
-        self.level_label = QtWidgets.QLabel("渋滞LEVEL1")
-        self.level_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.level_label.setStyleSheet("font-size:12px;font-weight:900;background:#7fd0ff;color:#000;border-radius:6px;")
-        right.addWidget(self.level_label)
+        th_row = QtWidgets.QHBoxLayout()
+        th_row.setSpacing(6)
+        th_label = QtWidgets.QLabel("TH")
+        th_label.setStyleSheet("font-size:11px;color:#00d9ff;font-weight:bold;")
+        self.threshold_spin = QtWidgets.QDoubleSpinBox()
+        self.threshold_spin.setRange(0.0, 20.0)
+        self.threshold_spin.setDecimals(1)
+        self.threshold_spin.setSingleStep(0.1)
+        self.threshold_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.PlusMinus)
+        self.threshold_spin.setStyleSheet("QDoubleSpinBox{background:#08121c;color:#8ff6ff;border:1px solid #00a9d6;padding:2px 6px;border-radius:4px;font-weight:bold;}")
+        self.threshold_spin.valueChanged.connect(self._on_threshold_changed)
+        th_row.addWidget(th_label)
+        th_row.addWidget(self.threshold_spin, 1)
+        right.addLayout(th_row)
 
         self.label_threshold = QtWidgets.QLabel("TH2/3/4: 0/0/0")
         self.label_threshold.setStyleSheet("font-size:9px;color:#ffd400;font-weight:bold;")
         right.addWidget(self.label_threshold)
-        self.raw_index_label = QtWidgets.QLabel("Raw: 0.00")
-        self.raw_index_label.setStyleSheet("font-size:10px;")
-        right.addWidget(self.raw_index_label)
-        self.smoothed_index_label = QtWidgets.QLabel("Smooth: 0.00")
-        self.smoothed_index_label.setStyleSheet("font-size:10px;color:#9af2ff;")
-        right.addWidget(self.smoothed_index_label)
-        right.addLayout(btn_col)
 
-        top_row.addWidget(right_box, 4)
+        count_row = QtWidgets.QHBoxLayout()
+        count_row.setSpacing(6)
+        self.ltor_card = QtWidgets.QLabel("LtoR\n0")
+        self.rtol_card = QtWidgets.QLabel("RtoL\n0")
+        for card in (self.ltor_card, self.rtol_card):
+            card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            card.setStyleSheet("font-size:10px;font-weight:bold;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:4px;")
+            count_row.addWidget(card, 1)
+        right.addLayout(count_row)
+
+        stay_head = QtWidgets.QLabel("滞在時間閾値以上")
+        stay_head.setStyleSheet("font-size:10px;font-weight:bold;color:#9de7ff;")
+        right.addWidget(stay_head)
+        self.stay_grid = QtWidgets.QGridLayout()
+        self.stay_grid.setHorizontalSpacing(6)
+        self.stay_grid.setVerticalSpacing(6)
+        stay_box = QtWidgets.QWidget()
+        stay_box.setLayout(self.stay_grid)
+        stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
+        stay_box.setMinimumHeight(58)
+        right.addWidget(stay_box)
+        self._stay_empty_label = QtWidgets.QLabel("該当なし")
+        self._stay_empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._stay_empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;")
+        self._render_stay_cards([])
+
+        right.addLayout(btn_col)
+        right.addStretch(1)
+
+        top_row.addWidget(right_box, 7)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1131,13 +1172,18 @@ class CameraPanel(QtWidgets.QFrame):
             self.graphs.append(g)
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
+        self._update_title()
+        self.threshold_spin.blockSignals(True)
+        self.threshold_spin.setValue(float(self.camera_cfg.get("congestion_threshold", 5.0)))
+        self.threshold_spin.blockSignals(False)
 
     def update_view(self, payload: dict[str, Any]) -> None:
         frame = payload.get("frame")
         if frame is not None:
             h, w, _ = frame.shape
             qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
-            self.video.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(self.video.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio))
+            self._latest_pixmap = QtGui.QPixmap.fromImage(qimg)
+            self._update_video_pixmap()
 
         score = float(payload.get("congestion_score", 0))
         threshold = float(payload.get("threshold", 5))
@@ -1145,26 +1191,74 @@ class CameraPanel(QtWidgets.QFrame):
 
         ltor = payload.get("pass_bins_ltor", [0] * 144)
         rtol = payload.get("pass_bins_rtol", [0] * 144)
-        smoothed_score = float(payload.get("smoothed_congestion_score", score))
-        level = int(payload.get("congestion_level", 1))
-        style = level_style(level)
         th2, th3, th4 = payload.get("level_thresholds", (0.0, 0.0, 0.0))
         self.label_threshold.setText(f"TH2/3/4: {th2:.1f}/{th3:.1f}/{th4:.1f}")
-        self.raw_index_label.setText(f"Raw: {score:.2f}")
-        self.smoothed_index_label.setText(f"Smooth: {smoothed_score:.2f}")
-        self.level_label.setText(style["label"])
-        self.level_label.setStyleSheet(
-            f"font-size:12px;font-weight:900;background:{style['bg']};color:{style['fg']};border-radius:6px;"
-        )
+        self.threshold_spin.blockSignals(True)
+        self.threshold_spin.setValue(threshold)
+        self.threshold_spin.blockSignals(False)
+        self._update_title(payload.get("camera_name"), payload.get("stream_name"))
+        self._update_count_cards(int(sum(ltor)), int(sum(rtol)))
+        self._render_stay_cards(payload.get("long_stay_list", []))
         self._update_congestion_bar(score, threshold)
         self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
         self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
         self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
+
     def _update_congestion_bar(self, score: float, threshold: float) -> None:
         self.congestion_bar.set_values(score, threshold)
 
     def set_status(self, status_text: str) -> None:
         self.status_label.setText(status_text)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_video_pixmap()
+
+    def _update_video_pixmap(self) -> None:
+        if self._latest_pixmap is None:
+            return
+        self.video.setPixmap(self._latest_pixmap.scaled(self.video.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
+
+    def _stream_short_name(self, stream_name: str) -> str:
+        text = stream_name.strip()
+        if len(text) <= 22:
+            return text
+        return f"{text[:9]}...{text[-10:]}"
+
+    def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
+        cam_name = camera_name or self.camera_cfg.get("camera_name", f"Camera{self.camera_id}")
+        raw_stream = stream_name or self.camera_cfg.get("stream_name") or self.camera_cfg.get("stream_url", "")
+        if raw_stream.startswith("rtsp://"):
+            tail = raw_stream.rsplit("/", 1)[-1]
+            stream = self._stream_short_name(tail or raw_stream)
+        else:
+            stream = self._stream_short_name(str(raw_stream)) if raw_stream else "-"
+        self.title.setText(f"{cam_name}  {stream}")
+
+    def _on_threshold_changed(self, value: float) -> None:
+        self.camera_cfg["congestion_threshold"] = float(value)
+        self._update_congestion_bar(self.congestion_bar.score, float(value))
+
+    def _update_count_cards(self, ltor_total: int, rtol_total: int) -> None:
+        self.ltor_card.setText(f"LtoR\n{ltor_total}")
+        self.rtol_card.setText(f"RtoL\n{rtol_total}")
+
+    def _render_stay_cards(self, entries: list[list[float] | tuple[int, float]]) -> None:
+        while self.stay_grid.count():
+            item = self.stay_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if not entries:
+            self.stay_grid.addWidget(self._stay_empty_label, 0, 0, 1, 2)
+            return
+        for idx, item in enumerate(entries[:6]):
+            track_id = int(item[0])
+            stay_mins = float(item[1])
+            card = QtWidgets.QLabel(f"ID={track_id:03d}\n{stay_mins:03.0f}min")
+            card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            card.setStyleSheet("font-size:10px;background:#061726;border:1px solid #16b8d8;border-radius:6px;color:#95f6ff;padding:3px;font-weight:bold;")
+            self.stay_grid.addWidget(card, idx // 2, idx % 2)
 
 
 def resolve_model_path(camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path) -> Path:
@@ -1747,6 +1841,7 @@ class CameraWorker(QtCore.QObject):
             return {
                 "camera_id": self.camera_id,
                 "camera_name": self.camera_name,
+                "stream_name": self.camera_cfg.get("stream_name", self.camera_cfg.get("stream_url", "")),
                 "frame": self.last_frame,
                 "congestion_score": congestion_score,
                 "smoothed_congestion_score": smoothed_score,
@@ -1761,6 +1856,7 @@ class CameraWorker(QtCore.QObject):
                 "hist_prev_ltor": self.previous_day_hist_ltor,
                 "hist_prev_rtol": self.previous_day_hist_rtol,
                 "long_stay_count": len(long_stay_list),
+                "long_stay_list": [[int(tid), float(minutes)] for tid, minutes in long_stay_list[:10]],
                 "debug_metrics": {
                     "raw_congestion_index": round(float(congestion_score), 3),
                     "smoothed_congestion_index": round(smoothed_score, 3),
