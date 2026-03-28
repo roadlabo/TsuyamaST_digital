@@ -84,7 +84,10 @@ def write_json_atomic(path: Path, payload: dict[str, Any], retries: int = 10) ->
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    tmp_path.write_text(text, encoding="utf-8")
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
     try:
         safe_replace(tmp_path, path, retries=retries)
     finally:
@@ -481,21 +484,52 @@ class StatusManager:
     def __init__(self, ai_status_path: Path, system_cfg: dict[str, Any]):
         self.ai_status_path = ai_status_path
         self.system_cfg = system_cfg
-        self.last_payload: dict[str, Any] | None = None
+        self._last_written_ai_status_payload: dict[str, Any] | None = None
         self.last_failure_at: float = 0.0
 
     def update_if_needed(self, payload: dict[str, Any]) -> None:
-        if self.last_payload == payload and self.ai_status_path.exists():
+        normalized_payload = self._normalize_status_payload(payload)
+        if self._last_written_ai_status_payload == normalized_payload and self.ai_status_path.exists():
             return
+        to_write = dict(normalized_payload)
+        to_write["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            self._atomic_write_json(self.ai_status_path, payload)
+            self._atomic_write_json(self.ai_status_path, to_write)
         except Exception as exc:
             now_ts = time.time()
             if now_ts - self.last_failure_at > 5.0:
                 self.last_failure_at = now_ts
                 logging.warning("ai_status write skipped: %s", exc)
             return
-        self.last_payload = payload
+        self._last_written_ai_status_payload = normalized_payload
+
+    def _normalize_status_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized_camera_states: list[dict[str, Any]] = []
+        for row in payload.get("camera_states", []):
+            try:
+                cid = int(row.get("camera_id", 0))
+            except (TypeError, ValueError):
+                cid = 0
+            normalized_camera_states.append(
+                {
+                    "camera_id": cid,
+                    "camera_name": str(row.get("camera_name", "")),
+                    "raw_congestion_index": round(float(row.get("raw_congestion_index", 0.0)), 3),
+                    "smoothed_congestion_index": round(float(row.get("smoothed_congestion_index", 0.0)), 3),
+                    "threshold": round(float(row.get("threshold", 0.0)), 2),
+                    "long_stay_count": int(row.get("long_stay_count", 0)),
+                    "level": int(row.get("level", 1)),
+                }
+            )
+        normalized_camera_states.sort(key=lambda item: item["camera_id"])
+        return {
+            "congestion_level": int(payload.get("congestion_level", 1)),
+            "smoothed_congestion_index": round(float(payload.get("smoothed_congestion_index", 0.0)), 3),
+            "level2_threshold": round(float(payload.get("level2_threshold", 0.0)), 2),
+            "level3_threshold": round(float(payload.get("level3_threshold", 0.0)), 2),
+            "level4_threshold": round(float(payload.get("level4_threshold", 0.0)), 2),
+            "camera_states": normalized_camera_states,
+        }
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict) -> None:
@@ -968,7 +1002,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         self.y_min_override: float | None = None
         self.y_max_override: float | None = None
         self.y_axis_labels: dict[float, str] = {}
-        self.setFixedHeight(72)
+        self.setFixedHeight(64)
 
     def set_line_data(self, prev_points: list[tuple[datetime, float]], today_points: list[tuple[datetime, float]], title: str, threshold: float | None = None, show_threshold: bool = True) -> None:
         self.mode = "line"
@@ -1115,8 +1149,8 @@ class CongestionIndexBar(QtWidgets.QWidget):
         super().__init__(parent)
         self.score = 0.0
         self.threshold = 5.0
-        self.setMinimumHeight(30)
-        self.setMaximumHeight(30)
+        self.setMinimumHeight(24)
+        self.setMaximumHeight(24)
 
     def set_values(self, score: float, threshold: float) -> None:
         self.score = float(score)
@@ -1160,21 +1194,21 @@ class CameraPanel(QtWidgets.QFrame):
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
         self._status_connected = False
-        self.video_target_w = 640
-        self.video_target_h = 360
+        self.video_target_w = int(640 * 0.8)
+        self.video_target_h = int(360 * 0.8)
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(4)
+        root.setContentsMargins(3, 3, 3, 3)
+        root.setSpacing(2)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(6)
+        top_row.setSpacing(4)
 
         video_box = QtWidgets.QWidget()
         video_layout = QtWidgets.QVBoxLayout(video_box)
         video_layout.setContentsMargins(0, 0, 0, 0)
-        video_layout.setSpacing(4)
+        video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
         self.video.setFixedSize(self.video_target_w, self.video_target_h)
@@ -1187,19 +1221,19 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.addWidget(video_box, 1)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(260)
+        right_box.setMinimumWidth(232)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(6, 4, 6, 4)
-        right.setSpacing(4)
+        right.setContentsMargins(4, 2, 4, 2)
+        right.setSpacing(3)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.title = QtWidgets.QLabel("")
-        self.title.setStyleSheet("font-size:11px;color:#00D7FF;font-weight:bold;")
+        self.title.setStyleSheet("font-size:10px;color:#00D7FF;font-weight:bold;")
         self.title.setWordWrap(True)
         right.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         btn_col = QtWidgets.QVBoxLayout()
-        btn_col.setSpacing(4)
+        btn_col.setSpacing(3)
         self.btn_line = QtWidgets.QPushButton("ライン設定")
         self.btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
         self.btn_exclude = QtWidgets.QPushButton("除外エリア")
@@ -1207,13 +1241,13 @@ class CameraPanel(QtWidgets.QFrame):
         self.btn_ai = QtWidgets.QPushButton("解析条件")
         self.btn_ai.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
         for btn in (self.btn_line, self.btn_exclude, self.btn_ai):
-            btn.setFixedHeight(22)
+            btn.setFixedHeight(20)
             btn.setStyleSheet("font-size:10px;padding:2px;")
             btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             btn_col.addWidget(btn)
 
         self.congestion_bar = CongestionIndexBar()
-        self.congestion_bar.setMinimumHeight(26)
+        self.congestion_bar.setMinimumHeight(22)
 
         level_row = QtWidgets.QHBoxLayout()
         level_row.setContentsMargins(0, 0, 0, 0)
@@ -1238,12 +1272,12 @@ class CameraPanel(QtWidgets.QFrame):
         right.addLayout(level_row)
 
         count_row = QtWidgets.QHBoxLayout()
-        count_row.setSpacing(6)
-        self.ltor_card = QtWidgets.QLabel("LtoR 0")
-        self.rtol_card = QtWidgets.QLabel("RtoL 0")
+        count_row.setSpacing(4)
+        self.ltor_card = QtWidgets.QLabel("LtoR：0")
+        self.rtol_card = QtWidgets.QLabel("RtoL：0")
         for card in (self.ltor_card, self.rtol_card):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet("font-size:18px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:4px;")
+            card.setStyleSheet("font-size:18px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:2px;")
             count_row.addWidget(card, 1)
         right.addLayout(count_row)
 
@@ -1251,14 +1285,14 @@ class CameraPanel(QtWidgets.QFrame):
         stay_head.setStyleSheet("font-size:10px;font-weight:bold;color:#9de7ff;")
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
-        self.stay_grid.setContentsMargins(4, 4, 4, 4)
-        self.stay_grid.setHorizontalSpacing(5)
-        self.stay_grid.setVerticalSpacing(5)
+        self.stay_grid.setContentsMargins(2, 2, 2, 2)
+        self.stay_grid.setHorizontalSpacing(3)
+        self.stay_grid.setVerticalSpacing(3)
         self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         stay_box = QtWidgets.QWidget()
         stay_box.setLayout(self.stay_grid)
         stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
-        stay_box.setMinimumHeight(70)
+        stay_box.setMinimumHeight(52)
         right.addWidget(stay_box)
         self._render_stay_cards([])
 
@@ -1271,9 +1305,10 @@ class CameraPanel(QtWidgets.QFrame):
         graphs_box = QtWidgets.QWidget()
         graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
         graphs_layout.setContentsMargins(2, 0, 2, 0)
-        graphs_layout.setSpacing(4)
+        graphs_layout.setSpacing(2)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
+            g.setFixedHeight(54)
             self.graphs.append(g)
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
@@ -1367,8 +1402,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.threshold_changed.emit(self.camera_id, float(value))
 
     def _update_count_cards(self, ltor_total: int, rtol_total: int) -> None:
-        self.ltor_card.setText(f"LtoR {ltor_total}")
-        self.rtol_card.setText(f"RtoL {rtol_total}")
+        self.ltor_card.setText(f"LtoR：{ltor_total}")
+        self.rtol_card.setText(f"RtoL：{rtol_total}")
 
     def _render_stay_cards(self, entries: list[list[float] | tuple[int, float]]) -> None:
         self._clear_layout(self.stay_grid)
@@ -1376,8 +1411,8 @@ class CameraPanel(QtWidgets.QFrame):
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;")
-            empty_label.setFixedWidth(160)
-            empty_label.setFixedHeight(54)
+            empty_label.setFixedWidth(124)
+            empty_label.setFixedHeight(40)
             self.stay_grid.addWidget(empty_label, 0, 0)
             return
         for idx, item in enumerate(entries[:6]):
@@ -1386,8 +1421,8 @@ class CameraPanel(QtWidgets.QFrame):
             card = QtWidgets.QLabel(f"ID={track_id:03d}\n{stay_mins:03.0f}min")
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setStyleSheet("font-size:10px;background:#061726;border:1px solid #16b8d8;border-radius:6px;color:#95f6ff;padding:3px;font-weight:bold;")
-            card.setFixedWidth(160)
-            card.setFixedHeight(54)
+            card.setFixedWidth(124)
+            card.setFixedHeight(40)
             self.stay_grid.addWidget(card, idx // 3, idx % 3)
 
     def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
@@ -2080,8 +2115,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.root_dir = root_dir
         self.setWindowTitle("AI Congestion Monitor")
         self.setStyleSheet("background:#02060a;")
-        self.resize(1080, 1860)
-        self.setMinimumSize(980, 1600)
+        self.resize(1024, 1600)
+        self.setMinimumSize(900, 1300)
 
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
@@ -2125,25 +2160,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(scroll)
         content = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(content)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         scroll.setWidget(content)
 
-        self.system_level_graph = CombinedTimelineGraph("line")
-        self.system_level_graph.setFixedHeight(118)
-        self.system_level_graph.set_y_axis_config(
-            y_min=1.0,
-            y_max=4.0,
-            labels={1.0: "LEVEL1", 2.0: "LEVEL2", 3.0: "LEVEL3", 4.0: "LEVEL4"},
-        )
-        layout.addWidget(self.system_level_graph)
-
         top_status_row = QtWidgets.QHBoxLayout()
+        top_status_row.setContentsMargins(0, 0, 0, 0)
+        top_status_row.setSpacing(4)
         info_block = QtWidgets.QVBoxLayout()
+        info_block.setContentsMargins(0, 0, 0, 0)
+        info_block.setSpacing(3)
         self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
-        self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:12px;")
+        self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:11px;")
         self.formula_status = QtWidgets.QLabel("渋滞指数=3秒間の各フレーム渋滞スコア平均 | フレーム渋滞スコア=Σ[1/(1+(d/W)×500)]  d:各IDの前フレームからの移動距離, W:画面幅")
-        self.formula_status.setStyleSheet("color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:4px;font-size:11px;")
+        self.formula_status.setStyleSheet("color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:3px;font-size:10px;")
         info_block.addWidget(self.global_status)
         info_block.addWidget(self.formula_status)
         top_status_row.addLayout(info_block, 4)
@@ -2152,11 +2182,11 @@ class MainWindow(QtWidgets.QMainWindow):
         level_block.setSpacing(4)
         level_block_widget = QtWidgets.QWidget()
         level_block_widget.setLayout(level_block)
-        level_block_widget.setMinimumWidth(420)
+        level_block_widget.setMinimumWidth(360)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.level_badge.setMinimumHeight(46)
-        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;")
+        self.level_badge.setMinimumHeight(36)
+        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:20px;padding:3px 10px;")
         self.level_rule_label = QtWidgets.QLabel(
             "LEVEL1：通常時\n"
             "LEVEL2：[Camera2]渋滞指数5以上＋5分以上滞在台数3台以上\n"
@@ -2165,11 +2195,20 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.level_rule_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.level_rule_label.setWordWrap(True)
-        self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:11px;")
+        self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:10px;")
         level_block.addWidget(self.level_badge)
         level_block.addWidget(self.level_rule_label)
         top_status_row.addWidget(level_block_widget, 3)
         layout.addLayout(top_status_row)
+
+        self.system_level_graph = CombinedTimelineGraph("line")
+        self.system_level_graph.setFixedHeight(60)
+        self.system_level_graph.set_y_axis_config(
+            y_min=1.0,
+            y_max=4.0,
+            labels={1.0: "LEVEL1", 2.0: "LEVEL2", 3.0: "LEVEL3", 4.0: "LEVEL4"},
+        )
+        layout.addWidget(self.system_level_graph)
         self.system_level_history_yesterday = self._load_system_level_history(self.system_level_history_date - timedelta(days=1))
         self.system_level_history_today = self._load_system_level_history(self.system_level_history_date)
         self.update_level_rule_text()
@@ -2278,8 +2317,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     "camera_name": payload.get("camera_name", f"Camera{cid}"),
                     "raw_congestion_index": round(float(payload.get("congestion_score", 0.0)), 3),
                     "smoothed_congestion_index": round(float(payload.get("smoothed_congestion_score", 0.0)), 3),
+                    "threshold": round(float(payload.get("threshold", 0.0)), 2),
+                    "long_stay_count": int(len(payload.get("long_stay_list", []))),
                     "level": int(payload.get("congestion_level", 1)),
-                    "last_update_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
             )
         overall_smoothed = max((item["smoothed_congestion_index"] for item in camera_states), default=0.0)
