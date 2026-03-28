@@ -1389,6 +1389,10 @@ class CameraPanel(QtWidgets.QFrame):
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
         self._stay_entries: list[list[float] | tuple[int, float]] = []
+        self._last_stay_signature: tuple[tuple[int, int], ...] = ()
+        self._last_stay_visible_count = -1
+        self.stay_card_widgets: dict[int, QtWidgets.QLabel] = {}
+        self.stay_empty_label: QtWidgets.QLabel | None = None
         self._status_connected = False
         self.video_target_w = 576
         self.video_target_h = 324
@@ -1596,7 +1600,11 @@ class CameraPanel(QtWidgets.QFrame):
         if not self.threshold_edit.hasFocus():
             self.threshold_edit.setText(f"{threshold:.1f}")
         self._update_count_cards(int(sum(ltor)), int(sum(rtol)))
-        self._render_stay_cards(payload.get("long_stay_list", []))
+        long_stay_list = payload.get("long_stay_list", [])
+        signature = self._build_stay_signature(long_stay_list)
+        if signature != self._last_stay_signature:
+            self._last_stay_signature = signature
+            self._render_stay_cards(long_stay_list)
         self._update_congestion_bar(score, threshold)
         wak_alpha = float(payload.get("wakimura_alpha", 0.0))
         wak_mode = bool(payload.get("wakimura_high_load_mode", False))
@@ -1610,7 +1618,7 @@ class CameraPanel(QtWidgets.QFrame):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_video_pixmap()
-        self._render_stay_cards(self._stay_entries)
+        self._relayout_stay_cards()
 
     def _update_congestion_bar(self, score: float, threshold: float) -> None:
         self.congestion_bar.set_values(score, threshold)
@@ -1669,8 +1677,76 @@ class CameraPanel(QtWidgets.QFrame):
         self.rtol_card.setText(f"RtoL：{rtol_total}")
 
     def _render_stay_cards(self, entries: list[list[float] | tuple[int, float]]) -> None:
-        self._stay_entries = list(entries)
-        self._clear_layout(self.stay_grid)
+        try:
+            self._stay_entries = list(entries)
+            visible_entries = self._stay_entries[:16]
+            visible_ids: set[int] = set()
+            existing_ids = set(self.stay_card_widgets.keys())
+            for item in visible_entries:
+                track_id = int(item[0])
+                stay_mins_int = max(0, int(float(item[1])))
+                visible_ids.add(track_id)
+                card = self.stay_card_widgets.get(track_id)
+                if card is None:
+                    card = self._create_stay_card()
+                    self.stay_card_widgets[track_id] = card
+                self._update_stay_card(card, track_id, stay_mins_int)
+
+            added_ids = visible_ids - existing_ids
+            removed_ids = set(self.stay_card_widgets.keys()) - visible_ids
+            for track_id in removed_ids:
+                card = self.stay_card_widgets.pop(track_id, None)
+                if card is None:
+                    continue
+                self.stay_grid.removeWidget(card)
+                card.deleteLater()
+
+            if self.stay_empty_label is None:
+                self.stay_empty_label = QtWidgets.QLabel("該当なし")
+                self.stay_empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                self.stay_empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;padding:0px;")
+                self.stay_empty_label.setFixedHeight(30)
+            self.stay_empty_label.setVisible(not visible_entries)
+
+            if len(visible_entries) != self._last_stay_visible_count or added_ids or removed_ids:
+                logging.debug(
+                    "[DEBUG] cam%s stay cards visible=%d added=%s removed=%s",
+                    self.camera_id,
+                    len(visible_entries),
+                    sorted(added_ids),
+                    sorted(removed_ids),
+                )
+                self._last_stay_visible_count = len(visible_entries)
+
+            self._relayout_stay_cards()
+        except Exception as exc:
+            logging.exception("[ERROR] cam%s stay card render failed: %s", self.camera_id, exc)
+
+    def _create_stay_card(self) -> QtWidgets.QLabel:
+        card = QtWidgets.QLabel("")
+        card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        card.setFixedHeight(30)
+        return card
+
+    def _update_stay_card(self, card: QtWidgets.QLabel, track_id: int, stay_mins_int: int) -> None:
+        border_color = "#16b8d8"
+        if stay_mins_int >= 20:
+            border_color = "#ff4d4d"
+        elif stay_mins_int >= 10:
+            border_color = "#ffe066"
+        card.setText(f"ID:{track_id:03d}\n{stay_mins_int:d}min")
+        card.setStyleSheet(
+            "font-size:10px;"
+            "background:#061726;"
+            f"border:1px solid {border_color};"
+            "border-radius:5px;"
+            "color:#95f6ff;"
+            "padding:0px;"
+            "font-weight:bold;"
+            "line-height:1.0em;"
+        )
+
+    def _relayout_stay_cards(self) -> None:
         cols = 8
         spacing = max(0, self.stay_grid.horizontalSpacing())
         contents = self.stay_grid.contentsMargins()
@@ -1682,42 +1758,38 @@ class CameraPanel(QtWidgets.QFrame):
         card_w = max(44, available_w // cols)
         extra_px = max(0, available_w - card_w * cols)
         col_widths = [card_w + (1 if i < extra_px else 0) for i in range(cols)]
-        if not entries:
-            empty_label = QtWidgets.QLabel("該当なし")
-            empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;padding:0px;")
-            empty_label.setFixedWidth(col_widths[0])
-            empty_label.setFixedHeight(30)
-            self.stay_grid.addWidget(empty_label, 0, 0)
+
+        visible_entries = self._stay_entries[:16]
+        if not visible_entries:
+            if self.stay_empty_label is not None:
+                self.stay_grid.removeWidget(self.stay_empty_label)
+                self.stay_empty_label.setFixedWidth(col_widths[0])
+                self.stay_grid.addWidget(self.stay_empty_label, 0, 0)
+                self.stay_empty_label.show()
             self.stay_box.setFixedHeight(34)
             return
-        visible_entries = entries[:16]
+
+        if self.stay_empty_label is not None:
+            self.stay_grid.removeWidget(self.stay_empty_label)
+            self.stay_empty_label.hide()
+
         for idx, item in enumerate(visible_entries):
             track_id = int(item[0])
-            stay_mins = float(item[1])
-            stay_mins_int = max(0, int(stay_mins))
-            border_color = "#16b8d8"
-            if stay_mins_int >= 20:
-                border_color = "#ff4d4d"
-            elif stay_mins_int >= 10:
-                border_color = "#ffe066"
-            card = QtWidgets.QLabel(f"ID:{track_id:03d}\n{stay_mins_int:d}min")
-            card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet(
-                "font-size:10px;"
-                "background:#061726;"
-                f"border:1px solid {border_color};"
-                "border-radius:5px;"
-                "color:#95f6ff;"
-                "padding:0px;"
-                "font-weight:bold;"
-                "line-height:1.0em;"
-            )
+            card = self.stay_card_widgets.get(track_id)
+            if card is None:
+                continue
             col = idx % cols
+            self.stay_grid.removeWidget(card)
             card.setFixedWidth(col_widths[col])
-            card.setFixedHeight(30)
             self.stay_grid.addWidget(card, idx // cols, col)
+
         self.stay_box.setFixedHeight(60 if len(visible_entries) > 8 else 34)
+
+    def _build_stay_signature(self, entries: list[list[float] | tuple[int, float]]) -> tuple[tuple[int, int], ...]:
+        signature: list[tuple[int, int]] = []
+        for item in entries[:16]:
+            signature.append((int(item[0]), max(0, int(float(item[1])))))
+        return tuple(signature)
 
     def _build_wakimura_cards(self) -> None:
         labels = [
@@ -1772,7 +1844,6 @@ class CameraPanel(QtWidgets.QFrame):
             if child_layout is not None:
                 self._clear_layout(child_layout)
             if widget is not None:
-                widget.setParent(None)
                 widget.deleteLater()
 
 
