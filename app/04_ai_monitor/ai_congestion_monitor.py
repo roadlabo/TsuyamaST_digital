@@ -2563,8 +2563,6 @@ class MainWindow(QtWidgets.QMainWindow):
         top_info_grid.setContentsMargins(0, 0, 0, 0)
         top_info_grid.setHorizontalSpacing(6)
         top_info_grid.setVerticalSpacing(4)
-        self.global_status = QtWidgets.QLabel("時刻 ｜ device ｜ GPU ｜ model")
-        self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;")
         self.congestion_formula_label = QtWidgets.QLabel(
             "渋滞指数＝車両の停滞傾向を表す指標。移動量が小さい車ほど値が高くなり、流れが悪い状態を表す。\n"
             "直近30秒の各車両の移動量 d を用いて score=Σ[1/(1+d/(W×500))] を算出し、画面全体の停滞感を集計する。"
@@ -2581,9 +2579,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.wakimura_formula_label.setStyleSheet(
             "color:#d6cbff;background:#0d1020;border:1px solid #4b3cb0;padding:4px;font-size:13px;"
         )
-        self.global_status.setFixedWidth(640)
         self.congestion_formula_label.setFixedWidth(640)
         self.wakimura_formula_label.setFixedWidth(640)
+
+        top_left_box = QtWidgets.QVBoxLayout()
+        top_left_box.setSpacing(2)
+        top_left_box.setContentsMargins(4, 4, 4, 4)
+        top_left_widget = QtWidgets.QWidget()
+        top_left_widget.setLayout(top_left_box)
+        top_left_widget.setFixedWidth(640)
 
         formula_stack = QtWidgets.QVBoxLayout()
         formula_stack.setContentsMargins(0, 0, 0, 0)
@@ -2604,14 +2608,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_badge.setMinimumHeight(58)
         self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:36px;padding:4px 10px;")
         self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
-        self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_title_ja.setStyleSheet("font-size:26px;font-weight:900;color:#9fe8ff;")
         self.system_title_en = QtWidgets.QLabel("AI Congestion Detection System")
-        self.system_title_en.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.system_title_en.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_title_en.setStyleSheet("font-size:14px;font-weight:bold;color:#b7dbff;")
         self.system_runtime_label = QtWidgets.QLabel("GPU: n/a ｜ model: n/a ｜ tracker: ByteTrack")
-        self.system_runtime_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.system_runtime_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_runtime_label.setStyleSheet("font-size:11px;color:#9abed0;")
+        top_left_box.addWidget(self.system_title_ja)
+        top_left_box.addWidget(self.system_title_en)
+        top_left_box.addWidget(self.system_runtime_label)
         self.level_rule_label = QtWidgets.QLabel(
             "<b>LEVEL1：</b>通常時<br>"
             "<b>LEVEL2：</b>[KING]渋滞指数5以上 + 5分以上滞在台数3台以上<br>"
@@ -2622,12 +2629,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_rule_label.setWordWrap(True)
         self.level_rule_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;line-height:1.25em;")
-        level_block.addWidget(self.system_title_ja)
-        level_block.addWidget(self.system_title_en)
-        level_block.addWidget(self.system_runtime_label)
         level_block.addWidget(self.level_badge)
 
-        top_info_grid.addWidget(self.global_status, 0, 0)
+        top_info_grid.addWidget(top_left_widget, 0, 0)
         top_info_grid.addWidget(level_block_widget, 0, 1)
         top_info_grid.addWidget(formula_widget, 1, 0)
         top_info_grid.addWidget(self.level_rule_label, 1, 1)
@@ -2818,18 +2822,13 @@ class MainWindow(QtWidgets.QMainWindow):
             logging.warning("cam%s threshold update failed: %s", camera_id, exc)
 
     def _update_global_status(self) -> None:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         model_name = (
             self.app_cfg.system.get("yolo_model")
             or self.app_cfg.system.get("YOLO_MODEL")
             or self.app_cfg.system.get("model_path")
             or "n/a"
         )
-        device = next(iter(self.latest_payloads.values()), {}).get("device", "n/a")
         gpu = next(iter(self.latest_payloads.values()), {}).get("gpu_name", "n/a")
-        self.global_status.setText(
-            f"{now} ｜ device={device} ｜ GPU={gpu} ｜ model={model_name}"
-        )
         self.system_runtime_label.setText(
             f"GPU: {gpu} ｜ model: {model_name} ｜ tracker: ByteTrack"
         )
