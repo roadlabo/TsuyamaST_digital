@@ -271,7 +271,7 @@ def sync_mirror_dir(
     result = {"copied": 0, "updated": 0, "deleted": 0, "skipped": 0, "errors": 0}
     ensure_dir(remote_dir)
 
-    master_files: Dict[str, int] = {}
+    master_files: Dict[str, Tuple[int, int]] = {}
     for entry in master_dir.iterdir():
         if not entry.is_file():
             continue
@@ -279,9 +279,10 @@ def sync_mirror_dir(
             continue
         if _is_sample_video(entry.name):
             continue
-        master_files[entry.name] = entry.stat().st_size
+        st = entry.stat()
+        master_files[entry.name] = (int(st.st_size), int(st.st_mtime * 1000))
 
-    remote_files: Dict[str, int] = {}
+    remote_files: Dict[str, Tuple[int, int]] = {}
     for entry in remote_dir.iterdir():
         if not entry.is_file():
             continue
@@ -289,17 +290,23 @@ def sync_mirror_dir(
             continue
         if _is_sample_video(entry.name):
             continue
-        remote_files[entry.name] = entry.stat().st_size
+        st = entry.stat()
+        remote_files[entry.name] = (int(st.st_size), int(st.st_mtime * 1000))
 
     to_copy: List[str] = []
-    for name, msize in master_files.items():
-        tsize = remote_files.get(name)
-        if tsize is None or tsize != msize:
+    for name, (msize, mtime_ms) in master_files.items():
+        remote_meta = remote_files.get(name)
+        # 大容量動画での差分同期精度を上げるため、サイズ+mtime が一致した時だけ SKIP する。
+        if remote_meta is None:
             to_copy.append(name)
         else:
-            if logger:
-                logger(f"[SKIP] {name}")
-            result["skipped"] += 1
+            rsize, rmtime_ms = remote_meta
+            if rsize != msize or rmtime_ms != mtime_ms:
+                to_copy.append(name)
+            else:
+                if logger:
+                    logger(f"[SKIP] {name}")
+                result["skipped"] += 1
 
     to_delete = [name for name in remote_files.keys() if name not in master_files]
 
@@ -1219,6 +1226,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._op_results: Dict[str, dict] = {}
         self._op_done_labels: Dict[str, str] = {}
         self._distribute_busy = False
+        self._sync_in_progress = False
         self._pc_status_skip_until: Dict[str, float] = {}
         # ---- Telemetry軽量化用 ----
         self._telemetry_rr_index = 0  # round-robin index
@@ -2174,6 +2182,7 @@ QPushButton:disabled {
         cancel_event = threading.Event()
         timeout_timer = QtCore.QTimer(self)
         timeout_timer.setSingleShot(True)
+        timeout_notified = False
 
         def progress_token(token: str) -> None:
             if token:
@@ -2223,6 +2232,7 @@ QPushButton:disabled {
             self._dbg("interaction enabled op_id=%s title=%s", op_id, title)
 
         def finish_err(reason: str) -> None:
+            nonlocal timeout_notified
             self._dbg("finish_err called op_id=%s title=%s reason=%s", op_id, title, reason)
             if finished.is_set():
                 return
@@ -2235,6 +2245,19 @@ QPushButton:disabled {
             self._dbg("ui_busy FALSE op_id=%s title=%s", op_id, title)
             self._set_interaction_enabled(True)
             self._dbg("interaction enabled op_id=%s title=%s", op_id, title)
+            if reason == "タイムアウト（UI復旧）" and not timeout_notified:
+                timeout_notified = True
+                # フェールセーフ: UIタイムアウト復旧後は再起動を案内する。
+                try:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "処理タイムアウト",
+                        "処理がタイムアウトしました。\n"
+                        "画面は復旧しましたが、動作が不安定な場合は\n"
+                        "プログラムを再起動してください。",
+                    )
+                except Exception:
+                    pass
 
         def handle_timeout() -> None:
             cancel_event.set()
@@ -2840,12 +2863,36 @@ QPushButton:disabled {
             return False, f"{exc.__class__.__name__}: {exc}"
 
     def start_sync(self) -> None:
-        self.run_exclusive_task("動画同期", self._task_sync_all, detail="同期 指示送信")
+        if self._ui_busy:
+            return
+        if self._sync_in_progress:
+            QtWidgets.QMessageBox.information(
+                self,
+                "動画同期",
+                "動画同期は実行中です。\n"
+                "大きな動画では転送に時間がかかることがあります。\n"
+                "共有フォルダを確認し、完了を待ってください。",
+            )
+            return
+
+        # ユーザー連打防止のため、同期中は再実行を抑止する。
+        self._sync_in_progress = True
+
+        def sync_worker(progress, op_id: Optional[str] = None) -> None:
+            try:
+                self._task_sync_all(progress, op_id)
+            finally:
+                self._sync_in_progress = False
+
+        self.run_exclusive_task("動画同期", sync_worker, detail="同期 指示送信")
 
     def _task_sync_all(self, progress, op_id: Optional[str] = None) -> None:
-        timeout = self.settings.get("network_timeout_seconds", 4)
+        # 大容量動画で親側 timeout が先に出ることがあるため、動画同期専用 timeout を使う。
+        timeout = float(self.settings.get("sync_timeout_seconds", 600))
+        timeout = max(60.0, min(timeout, 7200.0))
         max_workers = self.settings.get("sync_workers", 4)
         futures = {}
+        timeout_ui_only = False
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for state in self.sign_states.values():
                 if not state.exists or not state.enabled:
@@ -2857,7 +2904,12 @@ QPushButton:disabled {
                 try:
                     ok, message = future.result(timeout=timeout)
                 except FuturesTimeoutError:
-                    ok, message = False, "timeout"
+                    ok, message = False, "sync_timeout_ui_only"
+                    timeout_ui_only = True
+                    logging.warning(
+                        "[WARN] %s 動画同期タイムアウト表示: 転送継続中の可能性あり",
+                        state.name,
+                    )
                 except Exception as exc:
                     ok, message = False, str(exc)
                 state.last_error = message if not ok else ""
@@ -2865,6 +2917,19 @@ QPushButton:disabled {
                 results.append(self._build_pc_result(state, ok, message or "", "sent"))
                 if not ok:
                     logging.warning("[ERR] %s 同期失敗 (%s)", state.name, message)
+
+        if timeout_ui_only:
+            self._ui_call(
+                lambda: QtWidgets.QMessageBox.warning(
+                    self,
+                    "動画同期",
+                    "動画転送に時間がかかっています。\n"
+                    "大容量ファイルでは処理継続中の可能性があります。\n\n"
+                    "共有フォルダ上で転送状況を確認してください。\n"
+                    "不安定な場合は、完了後にプログラムを再起動してください。",
+                ),
+                label="sync_timeout_ui_only_message",
+            )
 
         self._apply_pc_results(op_id or "", results)
 
@@ -3205,6 +3270,17 @@ def main():
             pass
         try:
             print(tb, file=sys.__stderr__)
+        except Exception:
+            pass
+        # フェールセーフ: 致命エラー時は利用者に再起動を案内する。
+        try:
+            QtWidgets.QMessageBox.critical(
+                None,
+                "予期せぬエラー",
+                "予期せぬエラーが発生しました。\n"
+                "プログラムを再起動してください。\n\n"
+                "詳細は logs フォルダの crash ログを確認してください。",
+            )
         except Exception:
             pass
         raise SystemExit(1)
