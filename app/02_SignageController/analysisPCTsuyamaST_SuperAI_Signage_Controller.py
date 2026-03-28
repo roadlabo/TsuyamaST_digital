@@ -48,10 +48,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 _congestion_common = importlib.import_module("10_common.congestion_common")
-compute_level_from_status = _congestion_common.compute_level_from_status
-get_level_thresholds = _congestion_common.get_level_thresholds
 level_style = _congestion_common.level_style
-normalize_congestion_level = _congestion_common.normalize_congestion_level
 CONFIG_DIR = ROOT_DIR / "11_config"
 CONTENT_DIR = ROOT_DIR.parent / "content"
 LOG_DIR = ROOT_DIR.parent / "logs"
@@ -66,6 +63,7 @@ REMOTE_CONTENT_DIR = "content"
 INVENTORY_PATH = CONFIG_DIR / "inventory.json"
 AI_STATUS_PATH = CONFIG_DIR / "ai_status.json"
 SETTINGS_PATH = CONFIG_DIR / "controller_settings.json"
+AI_STATUS_STALE_SEC = 30
 
 BASE_COL = 1
 N_SIGNAGE = 20
@@ -425,6 +423,23 @@ def read_active(sign_dir: Path) -> dict:
     return load_json(sign_dir / "active.json", {"active_channel": None})
 
 
+def parse_status_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_congestion_level(ai_status: dict, default: int = 1) -> int:
+    try:
+        level = int(ai_status.get("congestion_level", default))
+    except (TypeError, ValueError):
+        level = int(default)
+    return max(1, min(4, level))
+
+
 def compute_active_channel(
     sign_config: dict,
     ai_status: dict,
@@ -440,7 +455,7 @@ def compute_active_channel(
         except Exception:
             continue
 
-    level = compute_level_from_status(ai_status, get_level_thresholds())
+    level = extract_congestion_level(ai_status, default=1)
     if level >= 2:
         ai_channels = sign_config.get("ai_channels", {})
         key = f"level{level}"
@@ -1182,6 +1197,7 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self.settings = load_json(SETTINGS_PATH, {})
         self.inventory = load_json(INVENTORY_PATH, {})
         self.ai_status = load_json(AI_STATUS_PATH, {})
+        self.ai_status_stale = False
 
         self.sign_states: Dict[str, SignState] = {}
         self._preview_enabled = self.settings.get("preview_enabled", True)
@@ -2404,15 +2420,17 @@ QPushButton:disabled {
         )
 
     def build_ai_text(self) -> str:
-        level = compute_level_from_status(self.ai_status, get_level_thresholds())
-        return f"渋滞LEVEL{level}"
+        level = extract_congestion_level(self.ai_status, default=1)
+        suffix = " (STALE)" if self.ai_status_stale else ""
+        return f"渋滞LEVEL{level}{suffix}"
 
     def update_ai_badge(self) -> None:
         if not self.ai_level_badge:
             return
-        level = compute_level_from_status(self.ai_status, get_level_thresholds())
+        level = extract_congestion_level(self.ai_status, default=1)
         style = level_style(level)
-        self.ai_level_badge.setText(style["label"])
+        label = style["label"] + (" (STALE)" if self.ai_status_stale else "")
+        self.ai_level_badge.setText(label)
         self.ai_level_badge.setStyleSheet(
             f"background:{style['bg']}; color:{style['fg']}; border-radius:8px; font-weight:900; font-size:16px;"
         )
@@ -2696,10 +2714,25 @@ QPushButton:disabled {
         with self._update_lock:
             self.ai_status = load_json(AI_STATUS_PATH, self.ai_status)
             raw_level = self.ai_status.get("congestion_level", 1)
-            level = compute_level_from_status(self.ai_status, get_level_thresholds())
-            logging.info("[AI] congestion_level raw=%r normalized=%s", raw_level, level)
-            self.update_ai_badge()
+            updated_at_text = str(self.ai_status.get("updated_at", ""))
+            updated_at_dt = parse_status_datetime(updated_at_text)
             now = datetime.now()
+            is_stale = updated_at_dt is None or (now - updated_at_dt).total_seconds() > AI_STATUS_STALE_SEC
+            level = extract_congestion_level(self.ai_status, default=1)
+            effective_level = 1 if is_stale else level
+            self.ai_status_stale = is_stale
+            logging.info(
+                "[AI] congestion_level raw=%r level=%s updated_at=%s stale=%s",
+                raw_level,
+                level,
+                updated_at_text or "-",
+                is_stale,
+            )
+            self.update_ai_badge()
+            effective_ai_status = {
+                "congestion_level": effective_level,
+                "updated_at": updated_at_text,
+            }
             updated_any = False
             for state in self.sign_states.values():
                 config = read_config(CONFIG_DIR / state.name)
@@ -2709,7 +2742,7 @@ QPushButton:disabled {
                 if self._emergency_override_enabled:
                     active_channel = self._emergency_override_channel
                 else:
-                    active_channel = compute_active_channel(config, self.ai_status, now)
+                    active_channel = compute_active_channel(config, effective_ai_status, now)
                 if state.active_channel != active_channel:
                     updated_any = True
                 state.active_channel = active_channel

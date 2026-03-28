@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.page import PageMargins
@@ -140,7 +140,7 @@ DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "metrics_save_interval_sec": 5,
     "ui_refresh_interval_ms": 500,
     "ai_status_json_path": "app/11_config/ai_status.json",
-    "status_update_interval_sec": 3,
+    "status_update_interval_sec": 10,
     "output_root": "app/04_ai_monitor/data",
     "display_update_interval_ms": 800,
     "graph_update_interval_sec": 10,
@@ -484,52 +484,29 @@ class StatusManager:
     def __init__(self, ai_status_path: Path, system_cfg: dict[str, Any]):
         self.ai_status_path = ai_status_path
         self.system_cfg = system_cfg
-        self._last_written_ai_status_payload: dict[str, Any] | None = None
+        self._last_level: int | None = None
+        self._last_write_time: float = 0.0
         self.last_failure_at: float = 0.0
 
-    def update_if_needed(self, payload: dict[str, Any]) -> None:
-        normalized_payload = self._normalize_status_payload(payload)
-        if self._last_written_ai_status_payload == normalized_payload and self.ai_status_path.exists():
+    def update_if_needed(self, level: int) -> None:
+        now = time.time()
+        update_interval_sec = max(1, int(self.system_cfg.get("status_update_interval_sec", 10)))
+        if level == self._last_level and (now - self._last_write_time) < update_interval_sec:
             return
-        to_write = dict(normalized_payload)
-        to_write["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload = {
+            "congestion_level": int(level),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
         try:
-            self._atomic_write_json(self.ai_status_path, to_write)
+            self._atomic_write_json(self.ai_status_path, payload)
         except Exception as exc:
             now_ts = time.time()
             if now_ts - self.last_failure_at > 5.0:
                 self.last_failure_at = now_ts
                 logging.warning("ai_status write skipped: %s", exc)
             return
-        self._last_written_ai_status_payload = normalized_payload
-
-    def _normalize_status_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        normalized_camera_states: list[dict[str, Any]] = []
-        for row in payload.get("camera_states", []):
-            try:
-                cid = int(row.get("camera_id", 0))
-            except (TypeError, ValueError):
-                cid = 0
-            normalized_camera_states.append(
-                {
-                    "camera_id": cid,
-                    "camera_name": str(row.get("camera_name", "")),
-                    "raw_congestion_index": round(float(row.get("raw_congestion_index", 0.0)), 3),
-                    "smoothed_congestion_index": round(float(row.get("smoothed_congestion_index", 0.0)), 3),
-                    "threshold": round(float(row.get("threshold", 0.0)), 2),
-                    "long_stay_count": int(row.get("long_stay_count", 0)),
-                    "level": int(row.get("level", 1)),
-                }
-            )
-        normalized_camera_states.sort(key=lambda item: item["camera_id"])
-        return {
-            "congestion_level": int(payload.get("congestion_level", 1)),
-            "smoothed_congestion_index": round(float(payload.get("smoothed_congestion_index", 0.0)), 3),
-            "level2_threshold": round(float(payload.get("level2_threshold", 0.0)), 2),
-            "level3_threshold": round(float(payload.get("level3_threshold", 0.0)), 2),
-            "level4_threshold": round(float(payload.get("level4_threshold", 0.0)), 2),
-            "camera_states": normalized_camera_states,
-        }
+        self._last_level = int(level)
+        self._last_write_time = now
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict) -> None:
@@ -686,6 +663,127 @@ class ReportWriter:
             return pd.read_csv(path)
         except Exception:
             return pd.DataFrame()
+
+
+class TenMinuteRecordWriter:
+    HEADERS = [
+        "時刻（10分単位）",
+        "渋滞レベル",
+        "Camera1 渋滞指数",
+        "Camera1 LtoR",
+        "Camera1 RtoL",
+        "Camera2 渋滞指数",
+        "Camera2 LtoR",
+        "Camera2 RtoL",
+        "Camera3 渋滞指数",
+        "Camera3 LtoR",
+        "Camera3 RtoL",
+    ]
+
+    def __init__(self, output_root: Path):
+        self.output_root = output_root / "reports" / "daily"
+
+    @staticmethod
+    def _floor_to_10min(dt: datetime) -> datetime:
+        return dt.replace(minute=(dt.minute // 10) * 10, second=0, microsecond=0)
+
+    def collect_sample(self, now: datetime, level: int, latest_payloads: dict[int, dict[str, Any]]) -> dict[str, Any]:
+        sample: dict[str, Any] = {"time": now, "level": int(level), "cameras": {}}
+        for cid in (1, 2, 3):
+            payload = latest_payloads.get(cid, {})
+            sample["cameras"][cid] = {
+                "index": float(payload.get("smoothed_congestion_score", payload.get("congestion_score", 0.0))),
+                "ltor_total": int(payload.get("count_ltor", 0)),
+                "rtol_total": int(payload.get("count_rtol", 0)),
+            }
+        return sample
+
+    def aggregate_10min(self, bin_start: datetime, samples: list[dict[str, Any]]) -> list[Any]:
+        if not samples:
+            return [bin_start.strftime("%H:%M"), 1, 0.0, 0, 0, 0.0, 0, 0, 0.0, 0, 0]
+        level_max = max(int(s["level"]) for s in samples)
+        row: list[Any] = [bin_start.strftime("%H:%M"), level_max]
+        for cid in (1, 2, 3):
+            indices = [float(s["cameras"][cid]["index"]) for s in samples]
+            ltor_values = [int(s["cameras"][cid]["ltor_total"]) for s in samples]
+            rtol_values = [int(s["cameras"][cid]["rtol_total"]) for s in samples]
+            ltor = max(0, max(ltor_values) - min(ltor_values)) if ltor_values else 0
+            rtol = max(0, max(rtol_values) - min(rtol_values)) if rtol_values else 0
+            avg_index = round(float(np.mean(indices)), 3) if indices else 0.0
+            row.extend([avg_index, ltor, rtol])
+        return row
+
+    def append_row(self, target_date: date, row: list[Any]) -> Path:
+        wb, path = self._load_or_create(target_date)
+        ws = wb["Data"]
+        ws.append(row)
+        wb.save(path)
+        return path
+
+    def finalize_day_graph(self, target_date: date) -> Path | None:
+        path = self.output_root / f"{target_date.isoformat()}.xlsx"
+        if not path.exists():
+            return None
+        wb = load_workbook(path)
+        ws_data = wb["Data"] if "Data" in wb.sheetnames else wb.active
+        if "Graph" in wb.sheetnames:
+            del wb["Graph"]
+        ws_graph = wb.create_sheet("Graph")
+        last_row = ws_data.max_row
+        if last_row < 2:
+            wb.save(path)
+            return path
+
+        cats = Reference(ws_data, min_col=1, min_row=2, max_row=last_row)
+
+        chart_level = LineChart()
+        chart_level.title = "渋滞レベル推移"
+        chart_level.y_axis.scaling.min = 1
+        chart_level.y_axis.scaling.max = 4
+        chart_level.height = 6
+        chart_level.width = 10
+        chart_level.add_data(Reference(ws_data, min_col=2, min_row=1, max_row=last_row), titles_from_data=True)
+        chart_level.set_categories(cats)
+        ws_graph.add_chart(chart_level, "A1")
+
+        chart_index = LineChart()
+        chart_index.title = "カメラ別渋滞指数"
+        chart_index.height = 6
+        chart_index.width = 10
+        for col in (3, 6, 9):
+            chart_index.add_data(Reference(ws_data, min_col=col, max_col=col, min_row=1, max_row=last_row), titles_from_data=True)
+        chart_index.set_categories(cats)
+        ws_graph.add_chart(chart_index, "A18")
+
+        chart_traffic = BarChart()
+        chart_traffic.title = "交通量（LtoR / RtoL）"
+        chart_traffic.height = 6
+        chart_traffic.width = 10
+        for col in (4, 5, 7, 8, 10, 11):
+            chart_traffic.add_data(Reference(ws_data, min_col=col, max_col=col, min_row=1, max_row=last_row), titles_from_data=True)
+        chart_traffic.set_categories(cats)
+        ws_graph.add_chart(chart_traffic, "L1")
+
+        ws_graph.page_setup.paperSize = ws_graph.PAPERSIZE_A4
+        ws_graph.page_setup.orientation = ws_graph.ORIENTATION_LANDSCAPE
+        ws_graph.page_setup.fitToWidth = 1
+        ws_graph.page_setup.fitToHeight = 1
+        ws_graph.page_margins = PageMargins(left=0.2, right=0.2, top=0.3, bottom=0.3)
+        wb.save(path)
+        return path
+
+    def _load_or_create(self, target_date: date) -> tuple[Workbook, Path]:
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        path = self.output_root / f"{target_date.isoformat()}.xlsx"
+        if path.exists():
+            return load_workbook(path), path
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(self.HEADERS)
+        wb.create_sheet("Graph")
+        wb.save(path)
+        return wb, path
 
 
 # =========================================
@@ -2121,6 +2219,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
         self.reporter = ReportWriter(root_dir / "data")
+        self.ten_min_writer = TenMinuteRecordWriter(root_dir / "data")
         raw_ai_status = Path(self.app_cfg.system.get("ai_status_json_path", "app/11_config/ai_status.json"))
         script_base = Path(__file__).resolve().parents[2]
         if raw_ai_status.is_absolute():
@@ -2134,8 +2233,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workers: dict[int, CameraWorker] = {}
         self.panels: dict[int, CameraPanel] = {}
         self.latest_payloads: dict[int, dict[str, Any]] = {}
-        self.pending_report_update = False
-        self.report_warning_shown = False
+        self.ten_min_buffer: list[dict[str, Any]] = []
+        now_dt = datetime.now()
+        self.current_10min_bin_start = self.ten_min_writer._floor_to_10min(now_dt)
+        self.current_10min_date = now_dt.date()
         self.system_level_history_today: list[tuple[datetime, float]] = []
         self.system_level_history_yesterday: list[tuple[datetime, float]] = []
         self.system_level_history_date = datetime.now().date()
@@ -2248,12 +2349,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 800)))
-        self.report_update_timer = QtCore.QTimer(self)
-        self.report_update_timer.timeout.connect(self._flush_report_update_if_needed)
-        self.report_update_timer.start(300000)
-        self.report_retry_timer = QtCore.QTimer(self)
-        self.report_retry_timer.timeout.connect(self._retry_pending_report_update)
-        self.report_retry_timer.start(30000)
         QtCore.QTimer.singleShot(0, self._show_on_target_screen)
 
     def tick(self) -> None:
@@ -2267,6 +2362,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._record_system_level(self.compute_system_level(), now)
             self.last_system_level_record_ts = now_ts
             self._refresh_system_level_graph()
+        self._collect_and_flush_10min_records(now)
 
     @QtCore.pyqtSlot(dict)
     def on_camera_payload(self, payload: dict[str, Any]) -> None:
@@ -2281,7 +2377,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_status_level()
         except Exception as exc:
             logging.warning("on_camera_payload status update skipped cam%s: %s", cid, exc)
-        self.pending_report_update = True
 
     def _show_on_target_screen(self) -> None:
         try:
@@ -2309,33 +2404,9 @@ class MainWindow(QtWidgets.QMainWindow):
             panel.set_status(status_text)
 
     def _update_status_level(self) -> None:
-        camera_states = []
-        for cid, payload in sorted(self.latest_payloads.items()):
-            camera_states.append(
-                {
-                    "camera_id": cid,
-                    "camera_name": payload.get("camera_name", f"Camera{cid}"),
-                    "raw_congestion_index": round(float(payload.get("congestion_score", 0.0)), 3),
-                    "smoothed_congestion_index": round(float(payload.get("smoothed_congestion_score", 0.0)), 3),
-                    "threshold": round(float(payload.get("threshold", 0.0)), 2),
-                    "long_stay_count": int(len(payload.get("long_stay_list", []))),
-                    "level": int(payload.get("congestion_level", 1)),
-                }
-            )
-        overall_smoothed = max((item["smoothed_congestion_index"] for item in camera_states), default=0.0)
         overall_level = self.compute_system_level()
         try:
-            self.status_mgr.update_if_needed(
-                {
-                    "congestion_level": int(overall_level),
-                    "smoothed_congestion_index": round(overall_smoothed, 3),
-                    "level2_threshold": round(self.get_camera_threshold("Camera2"), 2),
-                    "level3_threshold": round(self.get_camera_threshold("Camera1"), 2),
-                    "level4_threshold": round(self.get_camera_threshold("Camera3"), 2),
-                    "camera_states": camera_states,
-                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            )
+            self.status_mgr.update_if_needed(int(overall_level))
         except Exception as exc:
             logging.warning("ai_status update skipped: %s", exc)
 
@@ -2564,34 +2635,28 @@ class MainWindow(QtWidgets.QMainWindow):
         out = self.root_dir / "data" / "reports" / "daily" / f"multi_day_trend_{date.today().isoformat()}.png"
         save_multi_day_trend_plot(metrics_files, "congestion_score", out)
 
-    def _request_report_update(self) -> None:
-        try:
-            self.reporter.write_daily_report(date.today(), self.app_cfg.cameras, self.root_dir / "data" / "metrics")
-            self.pending_report_update = False
-            self.report_warning_shown = False
-        except PermissionError:
-            self.pending_report_update = True
-            if not self.report_warning_shown:
-                self.report_warning_shown = True
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "Excel更新保留",
-                    "Excelレポートが開かれているため更新できません。Excelを閉じてください。閉じられ次第、自動で再更新します。",
-                )
-        except Exception as exc:
-            self.pending_report_update = True
-            logging.warning("report update skipped: %s", exc)
-
-    def _flush_report_update_if_needed(self) -> None:
-        if not self.pending_report_update:
+    def _collect_and_flush_10min_records(self, now: datetime) -> None:
+        level = self.compute_system_level()
+        self.ten_min_buffer.append(self.ten_min_writer.collect_sample(now, level, self.latest_payloads))
+        active_bin = self.ten_min_writer._floor_to_10min(now)
+        if active_bin == self.current_10min_bin_start:
             return
-        self._request_report_update()
+        self._flush_current_10min_bin()
+        prev_date = self.current_10min_date
+        self.current_10min_bin_start = active_bin
+        self.current_10min_date = active_bin.date()
+        if self.current_10min_date != prev_date:
+            self.ten_min_writer.finalize_day_graph(prev_date)
 
-    def _retry_pending_report_update(self) -> None:
-        if self.pending_report_update:
-            self._request_report_update()
+    def _flush_current_10min_bin(self) -> None:
+        if not self.ten_min_buffer:
+            return
+        row = self.ten_min_writer.aggregate_10min(self.current_10min_bin_start, self.ten_min_buffer)
+        self.ten_min_writer.append_row(self.current_10min_bin_start.date(), row)
+        self.ten_min_buffer.clear()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._flush_current_10min_bin()
         for worker in self.workers.values():
             try:
                 worker.stop()
