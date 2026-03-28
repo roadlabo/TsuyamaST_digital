@@ -31,3 +31,16 @@ python app/04_ai_monitor/ai_congestion_monitor.py
 - FPS変動の影響を抑えるため、秒割りではなくフレーム平均を採用しています。
 - `congestion_calculation_interval` の推奨値は **3秒** です（既存設定JSONに10秒等が保存済みの場合はUIから変更してください）。
 - 渋滞指数の算出方法変更に伴い、`congestion_threshold` は運用環境に合わせて再調整が必要です。
+
+
+## 本番運用バッチ（ログ付き・安定版）
+### 起動方法
+- `run_ai_congestion_monitor.bat` を実行
+
+### ログ出力先
+- `C:\_TsuyamaSignage\logs\ai_monitor.log`
+
+### 特徴
+- 仮想環境固定（`venv310`）
+- 標準出力＋エラーをすべてログ化（`>> ... 2>&1`）
+- 追記方式で履歴保存
