@@ -742,15 +742,15 @@ class TenMinuteRecordWriter:
         "時刻（10分単位）",
         "渋滞レベル",
         "Camera1 渋滞指数",
-        "Camera1 脇村君指標α",
+        "Camera1 脇村指標α",
         "Camera1 LtoR",
         "Camera1 RtoL",
         "Camera2 渋滞指数",
-        "Camera2 脇村君指標α",
+        "Camera2 脇村指標α",
         "Camera2 LtoR",
         "Camera2 RtoL",
         "Camera3 渋滞指数",
-        "Camera3 脇村君指標α",
+        "Camera3 脇村指標α",
         "Camera3 LtoR",
         "Camera3 RtoL",
     ]
@@ -1380,22 +1380,24 @@ class CameraPanel(QtWidgets.QFrame):
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
         self._status_connected = False
-        self.video_target_w = 560
-        self.video_target_h = 315
+        self.video_target_w = 760
+        self.video_target_h = 430
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
-        # 現場表示密度を上げるため、CameraPanel 全体の余白を最小化する。
-        root.setContentsMargins(1, 1, 1, 1)
-        root.setSpacing(0)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(1068)
+        self.setMaximumWidth(1068)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(1)
+        top_row.setSpacing(8)
 
         video_box = QtWidgets.QWidget()
         video_layout = QtWidgets.QVBoxLayout(video_box)
         video_layout.setContentsMargins(0, 0, 0, 0)
-        video_layout.setSpacing(1)
+        video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
         self.video.setFixedSize(self.video_target_w, self.video_target_h)
@@ -1403,26 +1405,32 @@ class CameraPanel(QtWidgets.QFrame):
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        video_box.setMinimumWidth(self.video_target_w)
+        video_box.setFixedSize(self.video_target_w, self.video_target_h)
         video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(300)
-        right_box.setMaximumWidth(300)
+        right_box.setFixedWidth(300)
         right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(1, 0, 1, 0)
-        right.setSpacing(0)
+        right.setContentsMargins(4, 4, 4, 4)
+        right.setSpacing(4)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.title = QtWidgets.QLabel("")
-        self.title.setStyleSheet("font-size:11px;color:#00D7FF;font-weight:bold;line-height:1.2em;")
+        self.title.setStyleSheet("font-size:12px;color:#00D7FF;font-weight:bold;line-height:1.2em;")
         self.title.setWordWrap(True)
         right.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
+        self.stream_meta = QtWidgets.QLabel("入力画像サイズ: -- / 受信FPS: -- / 更新: --")
+        self.stream_meta.setWordWrap(True)
+        self.stream_meta.setStyleSheet(
+            "font-size:10px;color:#9edff6;background:#08121b;border:1px solid #1f4f7a;border-radius:6px;padding:4px;line-height:1.15em;"
+        )
+        right.addWidget(self.stream_meta)
+
         btn_col = QtWidgets.QVBoxLayout()
-        btn_col.setSpacing(2)
+        btn_col.setSpacing(4)
         self.btn_line = QtWidgets.QPushButton("ライン設定")
         self.btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
         self.btn_exclude = QtWidgets.QPushButton("除外エリア")
@@ -1432,7 +1440,8 @@ class CameraPanel(QtWidgets.QFrame):
         for btn in (self.btn_line, self.btn_exclude, self.btn_ai):
             btn.setFixedHeight(20)
             btn.setStyleSheet("font-size:10px;padding:2px;")
-            btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+            btn.setFixedWidth(92)
             btn_col.addWidget(btn)
 
         self.congestion_bar = CongestionIndexBar()
@@ -1460,7 +1469,7 @@ class CameraPanel(QtWidgets.QFrame):
         level_row.addWidget(th_box, 1)
         right.addLayout(level_row)
 
-        self.wakimura_label = QtWidgets.QLabel("脇村君指標 α：--")
+        self.wakimura_label = QtWidgets.QLabel("脇村指標 α：--")
         self.wakimura_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.wakimura_label.setStyleSheet(
             "font-size:11px;"
@@ -1473,14 +1482,27 @@ class CameraPanel(QtWidgets.QFrame):
         )
         right.addWidget(self.wakimura_label)
 
+        metric_head = QtWidgets.QLabel("脇村モデル主要値")
+        metric_head.setStyleSheet("font-size:11px;font-weight:bold;color:#c5bdff;")
+        right.addWidget(metric_head)
+        self.wakimura_grid = QtWidgets.QGridLayout()
+        self.wakimura_grid.setContentsMargins(0, 0, 0, 0)
+        self.wakimura_grid.setHorizontalSpacing(4)
+        self.wakimura_grid.setVerticalSpacing(4)
+        self.wakimura_grid_widget = QtWidgets.QWidget()
+        self.wakimura_grid_widget.setLayout(self.wakimura_grid)
+        right.addWidget(self.wakimura_grid_widget)
+        self.wakimura_value_labels: dict[str, QtWidgets.QLabel] = {}
+        self._build_wakimura_cards()
+
         count_row = QtWidgets.QHBoxLayout()
         count_row.setContentsMargins(0, 0, 0, 0)
-        count_row.setSpacing(1)
+        count_row.setSpacing(4)
         self.ltor_card = QtWidgets.QLabel("LtoR：0")
         self.rtol_card = QtWidgets.QLabel("RtoL：0")
         for card in (self.ltor_card, self.rtol_card):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet("font-size:18px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:2px;")
+            card.setStyleSheet("font-size:16px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:4px;")
             count_row.addWidget(card, 1)
         right.addLayout(count_row)
 
@@ -1489,18 +1511,20 @@ class CameraPanel(QtWidgets.QFrame):
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
         self.stay_grid.setContentsMargins(0, 0, 0, 0)
-        self.stay_grid.setHorizontalSpacing(1)
-        self.stay_grid.setVerticalSpacing(1)
+        self.stay_grid.setHorizontalSpacing(4)
+        self.stay_grid.setVerticalSpacing(4)
         self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
-        stay_box = QtWidgets.QWidget()
-        stay_box.setLayout(self.stay_grid)
-        stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
-        stay_box.setMinimumHeight(0)
-        right.addWidget(stay_box)
+        self.stay_box = QtWidgets.QWidget()
+        self.stay_box.setLayout(self.stay_grid)
+        self.stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
+        self.stay_box.setMinimumHeight(36)
+        self.stay_box.setMaximumHeight(96)
+        self.stay_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Minimum)
+        right.addWidget(self.stay_box)
         self._render_stay_cards([])
 
         btn_col.setContentsMargins(0, 0, 0, 0)
-        btn_col.setSpacing(1)
+        btn_col.setSpacing(4)
         right.addLayout(btn_col)
 
         top_row.addWidget(right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
@@ -1509,8 +1533,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.graphs: list[CombinedTimelineGraph] = []
         graphs_box = QtWidgets.QWidget()
         graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
-        graphs_layout.setContentsMargins(1, 0, 1, 0)
-        graphs_layout.setSpacing(1)
+        graphs_layout.setContentsMargins(0, 0, 0, 0)
+        graphs_layout.setSpacing(2)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
             g.setFixedHeight(62)
@@ -1544,7 +1568,9 @@ class CameraPanel(QtWidgets.QFrame):
         self._update_congestion_bar(score, threshold)
         wak_alpha = float(payload.get("wakimura_alpha", 0.0))
         wak_mode = bool(payload.get("wakimura_high_load_mode", False))
-        self.wakimura_label.setText(f"脇村君指標 α：{wak_alpha:.3f} [{'HL' if wak_mode else 'WIN'}]")
+        self.wakimura_label.setText(f"脇村指標 α：{wak_alpha:.3f} [{'HL' if wak_mode else 'WIN'}]")
+        self._update_stream_meta(float(payload.get("fps", 0.0)))
+        self._update_wakimura_cards(payload)
         self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
         self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
         self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
@@ -1556,35 +1582,33 @@ class CameraPanel(QtWidgets.QFrame):
         self._status_connected = status_text == "RUNNING"
         self._update_title()
 
-    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._update_video_pixmap()
-
     def _update_video_pixmap(self) -> None:
         if self._latest_pixmap is None:
             return
         scaled = self._latest_pixmap.scaled(
-            self.video_target_w,
-            self.video_target_h,
-            QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            self.video.size(),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
             QtCore.Qt.TransformationMode.SmoothTransformation,
         )
-        x = max(0, (scaled.width() - self.video_target_w) // 2)
-        y = max(0, (scaled.height() - self.video_target_h) // 2)
-        cropped = scaled.copy(x, y, self.video_target_w, self.video_target_h)
-        self.video.setPixmap(cropped)
+        self.video.setPixmap(scaled)
 
     def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
         cam_name = camera_name or self.camera_cfg.get("camera_name", f"Camera{self.camera_id}")
         raw_stream = stream_name or self.camera_cfg.get("stream_name") or self.camera_cfg.get("stream_url")
         stream = str(raw_stream).strip() if raw_stream else f"stream{self.camera_id}"
         w, h = self._last_frame_size
-        res_text = f"{w}×{h}" if w and h else "不明"
+        res_text = f"{w}×{h}" if w and h else "--"
         status_text = "rtsp受信中" if self._status_connected else "通信無し"
         self.title.setText(
             f"{cam_name} / {stream}\n"
-            f"入力：{res_text} / {status_text}"
+            f"入力画像サイズ: {res_text} / {status_text}"
         )
+
+    def _update_stream_meta(self, fps: float) -> None:
+        w, h = self._last_frame_size
+        res_text = f"{w}×{h}" if w and h else "--"
+        ts_text = datetime.now().strftime("%H:%M:%S")
+        self.stream_meta.setText(f"入力画像サイズ: {res_text} / 受信FPS: {fps:.1f} / 更新: {ts_text}")
 
     def _on_threshold_enter_pressed(self) -> None:
         current = float(self.camera_cfg.get("congestion_threshold", 5.0))
@@ -1613,11 +1637,13 @@ class CameraPanel(QtWidgets.QFrame):
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             empty_label.setStyleSheet("font-size:9px;color:#5fa2b8;")
-            empty_label.setFixedWidth(98)
-            empty_label.setFixedHeight(30)
+            empty_label.setFixedWidth(72)
+            empty_label.setFixedHeight(28)
             self.stay_grid.addWidget(empty_label, 0, 0)
+            self.stay_box.setFixedHeight(36)
             return
-        for idx, item in enumerate(entries[:6]):
+        visible_entries = entries[:8]
+        for idx, item in enumerate(visible_entries):
             track_id = int(item[0])
             stay_mins = float(item[1])
             stay_mins_int = max(0, int(stay_mins))
@@ -1626,7 +1652,7 @@ class CameraPanel(QtWidgets.QFrame):
                 border_color = "#ff4d4d"
             elif stay_mins_int >= 10:
                 border_color = "#ffe066"
-            card = QtWidgets.QLabel(f"ID={track_id:03d}\n{stay_mins_int:d}min")
+            card = QtWidgets.QLabel(f"ID-{track_id:03d}\n{stay_mins_int:d}min")
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setStyleSheet(
                 "font-size:10px;"
@@ -1634,9 +1660,58 @@ class CameraPanel(QtWidgets.QFrame):
                 f"border:1px solid {border_color};"
                 "border-radius:6px;color:#95f6ff;padding:1px;font-weight:bold;"
             )
-            card.setFixedWidth(98)
-            card.setFixedHeight(30)
-            self.stay_grid.addWidget(card, idx // 3, idx % 3)
+            card.setFixedWidth(72)
+            card.setFixedHeight(28)
+            self.stay_grid.addWidget(card, idx // 4, idx % 4)
+        rows = max(1, (len(visible_entries) + 3) // 4)
+        self.stay_box.setFixedHeight(min(96, 8 + rows * 32))
+
+    def _build_wakimura_cards(self) -> None:
+        labels = [
+            ("停止台数", "wak_stop_count"),
+            ("低速台数", "wak_slow_count"),
+            ("総追跡台数", "wak_total_tracks"),
+            ("平均移動量", "wak_avg_move"),
+            ("中央移動量", "wak_median_move"),
+            ("閾値以下台数", "wak_below_threshold_count"),
+            ("閾値以下率", "wak_below_threshold_ratio"),
+            ("停止率", "wak_stop_ratio"),
+            ("低速率", "wak_slow_ratio"),
+            ("窓内評価台数", "wak_window_count"),
+            ("score合計", "wak_score_sum"),
+            ("score平均", "wak_score_avg"),
+            ("最大滞在時間", "wak_max_stay_min"),
+            ("1分以上滞在台数", "wak_stay_over_1min"),
+            ("更新時刻", "wak_updated_at"),
+        ]
+        for idx, (title, key) in enumerate(labels):
+            card = QtWidgets.QFrame()
+            card.setFixedSize(92, 36)
+            card.setStyleSheet("background:#101226;border:1px solid #6a4cff;border-radius:6px;")
+            card_layout = QtWidgets.QVBoxLayout(card)
+            card_layout.setContentsMargins(4, 2, 4, 2)
+            card_layout.setSpacing(1)
+            t = QtWidgets.QLabel(title)
+            t.setStyleSheet("font-size:9px;color:#b7a6ff;font-weight:bold;")
+            v = QtWidgets.QLabel("--")
+            v.setStyleSheet("font-size:10px;color:#efe7ff;font-weight:bold;")
+            card_layout.addWidget(t)
+            card_layout.addWidget(v)
+            self.wakimura_grid.addWidget(card, idx // 3, idx % 3)
+            self.wakimura_value_labels[key] = v
+
+    def _update_wakimura_cards(self, payload: dict[str, Any]) -> None:
+        for key, label in self.wakimura_value_labels.items():
+            val = payload.get(key, "--")
+            if isinstance(val, float):
+                if "ratio" in key:
+                    text = f"{val * 100:.1f}%"
+                else:
+                    text = f"{val:.3f}" if abs(val) < 100 else f"{val:.1f}"
+            else:
+                text = str(val)
+            if label.text() != text:
+                label.setText(text)
 
     def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
         while layout.count():
@@ -1702,7 +1777,7 @@ class CameraWorker(QtCore.QObject):
             int(self.camera_cfg.get("congestion_calculation_interval", 3)),
             smoothing_window=int(self.system_cfg.get("congestion_smoothing_window", 6)),
         )
-        # 脇村君指標 α は参考表示専用で、既存 LEVEL 判定ロジックには一切使用しない。
+        # 脇村指標 α は参考表示専用で、既存 LEVEL 判定ロジックには一切使用しない。
         # 算出ロジックは app/90_sample/20_rotary_efficiency_analysis.py の考え方を監視向けに簡略適用。
         self.wakimura_alpha = WakimuraAlphaCalculator(
             rotary_capacity=int(self.camera_cfg.get("wakimura_rotary_capacity", 10)),
@@ -2217,7 +2292,7 @@ class CameraWorker(QtCore.QObject):
             count_ltor = int(sum(self.counter.state.pass_bins_ltor))
             count_rtol = int(sum(self.counter.state.pass_bins_rtol))
 
-            # tracks 上の現在IDに対して滞在秒数平均を別計算（脇村君指標 α 用）
+            # tracks 上の現在IDに対して滞在秒数平均を別計算（脇村指標 α 用）
             avg_stay_sec = 0.0
             if tracks:
                 stay_secs = []
@@ -2226,6 +2301,24 @@ class CameraWorker(QtCore.QObject):
                     if seen is not None:
                         stay_secs.append(max(0.0, (now - seen).total_seconds()))
                 avg_stay_sec = float(np.mean(stay_secs)) if stay_secs else 0.0
+            movement_values: list[float] = []
+            for tr in tracks:
+                tid = int(tr["track_id"])
+                cx, cy = tr["center"]
+                prev = self.congestion.state.previous_positions.get(tid)
+                if prev is None:
+                    continue
+                px, py = prev
+                movement_values.append(float(((cx - px) ** 2 + (cy - py) ** 2) ** 0.5))
+            stop_count = sum(1 for d in movement_values if d <= 1.0)
+            slow_count = sum(1 for d in movement_values if d <= 3.0)
+            below_threshold_count = sum(1 for d in movement_values if d <= 2.0)
+            track_count = len(tracks)
+            max_stay_min = max((mins for _, mins in long_stay_list), default=0.0)
+            move_avg = float(np.mean(movement_values)) if movement_values else 0.0
+            move_median = float(np.median(movement_values)) if movement_values else 0.0
+            score_sum = float(self.congestion.state.frame_cumulative_motion_score)
+            score_avg = float(congestion_score)
 
             wakimura = {
                 "wakimura_alpha": 0.0,
@@ -2237,7 +2330,7 @@ class CameraWorker(QtCore.QObject):
             try:
                 wakimura = self.wakimura_alpha.update(now=now, vehicle_count=len(tracks), avg_stay_sec=avg_stay_sec)
             except Exception as exc:
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} 脇村君指標 α update skipped: {exc}")
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} 脇村指標 α update skipped: {exc}")
 
             elapsed = max(1e-6, time.time() - start)
             self.fps = 1.0 / elapsed
@@ -2301,6 +2394,21 @@ class CameraWorker(QtCore.QObject):
                 "long_stay_count": len(long_stay_list),
                 "long_stay_list": [[int(tid), float(minutes)] for tid, minutes in long_stay_list[:10]],
                 **wakimura,
+                "wak_stop_count": int(stop_count),
+                "wak_slow_count": int(slow_count),
+                "wak_total_tracks": int(track_count),
+                "wak_avg_move": float(move_avg),
+                "wak_median_move": float(move_median),
+                "wak_below_threshold_count": int(below_threshold_count),
+                "wak_below_threshold_ratio": float((below_threshold_count / track_count) if track_count else 0.0),
+                "wak_stop_ratio": float((stop_count / track_count) if track_count else 0.0),
+                "wak_slow_ratio": float((slow_count / track_count) if track_count else 0.0),
+                "wak_window_count": int(len(self.congestion.state.frame_time_stamps)),
+                "wak_score_sum": float(score_sum),
+                "wak_score_avg": float(score_avg),
+                "wak_max_stay_min": float(max_stay_min),
+                "wak_stay_over_1min": int(sum(1 for _, mins in long_stay_list if mins >= 1.0)),
+                "wak_updated_at": now.strftime("%H:%M:%S"),
                 "debug_metrics": {
                     "raw_congestion_index": round(float(congestion_score), 3),
                     "smoothed_congestion_index": round(smoothed_score, 3),
@@ -2364,8 +2472,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.root_dir = root_dir
         self.setWindowTitle("AI Congestion Monitor")
         self.setStyleSheet("background:#02060a;")
-        self.resize(1024, 1600)
-        self.setMinimumSize(900, 1300)
+        self.resize(1080, 1600)
+        self.setMinimumSize(1080, 1300)
 
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
@@ -2409,35 +2517,39 @@ class MainWindow(QtWidgets.QMainWindow):
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setCentralWidget(scroll)
         content = QtWidgets.QWidget()
+        content.setMinimumWidth(1080)
+        content.setMaximumWidth(1080)
+        content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(content)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(3)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(4)
         scroll.setWidget(content)
 
         top_info_grid = QtWidgets.QGridLayout()
         top_info_grid.setContentsMargins(0, 0, 0, 0)
-        top_info_grid.setHorizontalSpacing(4)
-        top_info_grid.setVerticalSpacing(3)
-        top_info_grid.setColumnStretch(0, 4)
-        top_info_grid.setColumnStretch(1, 3)
+        top_info_grid.setHorizontalSpacing(6)
+        top_info_grid.setVerticalSpacing(4)
         self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
-        self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:12px;")
+        self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;")
         self.formula_status = QtWidgets.QLabel(
-            "渋滞指数＝車両の停滞度を示す指標\n"
-            "移動量が小さいほど指数が上がり、停止に近いほど高くなります\n"
-            "直近3秒の各フレーム移動量を使って算出（score=Σ[1/(1+(d/W)×500)]）"
+            "渋滞指数＝車両の停滞傾向を表す指標。移動量が小さい車ほど高くなり、流れが悪い状態を表す。\n"
+            "直近30秒の各車両の移動量 d を用いて score=Σ[1/(1+d/(W×500))] を算出し、画面内全体で集計する。\n"
+            "脇村指標は停止寄り車両の割合と滞在傾向を用いた補助評価値。停止台数・低速台数・平均移動量・閾値超過台数などで詰まり方を補足する。"
         )
         self.formula_status.setWordWrap(True)
-        self.formula_status.setStyleSheet("color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:5px;font-size:12px;")
+        self.formula_status.setStyleSheet("color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:4px;font-size:14px;")
+        self.global_status.setFixedWidth(770)
+        self.formula_status.setFixedWidth(770)
 
         level_block = QtWidgets.QVBoxLayout()
         level_block.setContentsMargins(0, 0, 0, 0)
         level_block.setSpacing(3)
         level_block_widget = QtWidgets.QWidget()
         level_block_widget.setLayout(level_block)
-        level_block_widget.setMinimumWidth(360)
+        level_block_widget.setFixedWidth(300)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(42)
@@ -2451,7 +2563,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_rule_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.level_rule_label.setWordWrap(True)
         self.level_rule_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:12px;line-height:1.35em;")
+        self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;line-height:1.25em;")
         level_block.addWidget(self.level_badge)
 
         top_info_grid.addWidget(self.global_status, 0, 0)
