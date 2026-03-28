@@ -103,7 +103,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "bt_track_buffer": 30,
             "crossing_judgment_pattern": "line_cross",
             "distance_threshold": 25.0,
-            "congestion_calculation_interval": 10,
+            "congestion_calculation_interval": 3,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
             "display_scale": 0.8,
@@ -134,7 +134,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "bt_track_buffer": 30,
             "crossing_judgment_pattern": "line_cross",
             "distance_threshold": 25.0,
-            "congestion_calculation_interval": 10,
+            "congestion_calculation_interval": 3,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
             "display_scale": 0.8,
@@ -165,7 +165,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "bt_track_buffer": 30,
             "crossing_judgment_pattern": "line_cross",
             "distance_threshold": 25.0,
-            "congestion_calculation_interval": 10,
+            "congestion_calculation_interval": 3,
             "enable_congestion": True,
             "line_direction_mode": "line_vector",
             "display_scale": 0.8,
@@ -204,6 +204,7 @@ class CongestionState:
     smoothed_motion_scores: list[float] = field(default_factory=list)
     frame_time_stamps: list[datetime] = field(default_factory=list)
     frame_cumulative_motion_score: float = 0.0
+    window_frame_count: int = 0
     current_congestion_index: float = 0.0
     current_smoothed_index: float = 0.0
     window_start: datetime | None = None
@@ -288,9 +289,9 @@ class ConfigManager:
 # Congestion Logic
 # =========================================
 class CongestionScorer:
-    """AICount11.py の congestion 算出式を監視向けに時間窓化して適用。"""
+    """AICount11.py の congestion 算出式を監視向けに時間窓化して適用。3秒窓のフレーム平均で更新する。"""
 
-    def __init__(self, interval_sec: int = 10, day_keep: int = 1, smoothing_window: int = 6):
+    def __init__(self, interval_sec: int = 3, day_keep: int = 1, smoothing_window: int = 6):
         self.interval_sec = max(1, int(interval_sec))
         self.day_keep = max(1, day_keep)
         self.state = CongestionState()
@@ -330,17 +331,20 @@ class CongestionScorer:
             self.state.window_start = now
         frame_score = self._compute_frame_motion_score(tracks, frame_width, now)
         self.state.frame_cumulative_motion_score += frame_score
+        self.state.window_frame_count += 1
         elapsed = (now - self.state.window_start).total_seconds()
         if elapsed < self.interval_sec:
             return self.state.current_congestion_index
 
-        value = round(self.state.frame_cumulative_motion_score / self.interval_sec, 3)
+        frame_count = max(1, self.state.window_frame_count)
+        value = round(self.state.frame_cumulative_motion_score / frame_count, 3)
         self.state.frame_motion_scores.append(value)
         self.state.frame_time_stamps.append(now)
         self.state.current_congestion_index = value
         self.state.current_smoothed_index = round(self.smoother.add(value), 3)
         self.state.smoothed_motion_scores.append(self.state.current_smoothed_index)
         self.state.frame_cumulative_motion_score = 0.0
+        self.state.window_frame_count = 0
         self.state.window_start = now
 
         day_ago = now - timedelta(days=self.day_keep)
@@ -717,7 +721,7 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         self.bt_buffer = QtWidgets.QSpinBox(); self.bt_buffer.setRange(1, 1000); self.bt_buffer.setValue(int(camera_cfg.get("bt_track_buffer", 30)))
         self.crossing = QtWidgets.QLineEdit(str(camera_cfg.get("crossing_judgment_pattern", "line_cross")))
         self.distance_th = QtWidgets.QDoubleSpinBox(); self.distance_th.setRange(1, 1000); self.distance_th.setValue(float(camera_cfg.get("distance_threshold", 25.0)))
-        self.cong_interval = QtWidgets.QSpinBox(); self.cong_interval.setRange(1, 60); self.cong_interval.setValue(int(camera_cfg.get("congestion_calculation_interval", 10)))
+        self.cong_interval = QtWidgets.QSpinBox(); self.cong_interval.setRange(1, 60); self.cong_interval.setValue(int(camera_cfg.get("congestion_calculation_interval", 3)))
         self.enable_cong = QtWidgets.QCheckBox("enable_congestion"); self.enable_cong.setChecked(bool(camera_cfg.get("enable_congestion", True)))
         self.spin_threshold = QtWidgets.QDoubleSpinBox(); self.spin_threshold.setRange(0.0, 50.0); self.spin_threshold.setDecimals(2); self.spin_threshold.setSingleStep(0.1); self.spin_threshold.setValue(float(camera_cfg.get("congestion_threshold", 5)))
         self.spin_stay = QtWidgets.QSpinBox(); self.spin_stay.setRange(1, 120); self.spin_stay.setValue(int(camera_cfg.get("long_stay_minutes", 15)))
@@ -1212,7 +1216,7 @@ class CameraWorker(QtCore.QObject):
         line = [self.camera_cfg.get("line_start", [0, 0]), self.camera_cfg.get("line_end", [100, 0])]
         self.counter = LineCounter(line)
         self.congestion = CongestionScorer(
-            int(self.camera_cfg.get("congestion_calculation_interval", 10)),
+            int(self.camera_cfg.get("congestion_calculation_interval", 3)),
             smoothing_window=int(self.system_cfg.get("congestion_smoothing_window", 6)),
         )
         self.track_state = TrackState()
@@ -1267,7 +1271,7 @@ class CameraWorker(QtCore.QObject):
         self.camera_name = new_cfg.get("camera_name", self.camera_name)
         self.target_classes = set(int(x) for x in new_cfg.get("target_classes", [2, 3, 5, 7]))
         self.counter.update_line([new_cfg.get("line_start", [0, 0]), new_cfg.get("line_end", [100, 0])])
-        self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 10)))
+        self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 3)))
         self.congestion.update_smoothing_window(int(self.system_cfg.get("congestion_smoothing_window", 6)))
         self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
 
@@ -1869,7 +1873,7 @@ class MainWindow(QtWidgets.QMainWindow):
         info_block = QtWidgets.QVBoxLayout()
         self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
         self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:6px;font-size:12px;")
-        self.formula_status = QtWidgets.QLabel("渋滞指数 = Σ(1 / (1 + d/W × 500))  d:各IDの前フレームからの移動距離, W:画面幅")
+        self.formula_status = QtWidgets.QLabel("渋滞指数=3秒間の各フレーム渋滞スコア平均 | フレーム渋滞スコア=Σ[1/(1+(d/W)×500)]  d:各IDの前フレームからの移動距離, W:画面幅")
         self.formula_status.setStyleSheet("color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:4px;font-size:11px;")
         info_block.addWidget(self.global_status)
         info_block.addWidget(self.formula_status)
