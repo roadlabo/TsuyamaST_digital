@@ -1388,6 +1388,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.camera_id = camera_cfg["camera_id"]
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
+        self._stay_entries: list[list[float] | tuple[int, float]] = []
         self._status_connected = False
         self.video_target_w = 576
         self.video_target_h = 324
@@ -1606,6 +1607,11 @@ class CameraPanel(QtWidgets.QFrame):
         self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
         self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
 
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_video_pixmap()
+        self._render_stay_cards(self._stay_entries)
+
     def _update_congestion_bar(self, score: float, threshold: float) -> None:
         self.congestion_bar.set_values(score, threshold)
 
@@ -1663,17 +1669,29 @@ class CameraPanel(QtWidgets.QFrame):
         self.rtol_card.setText(f"RtoL：{rtol_total}")
 
     def _render_stay_cards(self, entries: list[list[float] | tuple[int, float]]) -> None:
+        self._stay_entries = list(entries)
         self._clear_layout(self.stay_grid)
+        cols = 8
+        spacing = max(0, self.stay_grid.horizontalSpacing())
+        contents = self.stay_grid.contentsMargins()
+        box_w = max(self.stay_box.width(), self.stay_box.sizeHint().width(), 360)
+        available_w = max(
+            8,
+            box_w - contents.left() - contents.right() - spacing * (cols - 1),
+        )
+        card_w = max(44, available_w // cols)
+        extra_px = max(0, available_w - card_w * cols)
+        col_widths = [card_w + (1 if i < extra_px else 0) for i in range(cols)]
         if not entries:
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            empty_label.setStyleSheet("font-size:9px;color:#5fa2b8;padding:0px;")
-            empty_label.setFixedWidth(40)
-            empty_label.setFixedHeight(28)
+            empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;padding:0px;")
+            empty_label.setFixedWidth(col_widths[0])
+            empty_label.setFixedHeight(30)
             self.stay_grid.addWidget(empty_label, 0, 0)
-            self.stay_box.setFixedHeight(32)
+            self.stay_box.setFixedHeight(34)
             return
-        visible_entries = entries[:14]
+        visible_entries = entries[:16]
         for idx, item in enumerate(visible_entries):
             track_id = int(item[0])
             stay_mins = float(item[1])
@@ -1683,18 +1701,23 @@ class CameraPanel(QtWidgets.QFrame):
                 border_color = "#ff4d4d"
             elif stay_mins_int >= 10:
                 border_color = "#ffe066"
-            card = QtWidgets.QLabel(f"{track_id:03d}\n{stay_mins_int:d}m")
+            card = QtWidgets.QLabel(f"ID:{track_id:03d}\n{stay_mins_int:d}min")
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setStyleSheet(
-                "font-size:9px;"
+                "font-size:10px;"
                 "background:#061726;"
                 f"border:1px solid {border_color};"
-                "border-radius:5px;color:#95f6ff;padding:0px;font-weight:bold;line-height:1.05em;"
+                "border-radius:5px;"
+                "color:#95f6ff;"
+                "padding:0px;"
+                "font-weight:bold;"
+                "line-height:1.0em;"
             )
-            card.setFixedWidth(40)
-            card.setFixedHeight(28)
-            self.stay_grid.addWidget(card, idx // 7, idx % 7)
-        self.stay_box.setFixedHeight(58 if len(visible_entries) > 7 else 32)
+            col = idx % cols
+            card.setFixedWidth(col_widths[col])
+            card.setFixedHeight(30)
+            self.stay_grid.addWidget(card, idx // cols, col)
+        self.stay_box.setFixedHeight(60 if len(visible_entries) > 8 else 34)
 
     def _build_wakimura_cards(self) -> None:
         labels = [
