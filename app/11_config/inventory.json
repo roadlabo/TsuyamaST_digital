@@ -3,7 +3,7 @@
     "ip": "192.168.1.51",
     "exists": true,
     "share_name": "_TsuyamaSignage",
-    "enabled": false
+    "enabled": true
   },
   "Sign02": {
     "ip": "192.168.1.52",
@@ -15,13 +15,13 @@
     "ip": "192.168.1.53",
     "exists": true,
     "share_name": "_TsuyamaSignage",
-    "enabled": false
+    "enabled": true
   },
   "Sign04": {
     "ip": "192.168.1.54",
     "exists": true,
     "share_name": "_TsuyamaSignage",
-    "enabled": false
+    "enabled": true
   },
   "Sign05": {
     "ip": "192.168.1.55",
