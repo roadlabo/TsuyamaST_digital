@@ -1234,7 +1234,12 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 3, 3)
         painter.drawRect(plot)
         painter.setPen(QtGui.QColor("#cfefff"))
-        painter.drawText(8, 16, self.title)
+        title_rect = QtCore.QRectF(0, 0, self.width(), 18)
+        painter.drawText(
+            title_rect,
+            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            self.title,
+        )
 
         if self.mode == "line":
             ys = [v for _, v in self.prev_points] + [v for _, v in self.today_points]
@@ -1380,8 +1385,8 @@ class CameraPanel(QtWidgets.QFrame):
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
         self._status_connected = False
-        self.video_target_w = 720
-        self.video_target_h = 405
+        self.video_target_w = 576
+        self.video_target_h = 324
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -1400,21 +1405,22 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
-        self.video.setFixedSize(720, 405)
+        self.video.setFixedSize(576, 324)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        video_box.setFixedSize(720, 405)
+        video_box.setFixedSize(576, 324)
         video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setFixedWidth(340)
+        right_box.setFixedWidth(460)
+        right_box.setFixedHeight(324)
         right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(4, 4, 4, 4)
-        right.setSpacing(3)
+        right.setContentsMargins(3, 3, 3, 3)
+        right.setSpacing(2)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
         role_map = {
@@ -1422,26 +1428,35 @@ class CameraPanel(QtWidgets.QFrame):
             1: "QUEEN",
             3: "JACK",
         }
+        role_style_map = {
+            2: "background:#f4c542;color:#1a1200;border-radius:8px;font-weight:900;font-size:18px;padding:2px 8px;",
+            1: "background:#d94b70;color:#ffffff;border-radius:8px;font-weight:900;font-size:18px;padding:2px 8px;",
+            3: "background:#3cbf6b;color:#08150d;border-radius:8px;font-weight:900;font-size:18px;padding:2px 8px;",
+        }
         self.role_badge = QtWidgets.QLabel(role_map.get(self.camera_id, "ROOK"))
         self.role_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.role_badge.setFixedHeight(32)
+        self.role_badge.setFixedHeight(28)
         self.role_badge.setStyleSheet(
-            "background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:20px;padding:2px 8px;"
+            role_style_map.get(
+                self.camera_id,
+                "background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:18px;padding:2px 8px;",
+            )
         )
         right.addWidget(self.role_badge, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.title = QtWidgets.QLabel("")
-        self.title.setStyleSheet("font-size:12px;color:#00D7FF;font-weight:bold;line-height:1.2em;")
-        self.title.setWordWrap(True)
+        self.title.setStyleSheet("font-size:13px;color:#00D7FF;font-weight:bold;line-height:1.1em;")
+        self.title.setWordWrap(False)
+        self.title.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         right.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
-        self.stream_meta = QtWidgets.QLabel("入力: --          / FPS:   0.0 / 更新: --:--:--")
-        self.stream_meta.setWordWrap(True)
+        self.stream_meta = QtWidgets.QLabel("入力画像サイズ：-- ｜ FPS：  0.0 ｜ 更新：--:--:--")
+        self.stream_meta.setWordWrap(False)
         mono_font = QtGui.QFont("Consolas")
         mono_font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
         self.stream_meta.setFont(mono_font)
         self.stream_meta.setStyleSheet(
-            "font-size:10px;color:#9edff6;background:#08121b;border:1px solid #1f4f7a;border-radius:6px;padding:3px;line-height:1.1em;"
+            "font-size:12px;color:#9edff6;background:#08121b;border:1px solid #1f4f7a;border-radius:6px;padding:4px;line-height:1.1em;"
         )
         right.addWidget(self.stream_meta)
 
@@ -1518,7 +1533,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.rtol_card = QtWidgets.QLabel("RtoL：0")
         for card in (self.ltor_card, self.rtol_card):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet("font-size:15px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:2px;")
+            card.setStyleSheet("font-size:14px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:1px;")
             count_row.addWidget(card, 1)
         right.addLayout(count_row)
 
@@ -1536,10 +1551,6 @@ class CameraPanel(QtWidgets.QFrame):
         self.stay_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Minimum)
         right.addWidget(self.stay_box)
         self._render_stay_cards([])
-
-        btn_col.setContentsMargins(0, 0, 0, 0)
-        btn_col.setSpacing(4)
-        right.addLayout(btn_col)
 
         top_row.addWidget(right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         root.addLayout(top_row)
@@ -1562,7 +1573,10 @@ class CameraPanel(QtWidgets.QFrame):
         frame = payload.get("frame")
         if frame is not None:
             h, w, _ = frame.shape
-            self._last_frame_size = (int(w), int(h))
+            src_w = payload.get("source_frame_width")
+            src_h = payload.get("source_frame_height")
+            if src_w and src_h:
+                self._last_frame_size = (int(src_w), int(src_h))
             qimg = QtGui.QImage(frame.data, w, h, frame.strides[0], QtGui.QImage.Format.Format_BGR888)
             self._latest_pixmap = QtGui.QPixmap.fromImage(qimg)
             self._update_video_pixmap()
@@ -1610,18 +1624,19 @@ class CameraPanel(QtWidgets.QFrame):
         cam_name = camera_name or self.camera_cfg.get("camera_name", f"Camera{self.camera_id}")
         raw_stream = stream_name or self.camera_cfg.get("stream_name") or self.camera_cfg.get("stream_url")
         stream = str(raw_stream).strip() if raw_stream else f"stream{self.camera_id}"
-        status_text = "rtsp受信中" if self._status_connected else "通信無し"
-        self.title.setText(
-            f"{cam_name} / {stream}\n"
-            f"{status_text}"
-        )
+        status_text = "RTSP受信中" if self._status_connected else "通信無し"
+        title_text = f"{cam_name} ｜ {stream} ｜ {status_text}"
+        if self.title.width() > 8:
+            metrics = self.title.fontMetrics()
+            title_text = metrics.elidedText(title_text, QtCore.Qt.TextElideMode.ElideRight, self.title.width())
+        self.title.setText(title_text)
 
     def _update_stream_meta(self, fps: float) -> None:
         w, h = self._last_frame_size
         res_text = f"{w}×{h}" if w and h else "--"
         ts_text = datetime.now().strftime("%H:%M:%S")
         fps_text = f"{fps:5.1f}"
-        self.stream_meta.setText(f"入力: {res_text:<11} / FPS: {fps_text} / 更新: {ts_text}")
+        self.stream_meta.setText(f"入力画像サイズ：{res_text:<9} ｜ FPS：{fps_text} ｜ 更新：{ts_text}")
 
     def _on_threshold_enter_pressed(self) -> None:
         current = float(self.camera_cfg.get("congestion_threshold", 5.0))
@@ -2176,6 +2191,7 @@ class CameraWorker(QtCore.QObject):
                 return None
 
             self._set_status("RUNNING")
+            src_h, src_w = frame.shape[:2]
             self.last_raw_frame = self._resize_for_display(frame.copy())
             now = datetime.now()
             self._rollover_if_needed(now)
@@ -2386,6 +2402,8 @@ class CameraWorker(QtCore.QObject):
                 "camera_name": self.camera_name,
                 "stream_name": self.camera_cfg.get("stream_name", self.camera_cfg.get("stream_url", "")),
                 "frame": self.last_frame,
+                "source_frame_width": int(src_w),
+                "source_frame_height": int(src_h),
                 "congestion_score": congestion_score,
                 "smoothed_congestion_score": smoothed_score,
                 "congestion_level": 1,
@@ -2540,7 +2558,7 @@ class MainWindow(QtWidgets.QMainWindow):
         top_info_grid.setContentsMargins(0, 0, 0, 0)
         top_info_grid.setHorizontalSpacing(6)
         top_info_grid.setVerticalSpacing(4)
-        self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
+        self.global_status = QtWidgets.QLabel("時刻 ｜ device ｜ GPU ｜ model")
         self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;")
         self.congestion_formula_label = QtWidgets.QLabel(
             "渋滞指数＝車両の停滞傾向を表す指標。移動量が小さい車ほど値が高くなり、流れが悪い状態を表す。\n"
@@ -2558,9 +2576,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.wakimura_formula_label.setStyleSheet(
             "color:#d6cbff;background:#0d1020;border:1px solid #4b3cb0;padding:4px;font-size:13px;"
         )
-        self.global_status.setFixedWidth(770)
-        self.congestion_formula_label.setFixedWidth(770)
-        self.wakimura_formula_label.setFixedWidth(770)
+        self.global_status.setFixedWidth(640)
+        self.congestion_formula_label.setFixedWidth(640)
+        self.wakimura_formula_label.setFixedWidth(640)
 
         formula_stack = QtWidgets.QVBoxLayout()
         formula_stack.setContentsMargins(0, 0, 0, 0)
@@ -2575,16 +2593,16 @@ class MainWindow(QtWidgets.QMainWindow):
         level_block.setSpacing(3)
         level_block_widget = QtWidgets.QWidget()
         level_block_widget.setLayout(level_block)
-        level_block_widget.setFixedWidth(300)
+        level_block_widget.setFixedWidth(420)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(42)
         self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:24px;padding:4px 10px;")
         self.level_rule_label = QtWidgets.QLabel(
             "<b>LEVEL1：</b>通常時<br>"
-            "<b>LEVEL2：</b>[Camera2]渋滞指数5以上 + 5分以上滞在台数3台以上<br>"
-            "<b>LEVEL3：</b>[Camera1]渋滞指数3以上<br>"
-            "<b>LEVEL4：</b>[Camera1]渋滞指数3以上 + [Camera3]渋滞指数3以上"
+            "<b>LEVEL2：</b>[KING]渋滞指数5以上 + 5分以上滞在台数3台以上<br>"
+            "<b>LEVEL3：</b>[QUEEN]渋滞指数3以上<br>"
+            "<b>LEVEL4：</b>[QUEEN]渋滞指数3以上 + [JACK]渋滞指数3以上"
         )
         self.level_rule_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.level_rule_label.setWordWrap(True)
@@ -2760,9 +2778,9 @@ class MainWindow(QtWidgets.QMainWindow):
         cam3_th = self.get_camera_threshold("Camera3")
         self.level_rule_label.setText(
             "<b>LEVEL1：</b>通常時<br>"
-            f"<b>LEVEL2：</b>[Camera2]渋滞指数{cam2_th:.1f}以上 + 5分以上滞在台数3台以上<br>"
-            f"<b>LEVEL3：</b>[Camera1]渋滞指数{cam1_th:.1f}以上<br>"
-            f"<b>LEVEL4：</b>[Camera1]渋滞指数{cam1_th:.1f}以上 + [Camera3]渋滞指数{cam3_th:.1f}以上"
+            f"<b>LEVEL2：</b>[KING]渋滞指数{cam2_th:.1f}以上 + 5分以上滞在台数3台以上<br>"
+            f"<b>LEVEL3：</b>[QUEEN]渋滞指数{cam1_th:.1f}以上<br>"
+            f"<b>LEVEL4：</b>[QUEEN]渋滞指数{cam1_th:.1f}以上 + [JACK]渋滞指数{cam3_th:.1f}以上"
         )
 
     @QtCore.pyqtSlot(int, float)
@@ -2793,7 +2811,7 @@ class MainWindow(QtWidgets.QMainWindow):
         device = next(iter(self.latest_payloads.values()), {}).get("device", "n/a")
         gpu = next(iter(self.latest_payloads.values()), {}).get("gpu_name", "n/a")
         self.global_status.setText(
-            f"{now} | device={device} | GPU={gpu} | model={model_name} | output={self.root_dir / 'data'}"
+            f"{now} ｜ device={device} ｜ GPU={gpu} ｜ model={model_name}"
         )
         level = self.compute_system_level()
         style = level_style(level)
