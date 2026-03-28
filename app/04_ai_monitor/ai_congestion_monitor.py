@@ -301,6 +301,18 @@ class TrackState:
     long_stay_emitted: set[int] = field(default_factory=set)
 
 
+@dataclass
+class WakimuraAlphaState:
+    exit_timestamps: list[datetime] = field(default_factory=list)
+    high_load_active: bool = False
+    high_load_session_stays: list[float] = field(default_factory=list)
+    high_load_alpha: float | None = None
+    current_alpha: float = 0.0
+    current_alpha_window: float = 0.0
+    current_n_out: int = 0
+    current_avg_stay_sec: float = 0.0
+
+
 # =========================================
 # Config Manager
 # =========================================
@@ -474,6 +486,66 @@ class LineCounter:
             "track_id": track_id,
             "class_name": class_name,
             "direction": direction,
+        }
+
+
+class WakimuraAlphaCalculator:
+    """20_rotary_efficiency_analysis.py を基にした参考指標（LEVEL判定には不使用）。"""
+
+    def __init__(
+        self,
+        rotary_capacity: int = 10,
+        base_stay_time_sec: float = 60.0,
+        window_seconds: int = 300,
+        high_load_vehicle_threshold: int = 7,
+    ):
+        self.rotary_capacity = max(1, int(rotary_capacity))
+        self.base_stay_time_sec = max(1e-6, float(base_stay_time_sec))
+        self.window_seconds = max(1, int(window_seconds))
+        self.high_load_vehicle_threshold = max(1, int(high_load_vehicle_threshold))
+        self.state = WakimuraAlphaState()
+
+    def record_exit(self, now: datetime) -> None:
+        self.state.exit_timestamps.append(now)
+
+    def update(self, now: datetime, vehicle_count: int, avg_stay_sec: float) -> dict[str, Any]:
+        window_start = now - timedelta(seconds=self.window_seconds)
+        self.state.exit_timestamps = [ts for ts in self.state.exit_timestamps if ts >= window_start]
+        n_out = len(self.state.exit_timestamps)
+        c_nominal = 3600.0 * self.rotary_capacity / self.base_stay_time_sec
+        c_effective = 3600.0 * n_out / float(self.window_seconds)
+        alpha_window = (c_effective / c_nominal) if c_nominal > 0 else 0.0
+
+        if vehicle_count >= self.high_load_vehicle_threshold:
+            if not self.state.high_load_active:
+                self.state.high_load_active = True
+                self.state.high_load_session_stays.clear()
+                self.state.high_load_alpha = None
+            if avg_stay_sec > 0.0:
+                self.state.high_load_session_stays.append(float(avg_stay_sec))
+            if self.state.high_load_session_stays:
+                session_avg = float(np.mean(self.state.high_load_session_stays))
+                if session_avg > 0.0:
+                    self.state.high_load_alpha = self.base_stay_time_sec / session_avg
+        else:
+            self.state.high_load_active = False
+            self.state.high_load_session_stays.clear()
+            self.state.high_load_alpha = None
+
+        alpha = alpha_window
+        if self.state.high_load_active and self.state.high_load_alpha is not None:
+            alpha = self.state.high_load_alpha
+
+        self.state.current_alpha = float(alpha)
+        self.state.current_alpha_window = float(alpha_window)
+        self.state.current_n_out = int(n_out)
+        self.state.current_avg_stay_sec = max(0.0, float(avg_stay_sec))
+        return {
+            "wakimura_alpha": float(self.state.current_alpha),
+            "wakimura_alpha_window": float(self.state.current_alpha_window),
+            "wakimura_n_out": int(self.state.current_n_out),
+            "wakimura_avg_stay_sec": float(self.state.current_avg_stay_sec),
+            "wakimura_high_load_mode": bool(self.state.high_load_active),
         }
 
 
@@ -670,12 +742,15 @@ class TenMinuteRecordWriter:
         "時刻（10分単位）",
         "渋滞レベル",
         "Camera1 渋滞指数",
+        "Camera1 脇村君指標α",
         "Camera1 LtoR",
         "Camera1 RtoL",
         "Camera2 渋滞指数",
+        "Camera2 脇村君指標α",
         "Camera2 LtoR",
         "Camera2 RtoL",
         "Camera3 渋滞指数",
+        "Camera3 脇村君指標α",
         "Camera3 LtoR",
         "Camera3 RtoL",
     ]
@@ -693,6 +768,7 @@ class TenMinuteRecordWriter:
             payload = latest_payloads.get(cid, {})
             sample["cameras"][cid] = {
                 "index": float(payload.get("smoothed_congestion_score", payload.get("congestion_score", 0.0))),
+                "wakimura_alpha": float(payload.get("wakimura_alpha", 0.0)),
                 "ltor_total": int(payload.get("count_ltor", 0)),
                 "rtol_total": int(payload.get("count_rtol", 0)),
             }
@@ -700,17 +776,19 @@ class TenMinuteRecordWriter:
 
     def aggregate_10min(self, bin_start: datetime, samples: list[dict[str, Any]]) -> list[Any]:
         if not samples:
-            return [bin_start.strftime("%H:%M"), 1, 0.0, 0, 0, 0.0, 0, 0, 0.0, 0, 0]
+            return [bin_start.strftime("%H:%M"), 1, 0.0, 0.0, 0, 0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0, 0]
         level_max = max(int(s["level"]) for s in samples)
         row: list[Any] = [bin_start.strftime("%H:%M"), level_max]
         for cid in (1, 2, 3):
             indices = [float(s["cameras"][cid]["index"]) for s in samples]
+            wakimuras = [float(s["cameras"][cid]["wakimura_alpha"]) for s in samples]
             ltor_values = [int(s["cameras"][cid]["ltor_total"]) for s in samples]
             rtol_values = [int(s["cameras"][cid]["rtol_total"]) for s in samples]
             ltor = max(0, max(ltor_values) - min(ltor_values)) if ltor_values else 0
             rtol = max(0, max(rtol_values) - min(rtol_values)) if rtol_values else 0
             avg_index = round(float(np.mean(indices)), 3) if indices else 0.0
-            row.extend([avg_index, ltor, rtol])
+            avg_wakimura = round(float(np.mean(wakimuras)), 3) if wakimuras else 0.0
+            row.extend([avg_index, avg_wakimura, ltor, rtol])
         return row
 
     def append_row(self, target_date: date, row: list[Any]) -> Path:
@@ -750,7 +828,7 @@ class TenMinuteRecordWriter:
         chart_index.title = "カメラ別渋滞指数"
         chart_index.height = 6
         chart_index.width = 10
-        for col in (3, 6, 9):
+        for col in (3, 7, 11):
             chart_index.add_data(Reference(ws_data, min_col=col, max_col=col, min_row=1, max_row=last_row), titles_from_data=True)
         chart_index.set_categories(cats)
         ws_graph.add_chart(chart_index, "A18")
@@ -759,7 +837,7 @@ class TenMinuteRecordWriter:
         chart_traffic.title = "交通量（LtoR / RtoL）"
         chart_traffic.height = 6
         chart_traffic.width = 10
-        for col in (4, 5, 7, 8, 10, 11):
+        for col in (5, 6, 9, 10, 13, 14):
             chart_traffic.add_data(Reference(ws_data, min_col=col, max_col=col, min_row=1, max_row=last_row), titles_from_data=True)
         chart_traffic.set_categories(cats)
         ws_graph.add_chart(chart_traffic, "L1")
@@ -776,7 +854,17 @@ class TenMinuteRecordWriter:
         self.output_root.mkdir(parents=True, exist_ok=True)
         path = self.output_root / f"{target_date.isoformat()}.xlsx"
         if path.exists():
-            return load_workbook(path), path
+            wb = load_workbook(path)
+            ws = wb["Data"] if "Data" in wb.sheetnames else wb.active
+            existing_headers = [ws.cell(row=1, column=i + 1).value for i in range(len(self.HEADERS))]
+            if existing_headers != self.HEADERS:
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "Data"
+                ws.append(self.HEADERS)
+                wb.create_sheet("Graph")
+                wb.save(path)
+            return wb, path
         wb = Workbook()
         ws = wb.active
         ws.title = "Data"
@@ -1296,12 +1384,13 @@ class CameraPanel(QtWidgets.QFrame):
         self.video_target_h = 315
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(3, 3, 3, 3)
-        root.setSpacing(1)
+        # 現場表示密度を上げるため、CameraPanel 全体の余白を最小化する。
+        root.setContentsMargins(1, 1, 1, 1)
+        root.setSpacing(0)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(3)
+        top_row.setSpacing(1)
 
         video_box = QtWidgets.QWidget()
         video_layout = QtWidgets.QVBoxLayout(video_box)
@@ -1319,12 +1408,12 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(210)
-        right_box.setMaximumWidth(210)
+        right_box.setMinimumWidth(300)
+        right_box.setMaximumWidth(300)
         right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
-        right.setContentsMargins(3, 1, 3, 1)
-        right.setSpacing(1)
+        right.setContentsMargins(1, 0, 1, 0)
+        right.setSpacing(0)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.title = QtWidgets.QLabel("")
@@ -1371,8 +1460,22 @@ class CameraPanel(QtWidgets.QFrame):
         level_row.addWidget(th_box, 1)
         right.addLayout(level_row)
 
+        self.wakimura_label = QtWidgets.QLabel("脇村君指標 α：--")
+        self.wakimura_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.wakimura_label.setStyleSheet(
+            "font-size:11px;"
+            "font-weight:bold;"
+            "background:#09131d;"
+            "border:1px solid #6a4cff;"
+            "color:#d8c8ff;"
+            "border-radius:6px;"
+            "padding:3px;"
+        )
+        right.addWidget(self.wakimura_label)
+
         count_row = QtWidgets.QHBoxLayout()
-        count_row.setSpacing(2)
+        count_row.setContentsMargins(0, 0, 0, 0)
+        count_row.setSpacing(1)
         self.ltor_card = QtWidgets.QLabel("LtoR：0")
         self.rtol_card = QtWidgets.QLabel("RtoL：0")
         for card in (self.ltor_card, self.rtol_card):
@@ -1385,21 +1488,22 @@ class CameraPanel(QtWidgets.QFrame):
         stay_head.setStyleSheet("font-size:11px;font-weight:bold;color:#9de7ff;")
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
-        self.stay_grid.setContentsMargins(1, 1, 1, 1)
-        self.stay_grid.setHorizontalSpacing(2)
-        self.stay_grid.setVerticalSpacing(2)
+        self.stay_grid.setContentsMargins(0, 0, 0, 0)
+        self.stay_grid.setHorizontalSpacing(1)
+        self.stay_grid.setVerticalSpacing(1)
         self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         stay_box = QtWidgets.QWidget()
         stay_box.setLayout(self.stay_grid)
         stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
-        stay_box.setMinimumHeight(44)
+        stay_box.setMinimumHeight(0)
         right.addWidget(stay_box)
         self._render_stay_cards([])
 
+        btn_col.setContentsMargins(0, 0, 0, 0)
+        btn_col.setSpacing(1)
         right.addLayout(btn_col)
 
         top_row.addWidget(right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        top_row.addStretch(1)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1438,6 +1542,9 @@ class CameraPanel(QtWidgets.QFrame):
         self._update_count_cards(int(sum(ltor)), int(sum(rtol)))
         self._render_stay_cards(payload.get("long_stay_list", []))
         self._update_congestion_bar(score, threshold)
+        wak_alpha = float(payload.get("wakimura_alpha", 0.0))
+        wak_mode = bool(payload.get("wakimura_high_load_mode", False))
+        self.wakimura_label.setText(f"脇村君指標 α：{wak_alpha:.3f} [{'HL' if wak_mode else 'WIN'}]")
         self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
         self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
         self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
@@ -1507,7 +1614,7 @@ class CameraPanel(QtWidgets.QFrame):
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             empty_label.setStyleSheet("font-size:9px;color:#5fa2b8;")
             empty_label.setFixedWidth(98)
-            empty_label.setFixedHeight(36)
+            empty_label.setFixedHeight(30)
             self.stay_grid.addWidget(empty_label, 0, 0)
             return
         for idx, item in enumerate(entries[:6]):
@@ -1525,10 +1632,10 @@ class CameraPanel(QtWidgets.QFrame):
                 "font-size:10px;"
                 "background:#061726;"
                 f"border:1px solid {border_color};"
-                "border-radius:6px;color:#95f6ff;padding:2px;font-weight:bold;"
+                "border-radius:6px;color:#95f6ff;padding:1px;font-weight:bold;"
             )
             card.setFixedWidth(98)
-            card.setFixedHeight(36)
+            card.setFixedHeight(30)
             self.stay_grid.addWidget(card, idx // 3, idx % 3)
 
     def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
@@ -1594,6 +1701,14 @@ class CameraWorker(QtCore.QObject):
         self.congestion = CongestionScorer(
             int(self.camera_cfg.get("congestion_calculation_interval", 3)),
             smoothing_window=int(self.system_cfg.get("congestion_smoothing_window", 6)),
+        )
+        # 脇村君指標 α は参考表示専用で、既存 LEVEL 判定ロジックには一切使用しない。
+        # 算出ロジックは app/90_sample/20_rotary_efficiency_analysis.py の考え方を監視向けに簡略適用。
+        self.wakimura_alpha = WakimuraAlphaCalculator(
+            rotary_capacity=int(self.camera_cfg.get("wakimura_rotary_capacity", 10)),
+            base_stay_time_sec=float(self.camera_cfg.get("wakimura_base_stay_time_sec", 60.0)),
+            window_seconds=int(self.camera_cfg.get("wakimura_window_seconds", 300)),
+            high_load_vehicle_threshold=int(self.camera_cfg.get("wakimura_high_load_vehicle_threshold", 7)),
         )
         self.track_state = TrackState()
         self.track_class_memory: dict[int, dict[str, Any]] = {}
@@ -2064,6 +2179,7 @@ class CameraWorker(QtCore.QObject):
                     event = self.counter.update(track_id, (judge_x, judge_y), cls_name, now)
                     if event:
                         pass_events.append(event)
+                        self.wakimura_alpha.record_exit(now)
                         self.cross_flash_frames[track_id] = 12
                         tracks[-1]["crossed"] = True
 
@@ -2098,6 +2214,30 @@ class CameraWorker(QtCore.QObject):
             congestion_score = self.congestion.update(tracks, now, frame_width) if self.camera_cfg.get("enable_congestion", True) else 0.0
             threshold = float(self.camera_cfg.get("congestion_threshold", 5))
             threshold_over = congestion_score >= threshold
+            count_ltor = int(sum(self.counter.state.pass_bins_ltor))
+            count_rtol = int(sum(self.counter.state.pass_bins_rtol))
+
+            # tracks 上の現在IDに対して滞在秒数平均を別計算（脇村君指標 α 用）
+            avg_stay_sec = 0.0
+            if tracks:
+                stay_secs = []
+                for tr in tracks:
+                    seen = self.track_state.first_seen.get(int(tr["track_id"]))
+                    if seen is not None:
+                        stay_secs.append(max(0.0, (now - seen).total_seconds()))
+                avg_stay_sec = float(np.mean(stay_secs)) if stay_secs else 0.0
+
+            wakimura = {
+                "wakimura_alpha": 0.0,
+                "wakimura_alpha_window": 0.0,
+                "wakimura_n_out": 0,
+                "wakimura_avg_stay_sec": 0.0,
+                "wakimura_high_load_mode": False,
+            }
+            try:
+                wakimura = self.wakimura_alpha.update(now=now, vehicle_count=len(tracks), avg_stay_sec=avg_stay_sec)
+            except Exception as exc:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} 脇村君指標 α update skipped: {exc}")
 
             elapsed = max(1e-6, time.time() - start)
             self.fps = 1.0 / elapsed
@@ -2154,10 +2294,13 @@ class CameraWorker(QtCore.QObject):
                 "prev_congestion_points": self.previous_day_congestion_points,
                 "pass_bins_ltor": self.counter.state.pass_bins_ltor,
                 "pass_bins_rtol": self.counter.state.pass_bins_rtol,
+                "count_ltor": count_ltor,
+                "count_rtol": count_rtol,
                 "hist_prev_ltor": self.previous_day_hist_ltor,
                 "hist_prev_rtol": self.previous_day_hist_rtol,
                 "long_stay_count": len(long_stay_list),
                 "long_stay_list": [[int(tid), float(minutes)] for tid, minutes in long_stay_list[:10]],
+                **wakimura,
                 "debug_metrics": {
                     "raw_congestion_index": round(float(congestion_score), 3),
                     "smoothed_congestion_index": round(smoothed_score, 3),
