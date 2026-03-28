@@ -742,6 +742,8 @@ class MainWindow(QMainWindow):
         self._switch_in_progress = False
         self._pending_mode: str | None = None
         self._mode_switch_token = 0
+        self._last_mode_request_at: dict[str, float] = {}
+        self._switch_debounce_seconds = 0.45
         self._switch_cooldown_timer = QTimer(self)
         self._switch_cooldown_timer.setSingleShot(True)
         self._switch_cooldown_timer.timeout.connect(self._process_pending_mode)
@@ -775,6 +777,10 @@ class MainWindow(QMainWindow):
         self.button_row = QHBoxLayout()
         self.button_row.setSpacing(6)
         self.root_layout.addLayout(self.button_row)
+        self.switch_status_label = QLabel("")
+        self.switch_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.switch_status_label.setStyleSheet("color: #7fe8ff; font-size: 13px; font-weight: bold; padding-left: 3px;")
+        self.root_layout.addWidget(self.switch_status_label)
 
         self.grid_widget = QWidget()
         self.grid_layout = QGridLayout(self.grid_widget)
@@ -814,19 +820,29 @@ class MainWindow(QMainWindow):
             tile.first_frame_ready.connect(self._on_tile_first_frame)
             self.tiles_by_camera_id[cam["id"]] = tile
 
-    def request_mode_switch(self, mode: str) -> None:
-        logger.info("mode switch request received: mode=%s current=%s in_progress=%s", mode, self.current_mode, self._switch_in_progress)
+    def request_mode_switch(self, mode: str, *, debounce: bool = False) -> None:
+        logger.info("[VIEW] switch requested: %s", mode)
         if mode not in self.mode_buttons:
             logger.warning("Unknown mode request: %s", mode)
             return
 
-        if self._switch_in_progress:
-            self._pending_mode = mode
-            logger.info("mode switch queued: %s", mode)
+        now = time.monotonic()
+        if debounce:
+            last_at = self._last_mode_request_at.get(mode, 0.0)
+            if (now - last_at) < self._switch_debounce_seconds:
+                logger.info("[VIEW] switch debounced: %s", mode)
+                if self._switch_in_progress:
+                    self._pending_mode = mode
+                return
+            self._last_mode_request_at[mode] = now
+
+        if mode == self.current_mode and not self._switch_in_progress:
+            logger.info("[VIEW] switch ignored(same): %s", mode)
             return
 
-        if mode == self.current_mode:
-            logger.info("mode switch ignored (same mode): %s", mode)
+        if self._switch_in_progress:
+            self._pending_mode = mode
+            logger.info("[VIEW] switch deferred: %s", mode)
             return
 
         self._start_mode_switch(mode)
@@ -836,30 +852,65 @@ class MainWindow(QMainWindow):
         self._mode_switch_token += 1
         token = self._mode_switch_token
         self._set_mode_buttons_enabled(False)
-        logger.info("group switch start: token=%d from=%s to=%s", token, self.current_mode, mode)
+        self.switch_status_label.setText("画面切替中...")
+        logger.info("[VIEW] switch started: %s", mode)
 
         self.current_mode = mode
         for key, button in self.mode_buttons.items():
             button.setChecked(key == mode)
 
-        visible_ids = self._visible_camera_ids(mode)
-        self._current_visible_ids = visible_ids
-        self._loading_camera_ids = {
-            cam_id
-            for cam_id in visible_ids
-            if self.tiles_by_camera_id.get(cam_id) and self.tiles_by_camera_id[cam_id].camera_config.get("enabled", True)
-        }
-        self._loaded_camera_ids = set()
+        QTimer.singleShot(0, lambda t=token, m=mode: self._switch_stage_stop_current(t, m))
 
-        self._clear_current_group()
-        self._stop_fullscreen_stream()
-        self._layout_tiles(visible_ids)
-        logger.info("starting target camera streams: mode=%s count=%d", mode, len(visible_ids))
-        self._update_streams(visible_ids)
-        self._group_load_timeout_timer.start(15_000)
-        if not self._loading_camera_ids:
-            logger.info("group load complete (no enabled cameras to wait): mode=%s", mode)
-            self._finish_mode_switch()
+    def _switch_stage_stop_current(self, token: int, mode: str) -> None:
+        if token != self._mode_switch_token:
+            return
+        try:
+            self.switch_status_label.setText("画面切替中... カメラ停止")
+            self._clear_current_group()
+            self._stop_fullscreen_stream()
+        except Exception as exc:  # noqa: BLE001
+            self._handle_switch_failure(mode, exc)
+            return
+        QTimer.singleShot(50, lambda t=token, m=mode: self._switch_stage_build_layout(t, m))
+
+    def _switch_stage_build_layout(self, token: int, mode: str) -> None:
+        if token != self._mode_switch_token:
+            return
+        try:
+            self.switch_status_label.setText("画面切替中... レイアウト更新")
+            visible_ids = self._visible_camera_ids(mode)
+            self._current_visible_ids = visible_ids
+            self._loading_camera_ids = {
+                cam_id
+                for cam_id in visible_ids
+                if self.tiles_by_camera_id.get(cam_id) and self.tiles_by_camera_id[cam_id].camera_config.get("enabled", True)
+            }
+            self._loaded_camera_ids = set()
+            self._layout_tiles(visible_ids)
+        except Exception as exc:  # noqa: BLE001
+            self._handle_switch_failure(mode, exc)
+            return
+        QTimer.singleShot(0, lambda t=token: self._switch_stage_start_streams(t))
+
+    def _switch_stage_start_streams(self, token: int) -> None:
+        if token != self._mode_switch_token:
+            return
+        try:
+            self.switch_status_label.setText("カメラ再接続中...")
+            logger.info("starting target camera streams: mode=%s count=%d", self.current_mode, len(self._current_visible_ids))
+            self._update_streams(self._current_visible_ids)
+            self._group_load_timeout_timer.start(15_000)
+            if not self._loading_camera_ids:
+                self._finish_mode_switch()
+        except Exception as exc:  # noqa: BLE001
+            self._handle_switch_failure(self.current_mode, exc)
+
+    def _handle_switch_failure(self, mode: str, exc: Exception) -> None:
+        logger.exception("[VIEW] switch failed: %s error=%s", mode, exc)
+        self._switch_in_progress = False
+        self._group_load_timeout_timer.stop()
+        self.switch_status_label.setText("")
+        self._set_mode_buttons_enabled(True)
 
     def _clear_current_group(self) -> None:
         stop_count = 0
@@ -912,7 +963,7 @@ class MainWindow(QMainWindow):
     def _manual_switch_mode(self, mode: str) -> None:
         if mode != self.current_mode and self.loop_enabled:
             self._stop_loop()
-        self.request_mode_switch(mode)
+        self.request_mode_switch(mode, debounce=True)
 
     def _toggle_loop_mode(self, checked: bool) -> None:
         if checked:
@@ -958,17 +1009,22 @@ class MainWindow(QMainWindow):
     def _finish_mode_switch(self) -> None:
         if not self._switch_in_progress:
             return
-        self._switch_in_progress = False
-        self._group_load_timeout_timer.stop()
-        self._set_mode_buttons_enabled(True)
-        logger.info(
-            "group load complete: mode=%s loaded=%d expected=%d",
-            self.current_mode,
-            len(self._loaded_camera_ids),
-            len(self._current_visible_ids),
-        )
+        try:
+            logger.info(
+                "group load complete: mode=%s loaded=%d expected=%d",
+                self.current_mode,
+                len(self._loaded_camera_ids),
+                len(self._current_visible_ids),
+            )
+            logger.info("[VIEW] switch finished: %s", self.current_mode)
+        finally:
+            self._switch_in_progress = False
+            self._group_load_timeout_timer.stop()
+            self.switch_status_label.setText("")
+            self._set_mode_buttons_enabled(True)
         if self._pending_mode and self._pending_mode != self.current_mode:
-            self._switch_cooldown_timer.start(300)
+            logger.info("[VIEW] switch retry deferred request: %s", self._pending_mode)
+            self._switch_cooldown_timer.start(350)
         elif self._pending_mode == self.current_mode:
             self._pending_mode = None
 
@@ -983,8 +1039,15 @@ class MainWindow(QMainWindow):
     def _set_mode_buttons_enabled(self, enabled: bool) -> None:
         for button in self.mode_buttons.values():
             button.setEnabled(enabled)
+            button.setStyleSheet("" if enabled else "background-color: #1a2733; color: #6f8798; border: 1px solid #2a3f50;")
         if self.loop_button is not None:
             self.loop_button.setEnabled(enabled)
+            if not enabled:
+                self.loop_button.setStyleSheet("background-color: #1f2d39; color: #7f9cad;")
+            elif self.loop_enabled:
+                self.loop_button.setStyleSheet("background-color: #145d7b; border: 1px solid #7fe8ff;")
+            else:
+                self.loop_button.setStyleSheet("")
 
     def _on_tile_first_frame(self, camera_id: str) -> None:
         if not self._switch_in_progress:
