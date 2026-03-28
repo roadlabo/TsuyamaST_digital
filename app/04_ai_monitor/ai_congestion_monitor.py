@@ -1340,8 +1340,8 @@ class CongestionIndexBar(QtWidgets.QWidget):
         super().__init__(parent)
         self.score = 0.0
         self.threshold = 5.0
-        self.setMinimumHeight(24)
-        self.setMaximumHeight(24)
+        self.setMinimumHeight(30)
+        self.setMaximumHeight(30)
 
     def set_values(self, score: float, threshold: float) -> None:
         self.score = float(score)
@@ -1369,6 +1369,10 @@ class CongestionIndexBar(QtWidgets.QWidget):
         painter.drawLine(QtCore.QPointF(th_x, rect.top()), QtCore.QPointF(th_x, rect.bottom()))
 
         painter.setPen(QtGui.QColor("#ffffff"))
+        font = painter.font()
+        font.setPointSizeF(max(12.0, font.pointSizeF() * 1.2))
+        font.setBold(True)
+        painter.setFont(font)
         painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignCenter, f"渋滞指数 {self.score:.1f}")
 
 
@@ -1476,7 +1480,6 @@ class CameraPanel(QtWidgets.QFrame):
             btn_col.addWidget(btn)
 
         self.congestion_bar = CongestionIndexBar()
-        self.congestion_bar.setMinimumHeight(22)
 
         level_row = QtWidgets.QHBoxLayout()
         level_row.setContentsMargins(0, 0, 0, 0)
@@ -1488,8 +1491,8 @@ class CameraPanel(QtWidgets.QFrame):
         th_box_layout = QtWidgets.QHBoxLayout(th_box)
         th_box_layout.setContentsMargins(0, 0, 0, 0)
         th_box_layout.setSpacing(3)
-        th_label = QtWidgets.QLabel("TH")
-        th_label.setStyleSheet("font-size:11px;color:#00d9ff;font-weight:bold;")
+        th_label = QtWidgets.QLabel("しきい値")
+        th_label.setStyleSheet("font-size:12px;color:#00d9ff;font-weight:bold;")
         self.threshold_edit = QtWidgets.QLineEdit()
         self.threshold_edit.setStyleSheet("QLineEdit{background:#08121c;color:#8ff6ff;border:1px solid #00a9d6;padding:2px 6px;border-radius:4px;font-weight:bold;}")
         self.threshold_edit.setValidator(QtGui.QDoubleValidator(0.0, 20.0, 1, self.threshold_edit))
@@ -1518,7 +1521,7 @@ class CameraPanel(QtWidgets.QFrame):
         right.addWidget(metric_head)
         self.wakimura_grid = QtWidgets.QGridLayout()
         self.wakimura_grid.setContentsMargins(0, 0, 0, 0)
-        self.wakimura_grid.setHorizontalSpacing(4)
+        self.wakimura_grid.setHorizontalSpacing(3)
         self.wakimura_grid.setVerticalSpacing(3)
         self.wakimura_grid_widget = QtWidgets.QWidget()
         self.wakimura_grid_widget.setLayout(self.wakimura_grid)
@@ -1542,8 +1545,8 @@ class CameraPanel(QtWidgets.QFrame):
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
         self.stay_grid.setContentsMargins(0, 0, 0, 0)
-        self.stay_grid.setHorizontalSpacing(4)
-        self.stay_grid.setVerticalSpacing(3)
+        self.stay_grid.setHorizontalSpacing(1)
+        self.stay_grid.setVerticalSpacing(1)
         self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.stay_box = QtWidgets.QWidget()
         self.stay_box.setLayout(self.stay_grid)
@@ -1624,7 +1627,7 @@ class CameraPanel(QtWidgets.QFrame):
         cam_name = camera_name or self.camera_cfg.get("camera_name", f"Camera{self.camera_id}")
         raw_stream = stream_name or self.camera_cfg.get("stream_name") or self.camera_cfg.get("stream_url")
         stream = str(raw_stream).strip() if raw_stream else f"stream{self.camera_id}"
-        status_text = "RTSP受信中" if self._status_connected else "通信無し"
+        status_text = "受信中" if self._status_connected else "通信無し"
         title_text = f"{cam_name} ｜ {stream} ｜ {status_text}"
         if self.title.width() > 8:
             metrics = self.title.fontMetrics()
@@ -1664,13 +1667,13 @@ class CameraPanel(QtWidgets.QFrame):
         if not entries:
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            empty_label.setStyleSheet("font-size:9px;color:#5fa2b8;")
-            empty_label.setFixedWidth(56)
-            empty_label.setFixedHeight(26)
+            empty_label.setStyleSheet("font-size:8px;color:#5fa2b8;padding:0px;")
+            empty_label.setFixedWidth(34)
+            empty_label.setFixedHeight(24)
             self.stay_grid.addWidget(empty_label, 0, 0)
-            self.stay_box.setFixedHeight(34)
+            self.stay_box.setFixedHeight(30)
             return
-        visible_entries = entries[:10]
+        visible_entries = entries[:16]
         for idx, item in enumerate(visible_entries):
             track_id = int(item[0])
             stay_mins = float(item[1])
@@ -1680,18 +1683,18 @@ class CameraPanel(QtWidgets.QFrame):
                 border_color = "#ff4d4d"
             elif stay_mins_int >= 10:
                 border_color = "#ffe066"
-            card = QtWidgets.QLabel(f"ID-{track_id:03d}\n{stay_mins_int:d}min")
+            card = QtWidgets.QLabel(f"{track_id:03d}\n{stay_mins_int:d}m")
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setStyleSheet(
-                "font-size:10px;"
+                "font-size:8px;"
                 "background:#061726;"
                 f"border:1px solid {border_color};"
-                "border-radius:6px;color:#95f6ff;padding:1px;font-weight:bold;"
+                "border-radius:5px;color:#95f6ff;padding:0px;font-weight:bold;line-height:1.0em;"
             )
-            card.setFixedWidth(56)
-            card.setFixedHeight(26)
-            self.stay_grid.addWidget(card, idx // 5, idx % 5)
-        self.stay_box.setFixedHeight(62 if len(visible_entries) > 5 else 34)
+            card.setFixedWidth(34)
+            card.setFixedHeight(24)
+            self.stay_grid.addWidget(card, idx // 8, idx % 8)
+        self.stay_box.setFixedHeight(56 if len(visible_entries) > 8 else 30)
 
     def _build_wakimura_cards(self) -> None:
         labels = [
@@ -1705,22 +1708,24 @@ class CameraPanel(QtWidgets.QFrame):
             ("score合計", "wak_score_sum"),
             ("score平均", "wak_score_avg"),
             ("1分以上滞在台数", "wak_stay_over_1min"),
+            ("最大滞在時間", "wak_max_stay_min"),
+            ("窓内評価台数", "wak_window_count"),
         ]
         for idx, (title, key) in enumerate(labels):
             card = QtWidgets.QFrame()
-            card.setFixedSize(60, 34)
+            card.setFixedSize(70, 34)
             card.setStyleSheet("background:#101226;border:1px solid #6a4cff;border-radius:6px;")
             card_layout = QtWidgets.QVBoxLayout(card)
             card_layout.setContentsMargins(3, 1, 3, 1)
             card_layout.setSpacing(1)
             t = QtWidgets.QLabel(title)
-            t.setStyleSheet("font-size:8px;color:#b7a6ff;font-weight:bold;")
+            t.setStyleSheet("font-size:10px;color:#b7a6ff;font-weight:bold;")
             v = QtWidgets.QLabel("--")
             v.setStyleSheet("font-size:10px;color:#efe7ff;font-weight:bold;")
             v.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             card_layout.addWidget(t)
             card_layout.addWidget(v)
-            self.wakimura_grid.addWidget(card, idx // 5, idx % 5)
+            self.wakimura_grid.addWidget(card, idx // 6, idx % 6)
             self.wakimura_value_labels[key] = v
 
     def _update_wakimura_cards(self, payload: dict[str, Any]) -> None:
@@ -2596,8 +2601,17 @@ class MainWindow(QtWidgets.QMainWindow):
         level_block_widget.setFixedWidth(420)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.level_badge.setMinimumHeight(42)
-        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:24px;padding:4px 10px;")
+        self.level_badge.setMinimumHeight(58)
+        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:36px;padding:4px 10px;")
+        self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
+        self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.system_title_ja.setStyleSheet("font-size:26px;font-weight:900;color:#9fe8ff;")
+        self.system_title_en = QtWidgets.QLabel("AI Congestion Detection System")
+        self.system_title_en.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.system_title_en.setStyleSheet("font-size:14px;font-weight:bold;color:#b7dbff;")
+        self.system_runtime_label = QtWidgets.QLabel("GPU: n/a ｜ model: n/a ｜ tracker: ByteTrack")
+        self.system_runtime_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.system_runtime_label.setStyleSheet("font-size:11px;color:#9abed0;")
         self.level_rule_label = QtWidgets.QLabel(
             "<b>LEVEL1：</b>通常時<br>"
             "<b>LEVEL2：</b>[KING]渋滞指数5以上 + 5分以上滞在台数3台以上<br>"
@@ -2608,6 +2622,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_rule_label.setWordWrap(True)
         self.level_rule_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;line-height:1.25em;")
+        level_block.addWidget(self.system_title_ja)
+        level_block.addWidget(self.system_title_en)
+        level_block.addWidget(self.system_runtime_label)
         level_block.addWidget(self.level_badge)
 
         top_info_grid.addWidget(self.global_status, 0, 0)
@@ -2813,11 +2830,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.global_status.setText(
             f"{now} ｜ device={device} ｜ GPU={gpu} ｜ model={model_name}"
         )
+        self.system_runtime_label.setText(
+            f"GPU: {gpu} ｜ model: {model_name} ｜ tracker: ByteTrack"
+        )
         level = self.compute_system_level()
         style = level_style(level)
         self.level_badge.setText(f"{style['icon']} 渋滞LEVEL{level}")
         self.level_badge.setStyleSheet(
-            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:24px;padding:4px 14px;"
+            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:36px;padding:4px 14px;"
         )
 
     def _system_level_metrics_dir(self) -> Path:
