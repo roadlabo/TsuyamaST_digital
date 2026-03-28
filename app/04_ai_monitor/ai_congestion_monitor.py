@@ -1380,19 +1380,19 @@ class CameraPanel(QtWidgets.QFrame):
         self._latest_pixmap: QtGui.QPixmap | None = None
         self._last_frame_size: tuple[int | None, int | None] = (None, None)
         self._status_connected = False
-        self.video_target_w = 760
-        self.video_target_h = 430
+        self.video_target_w = 720
+        self.video_target_h = 405
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(4)
+        root.setSpacing(3)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setMinimumWidth(1068)
         self.setMaximumWidth(1068)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(8)
+        top_row.setSpacing(6)
 
         video_box = QtWidgets.QWidget()
         video_layout = QtWidgets.QVBoxLayout(video_box)
@@ -1400,32 +1400,48 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
-        self.video.setFixedSize(self.video_target_w, self.video_target_h)
+        self.video.setFixedSize(720, 405)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        video_box.setFixedSize(self.video_target_w, self.video_target_h)
+        video_box.setFixedSize(720, 405)
         video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setFixedWidth(300)
+        right_box.setFixedWidth(340)
         right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
         right.setContentsMargins(4, 4, 4, 4)
-        right.setSpacing(4)
+        right.setSpacing(3)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
+        role_map = {
+            2: "KING",
+            1: "QUEEN",
+            3: "JACK",
+        }
+        self.role_badge = QtWidgets.QLabel(role_map.get(self.camera_id, "ROOK"))
+        self.role_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.role_badge.setFixedHeight(32)
+        self.role_badge.setStyleSheet(
+            "background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:20px;padding:2px 8px;"
+        )
+        right.addWidget(self.role_badge, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.title = QtWidgets.QLabel("")
         self.title.setStyleSheet("font-size:12px;color:#00D7FF;font-weight:bold;line-height:1.2em;")
         self.title.setWordWrap(True)
         right.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
-        self.stream_meta = QtWidgets.QLabel("入力画像サイズ: -- / 受信FPS: -- / 更新: --")
+        self.stream_meta = QtWidgets.QLabel("入力: --          / FPS:   0.0 / 更新: --:--:--")
         self.stream_meta.setWordWrap(True)
+        mono_font = QtGui.QFont("Consolas")
+        mono_font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        self.stream_meta.setFont(mono_font)
         self.stream_meta.setStyleSheet(
-            "font-size:10px;color:#9edff6;background:#08121b;border:1px solid #1f4f7a;border-radius:6px;padding:4px;line-height:1.15em;"
+            "font-size:10px;color:#9edff6;background:#08121b;border:1px solid #1f4f7a;border-radius:6px;padding:3px;line-height:1.1em;"
         )
         right.addWidget(self.stream_meta)
 
@@ -1478,17 +1494,17 @@ class CameraPanel(QtWidgets.QFrame):
             "border:1px solid #6a4cff;"
             "color:#d8c8ff;"
             "border-radius:6px;"
-            "padding:3px;"
+            "padding:2px 4px;"
         )
         right.addWidget(self.wakimura_label)
 
         metric_head = QtWidgets.QLabel("脇村モデル主要値")
-        metric_head.setStyleSheet("font-size:11px;font-weight:bold;color:#c5bdff;")
+        metric_head.setStyleSheet("font-size:11px;font-weight:bold;color:#c5bdff;padding:0px;margin:0px;")
         right.addWidget(metric_head)
         self.wakimura_grid = QtWidgets.QGridLayout()
         self.wakimura_grid.setContentsMargins(0, 0, 0, 0)
         self.wakimura_grid.setHorizontalSpacing(4)
-        self.wakimura_grid.setVerticalSpacing(4)
+        self.wakimura_grid.setVerticalSpacing(3)
         self.wakimura_grid_widget = QtWidgets.QWidget()
         self.wakimura_grid_widget.setLayout(self.wakimura_grid)
         right.addWidget(self.wakimura_grid_widget)
@@ -1502,23 +1518,21 @@ class CameraPanel(QtWidgets.QFrame):
         self.rtol_card = QtWidgets.QLabel("RtoL：0")
         for card in (self.ltor_card, self.rtol_card):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet("font-size:16px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:4px;")
+            card.setStyleSheet("font-size:15px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:2px;")
             count_row.addWidget(card, 1)
         right.addLayout(count_row)
 
         stay_head = QtWidgets.QLabel("1分以上滞在ID")
-        stay_head.setStyleSheet("font-size:11px;font-weight:bold;color:#9de7ff;")
+        stay_head.setStyleSheet("font-size:11px;font-weight:bold;color:#9de7ff;padding:0px;margin:0px;")
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
         self.stay_grid.setContentsMargins(0, 0, 0, 0)
         self.stay_grid.setHorizontalSpacing(4)
-        self.stay_grid.setVerticalSpacing(4)
+        self.stay_grid.setVerticalSpacing(3)
         self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.stay_box = QtWidgets.QWidget()
         self.stay_box.setLayout(self.stay_grid)
         self.stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
-        self.stay_box.setMinimumHeight(36)
-        self.stay_box.setMaximumHeight(96)
         self.stay_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Minimum)
         right.addWidget(self.stay_box)
         self._render_stay_cards([])
@@ -1596,19 +1610,18 @@ class CameraPanel(QtWidgets.QFrame):
         cam_name = camera_name or self.camera_cfg.get("camera_name", f"Camera{self.camera_id}")
         raw_stream = stream_name or self.camera_cfg.get("stream_name") or self.camera_cfg.get("stream_url")
         stream = str(raw_stream).strip() if raw_stream else f"stream{self.camera_id}"
-        w, h = self._last_frame_size
-        res_text = f"{w}×{h}" if w and h else "--"
         status_text = "rtsp受信中" if self._status_connected else "通信無し"
         self.title.setText(
             f"{cam_name} / {stream}\n"
-            f"入力画像サイズ: {res_text} / {status_text}"
+            f"{status_text}"
         )
 
     def _update_stream_meta(self, fps: float) -> None:
         w, h = self._last_frame_size
         res_text = f"{w}×{h}" if w and h else "--"
         ts_text = datetime.now().strftime("%H:%M:%S")
-        self.stream_meta.setText(f"入力画像サイズ: {res_text} / 受信FPS: {fps:.1f} / 更新: {ts_text}")
+        fps_text = f"{fps:5.1f}"
+        self.stream_meta.setText(f"入力: {res_text:<11} / FPS: {fps_text} / 更新: {ts_text}")
 
     def _on_threshold_enter_pressed(self) -> None:
         current = float(self.camera_cfg.get("congestion_threshold", 5.0))
@@ -1637,12 +1650,12 @@ class CameraPanel(QtWidgets.QFrame):
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             empty_label.setStyleSheet("font-size:9px;color:#5fa2b8;")
-            empty_label.setFixedWidth(72)
-            empty_label.setFixedHeight(28)
+            empty_label.setFixedWidth(56)
+            empty_label.setFixedHeight(26)
             self.stay_grid.addWidget(empty_label, 0, 0)
-            self.stay_box.setFixedHeight(36)
+            self.stay_box.setFixedHeight(34)
             return
-        visible_entries = entries[:8]
+        visible_entries = entries[:10]
         for idx, item in enumerate(visible_entries):
             track_id = int(item[0])
             stay_mins = float(item[1])
@@ -1660,11 +1673,10 @@ class CameraPanel(QtWidgets.QFrame):
                 f"border:1px solid {border_color};"
                 "border-radius:6px;color:#95f6ff;padding:1px;font-weight:bold;"
             )
-            card.setFixedWidth(72)
-            card.setFixedHeight(28)
-            self.stay_grid.addWidget(card, idx // 4, idx % 4)
-        rows = max(1, (len(visible_entries) + 3) // 4)
-        self.stay_box.setFixedHeight(min(96, 8 + rows * 32))
+            card.setFixedWidth(56)
+            card.setFixedHeight(26)
+            self.stay_grid.addWidget(card, idx // 5, idx % 5)
+        self.stay_box.setFixedHeight(62 if len(visible_entries) > 5 else 34)
 
     def _build_wakimura_cards(self) -> None:
         labels = [
@@ -1673,31 +1685,27 @@ class CameraPanel(QtWidgets.QFrame):
             ("総追跡台数", "wak_total_tracks"),
             ("平均移動量", "wak_avg_move"),
             ("中央移動量", "wak_median_move"),
-            ("閾値以下台数", "wak_below_threshold_count"),
-            ("閾値以下率", "wak_below_threshold_ratio"),
             ("停止率", "wak_stop_ratio"),
             ("低速率", "wak_slow_ratio"),
-            ("窓内評価台数", "wak_window_count"),
             ("score合計", "wak_score_sum"),
             ("score平均", "wak_score_avg"),
-            ("最大滞在時間", "wak_max_stay_min"),
             ("1分以上滞在台数", "wak_stay_over_1min"),
-            ("更新時刻", "wak_updated_at"),
         ]
         for idx, (title, key) in enumerate(labels):
             card = QtWidgets.QFrame()
-            card.setFixedSize(92, 36)
+            card.setFixedSize(60, 34)
             card.setStyleSheet("background:#101226;border:1px solid #6a4cff;border-radius:6px;")
             card_layout = QtWidgets.QVBoxLayout(card)
-            card_layout.setContentsMargins(4, 2, 4, 2)
+            card_layout.setContentsMargins(3, 1, 3, 1)
             card_layout.setSpacing(1)
             t = QtWidgets.QLabel(title)
-            t.setStyleSheet("font-size:9px;color:#b7a6ff;font-weight:bold;")
+            t.setStyleSheet("font-size:8px;color:#b7a6ff;font-weight:bold;")
             v = QtWidgets.QLabel("--")
             v.setStyleSheet("font-size:10px;color:#efe7ff;font-weight:bold;")
+            v.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             card_layout.addWidget(t)
             card_layout.addWidget(v)
-            self.wakimura_grid.addWidget(card, idx // 3, idx % 3)
+            self.wakimura_grid.addWidget(card, idx // 5, idx % 5)
             self.wakimura_value_labels[key] = v
 
     def _update_wakimura_cards(self, payload: dict[str, Any]) -> None:
@@ -2534,15 +2542,33 @@ class MainWindow(QtWidgets.QMainWindow):
         top_info_grid.setVerticalSpacing(4)
         self.global_status = QtWidgets.QLabel("時刻 | device | GPU | model | output")
         self.global_status.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;")
-        self.formula_status = QtWidgets.QLabel(
-            "渋滞指数＝車両の停滞傾向を表す指標。移動量が小さい車ほど高くなり、流れが悪い状態を表す。\n"
-            "直近30秒の各車両の移動量 d を用いて score=Σ[1/(1+d/(W×500))] を算出し、画面内全体で集計する。\n"
-            "脇村指標は停止寄り車両の割合と滞在傾向を用いた補助評価値。停止台数・低速台数・平均移動量・閾値超過台数などで詰まり方を補足する。"
+        self.congestion_formula_label = QtWidgets.QLabel(
+            "渋滞指数＝車両の停滞傾向を表す指標。移動量が小さい車ほど値が高くなり、流れが悪い状態を表す。\n"
+            "直近30秒の各車両の移動量 d を用いて score=Σ[1/(1+d/(W×500))] を算出し、画面全体の停滞感を集計する。"
         )
-        self.formula_status.setWordWrap(True)
-        self.formula_status.setStyleSheet("color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:4px;font-size:14px;")
+        self.congestion_formula_label.setWordWrap(True)
+        self.congestion_formula_label.setStyleSheet(
+            "color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:4px;font-size:13px;"
+        )
+        self.wakimura_formula_label = QtWidgets.QLabel(
+            "脇村指標は、停止寄り車両の割合や滞在傾向を補助的に見るための参考指標。\n"
+            "停止台数・低速台数・平均移動量・score情報を用いて、渋滞指数だけでは見えにくい詰まり方を補足する。"
+        )
+        self.wakimura_formula_label.setWordWrap(True)
+        self.wakimura_formula_label.setStyleSheet(
+            "color:#d6cbff;background:#0d1020;border:1px solid #4b3cb0;padding:4px;font-size:13px;"
+        )
         self.global_status.setFixedWidth(770)
-        self.formula_status.setFixedWidth(770)
+        self.congestion_formula_label.setFixedWidth(770)
+        self.wakimura_formula_label.setFixedWidth(770)
+
+        formula_stack = QtWidgets.QVBoxLayout()
+        formula_stack.setContentsMargins(0, 0, 0, 0)
+        formula_stack.setSpacing(3)
+        formula_widget = QtWidgets.QWidget()
+        formula_widget.setLayout(formula_stack)
+        formula_stack.addWidget(self.congestion_formula_label)
+        formula_stack.addWidget(self.wakimura_formula_label)
 
         level_block = QtWidgets.QVBoxLayout()
         level_block.setContentsMargins(0, 0, 0, 0)
@@ -2568,7 +2594,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         top_info_grid.addWidget(self.global_status, 0, 0)
         top_info_grid.addWidget(level_block_widget, 0, 1)
-        top_info_grid.addWidget(self.formula_status, 1, 0)
+        top_info_grid.addWidget(formula_widget, 1, 0)
         top_info_grid.addWidget(self.level_rule_label, 1, 1)
         layout.addLayout(top_info_grid)
 
