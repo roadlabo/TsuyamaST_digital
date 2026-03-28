@@ -1667,13 +1667,13 @@ class CameraPanel(QtWidgets.QFrame):
         if not entries:
             empty_label = QtWidgets.QLabel("該当なし")
             empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            empty_label.setStyleSheet("font-size:8px;color:#5fa2b8;padding:0px;")
-            empty_label.setFixedWidth(34)
-            empty_label.setFixedHeight(24)
+            empty_label.setStyleSheet("font-size:9px;color:#5fa2b8;padding:0px;")
+            empty_label.setFixedWidth(40)
+            empty_label.setFixedHeight(28)
             self.stay_grid.addWidget(empty_label, 0, 0)
-            self.stay_box.setFixedHeight(30)
+            self.stay_box.setFixedHeight(32)
             return
-        visible_entries = entries[:16]
+        visible_entries = entries[:14]
         for idx, item in enumerate(visible_entries):
             track_id = int(item[0])
             stay_mins = float(item[1])
@@ -1686,15 +1686,15 @@ class CameraPanel(QtWidgets.QFrame):
             card = QtWidgets.QLabel(f"{track_id:03d}\n{stay_mins_int:d}m")
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setStyleSheet(
-                "font-size:8px;"
+                "font-size:9px;"
                 "background:#061726;"
                 f"border:1px solid {border_color};"
-                "border-radius:5px;color:#95f6ff;padding:0px;font-weight:bold;line-height:1.0em;"
+                "border-radius:5px;color:#95f6ff;padding:0px;font-weight:bold;line-height:1.05em;"
             )
-            card.setFixedWidth(34)
-            card.setFixedHeight(24)
-            self.stay_grid.addWidget(card, idx // 8, idx % 8)
-        self.stay_box.setFixedHeight(56 if len(visible_entries) > 8 else 30)
+            card.setFixedWidth(40)
+            card.setFixedHeight(28)
+            self.stay_grid.addWidget(card, idx // 7, idx % 7)
+        self.stay_box.setFixedHeight(58 if len(visible_entries) > 7 else 32)
 
     def _build_wakimura_cards(self) -> None:
         labels = [
