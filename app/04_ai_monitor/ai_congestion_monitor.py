@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -41,6 +43,78 @@ CongestionSmoother = _congestion_common.CongestionSmoother
 congestion_level_from_index = _congestion_common.congestion_level_from_index
 get_level_thresholds = _congestion_common.get_level_thresholds
 level_style = _congestion_common.level_style
+
+
+def setup_logging(log_dir: Path) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "ai_monitor.log"
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    root.setLevel(logging.INFO)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    root.addHandler(stream_handler)
+    root.addHandler(file_handler)
+
+
+def _sleep_backoff(i: int, cap: float = 0.5) -> None:
+    time.sleep(min(cap, 0.05 * (2 ** i)))
+
+
+def safe_replace(tmp_path: Path, dst_path: Path, retries: int = 10) -> None:
+    last_exc: Exception | None = None
+    for i in range(max(1, int(retries))):
+        try:
+            os.replace(tmp_path, dst_path)
+            return
+        except (PermissionError, OSError) as exc:
+            last_exc = exc
+            logging.warning("[WARN] ai_status write retry %d/%d failed: %s", i + 1, retries, exc)
+            _sleep_backoff(i)
+    try:
+        tmp_path.replace(dst_path)
+        return
+    except Exception as exc:
+        raise RuntimeError(f"safe_replace failed: {tmp_path} -> {dst_path} ({last_exc or exc})") from exc
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any], retries: int = 10) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    tmp_path.write_text(text, encoding="utf-8")
+    try:
+        safe_replace(tmp_path, path, retries=retries)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+
+def safe_read_json(path: Path, default: Any, retries: int = 3) -> Any:
+    if not path.exists():
+        return default
+    last_exc: Exception | None = None
+    for i in range(max(1, int(retries))):
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except FileNotFoundError:
+            return default
+        except (json.JSONDecodeError, PermissionError, OSError) as exc:
+            last_exc = exc
+            _sleep_backoff(i, cap=0.2)
+        except Exception as exc:
+            last_exc = exc
+            break
+    logging.warning("safe_read_json failed: %s (%s)", path, last_exc)
+    return default
 
 # =========================================
 # Constants / CLASS_MAP
@@ -246,8 +320,8 @@ class ConfigManager:
 
     def load(self) -> AppConfig:
         self.ensure_defaults()
-        system = json.loads(self.system_config_path.read_text(encoding="utf-8"))
-        camera_dict = json.loads(self.camera_settings_path.read_text(encoding="utf-8"))
+        system = safe_read_json(self.system_config_path, DEFAULT_SYSTEM_CONFIG.copy(), retries=3)
+        camera_dict = safe_read_json(self.camera_settings_path, {"cameras": []}, retries=3)
         loaded_cameras = camera_dict.get("cameras", [])
         default_map = {int(c["camera_id"]): dict(c) for c in DEFAULT_CAMERA_SETTINGS.get("cameras", [])}
         cameras: list[dict[str, Any]] = []
@@ -275,10 +349,7 @@ class ConfigManager:
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        write_json_atomic(path, data, retries=10)
 
     @staticmethod
     def _to_slim_camera_settings(camera: dict[str, Any]) -> dict[str, Any]:
@@ -413,19 +484,24 @@ class StatusManager:
         self.ai_status_path = ai_status_path
         self.system_cfg = system_cfg
         self.last_payload: dict[str, Any] | None = None
+        self.last_failure_at: float = 0.0
 
     def update_if_needed(self, payload: dict[str, Any]) -> None:
         if self.last_payload == payload and self.ai_status_path.exists():
             return
-        self._atomic_write_json(self.ai_status_path, payload)
+        try:
+            self._atomic_write_json(self.ai_status_path, payload)
+        except Exception as exc:
+            now_ts = time.time()
+            if now_ts - self.last_failure_at > 5.0:
+                self.last_failure_at = now_ts
+                logging.warning("ai_status write skipped: %s", exc)
+            return
         self.last_payload = payload
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
+        write_json_atomic(path, data, retries=10)
 
 
 # =========================================
@@ -1058,6 +1134,7 @@ class CameraPanel(QtWidgets.QFrame):
     line_setting_requested = QtCore.pyqtSignal(int)
     exclude_setting_requested = QtCore.pyqtSignal(int)
     camera_setting_requested = QtCore.pyqtSignal(int)
+    threshold_changed = QtCore.pyqtSignal(int, float)
 
     def __init__(self, camera_cfg: dict[str, Any], parent=None):
         super().__init__(parent)
@@ -1151,9 +1228,6 @@ class CameraPanel(QtWidgets.QFrame):
         stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
         stay_box.setMinimumHeight(58)
         right.addWidget(stay_box)
-        self._stay_empty_label = QtWidgets.QLabel("該当なし")
-        self._stay_empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self._stay_empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;")
         self._render_stay_cards([])
 
         right.addLayout(btn_col)
@@ -1238,19 +1312,19 @@ class CameraPanel(QtWidgets.QFrame):
     def _on_threshold_changed(self, value: float) -> None:
         self.camera_cfg["congestion_threshold"] = float(value)
         self._update_congestion_bar(self.congestion_bar.score, float(value))
+        self.threshold_changed.emit(self.camera_id, float(value))
 
     def _update_count_cards(self, ltor_total: int, rtol_total: int) -> None:
         self.ltor_card.setText(f"LtoR\n{ltor_total}")
         self.rtol_card.setText(f"RtoL\n{rtol_total}")
 
     def _render_stay_cards(self, entries: list[list[float] | tuple[int, float]]) -> None:
-        while self.stay_grid.count():
-            item = self.stay_grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        self._clear_layout(self.stay_grid)
         if not entries:
-            self.stay_grid.addWidget(self._stay_empty_label, 0, 0, 1, 2)
+            empty_label = QtWidgets.QLabel("該当なし")
+            empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;")
+            self.stay_grid.addWidget(empty_label, 0, 0, 1, 2)
             return
         for idx, item in enumerate(entries[:6]):
             track_id = int(item[0])
@@ -1259,6 +1333,17 @@ class CameraPanel(QtWidgets.QFrame):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setStyleSheet("font-size:10px;background:#061726;border:1px solid #16b8d8;border-radius:6px;color:#95f6ff;padding:3px;font-weight:bold;")
             self.stay_grid.addWidget(card, idx // 2, idx % 2)
+
+    def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_layout(child_layout)
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
 
 def resolve_model_path(camera_cfg: dict[str, Any], system_cfg: dict[str, Any], root_dir: Path) -> Path:
@@ -1331,9 +1416,11 @@ class CameraWorker(QtCore.QObject):
         self._status_text = "INIT"
         self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
         self.csv_error_state = {"congestion": False, "pass": False, "long_stay": False}
+        self._csv_error_count = {"congestion": 0, "pass": 0, "long_stay": 0}
         self.read_fail_count = 0
         self.max_read_fail_before_reconnect = 5
         self.last_reconnect_at = 0.0
+        self.reconnect_fail_count = 0
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
@@ -1411,15 +1498,18 @@ class CameraWorker(QtCore.QObject):
             return
         self.last_reconnect_at = now_ts
         self._set_status("RECONNECTING")
-        self.error_occurred.emit(self.camera_id, f"{self.camera_name} 再接続中… ({reason})" if reason else f"{self.camera_name} 再接続中…")
+        self.error_occurred.emit(self.camera_id, f"[INFO] cam{self.camera_id} reconnect start: {reason or '-'}")
         self._release_capture()
         time.sleep(min(1.0, reconnect_sec))
         try:
             self.connect()
             self._set_status("RUNNING")
-            self.error_occurred.emit(self.camera_id, f"{self.camera_name} RUNNING")
+            self.reconnect_fail_count = 0
+            self.error_occurred.emit(self.camera_id, f"[INFO] cam{self.camera_id} reconnect success")
         except Exception as exc:
-            self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} reconnect failed: {exc}")
+            self.reconnect_fail_count += 1
+            if self.reconnect_fail_count <= 3 or self.reconnect_fail_count % 10 == 0:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} reconnect failed({self.reconnect_fail_count}): {exc}")
 
     def _release_capture(self) -> None:
         if self.cap is not None:
@@ -1470,18 +1560,25 @@ class CameraWorker(QtCore.QObject):
     def _append_csv_safe(self, path: Path, row: list[Any], kind: str) -> None:
         try:
             self._append_csv(path, row)
+            if self.csv_error_state.get(kind, False):
+                self.error_occurred.emit(self.camera_id, f"[INFO] cam{self.camera_id} {kind} csv write recovered")
             self.csv_error_state[kind] = False
+            self._csv_error_count[kind] = 0
         except PermissionError as exc:
-            if not self.csv_error_state.get(kind, False):
-                self.csv_error_state[kind] = True
+            self._csv_error_count[kind] = self._csv_error_count.get(kind, 0) + 1
+            count = self._csv_error_count[kind]
+            if not self.csv_error_state.get(kind, False) or count % 20 == 0:
                 self.error_occurred.emit(
                     self.camera_id,
-                    f"[WARN] cam{self.camera_id} {kind} csv is locked. Excel等でCSVが開かれているため書き込めません。閉じると自動で再開します。: {exc}",
+                    f"[WARN] cam{self.camera_id} {kind} csv is locked ({count}): {exc}",
                 )
+            self.csv_error_state[kind] = True
         except Exception as exc:
-            if not self.csv_error_state.get(kind, False):
-                self.csv_error_state[kind] = True
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} {kind} csv write failed: {exc}")
+            self._csv_error_count[kind] = self._csv_error_count.get(kind, 0) + 1
+            count = self._csv_error_count[kind]
+            if not self.csv_error_state.get(kind, False) or count % 20 == 0:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} {kind} csv write failed ({count}): {exc}")
+            self.csv_error_state[kind] = True
 
     def _load_previous_day_histogram(self) -> tuple[list[int], list[int]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
@@ -1808,32 +1905,42 @@ class CameraWorker(QtCore.QObject):
             elapsed = max(1e-6, time.time() - start)
             self.fps = 1.0 / elapsed
 
-            for pe in pass_events:
-                self._append_csv_safe(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]], kind="pass")
-            for le in long_stay_events:
-                self._append_csv_safe(
-                    self.long_stay_csv,
-                    [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]],
-                    kind="long_stay",
-                )
+            try:
+                for pe in pass_events:
+                    self._append_csv_safe(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]], kind="pass")
+                for le in long_stay_events:
+                    self._append_csv_safe(
+                        self.long_stay_csv,
+                        [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]],
+                        kind="long_stay",
+                    )
+            except Exception as exc:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} csv helper skipped: {exc}")
 
             if len(self.congestion.state.frame_time_stamps) > prev_points_len:
-                self._append_csv_safe(
-                    self.congestion_csv,
-                    [
-                        now.strftime("%Y-%m-%d %H:%M:%S"),
-                        self.camera_id,
-                        self.camera_name,
-                        round(congestion_score, 2),
-                        round(threshold, 2),
-                        bool(threshold_over),
-                        round(self.fps, 2),
-                    ],
-                    kind="congestion",
-                )
+                try:
+                    self._append_csv_safe(
+                        self.congestion_csv,
+                        [
+                            now.strftime("%Y-%m-%d %H:%M:%S"),
+                            self.camera_id,
+                            self.camera_name,
+                            round(congestion_score, 2),
+                            round(threshold, 2),
+                            bool(threshold_over),
+                            round(self.fps, 2),
+                        ],
+                        kind="congestion",
+                    )
+                except Exception as exc:
+                    self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} congestion csv skipped: {exc}")
 
             self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks))
-            long_stay_list.sort(key=lambda x: x[1], reverse=True)
+            try:
+                long_stay_list.sort(key=lambda x: x[1], reverse=True)
+            except Exception as exc:
+                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} long_stay list sort skipped: {exc}")
+                long_stay_list = []
             th2, th3, th4 = get_level_thresholds(self.system_cfg)
             smoothed_score = float(self.congestion.state.current_smoothed_index)
             level = congestion_level_from_index(smoothed_score, th2, th3, th4)
@@ -1988,13 +2095,14 @@ class MainWindow(QtWidgets.QMainWindow):
             panel.line_setting_requested.connect(lambda cid, m="line": self.open_settings_for_camera(cid, m))
             panel.exclude_setting_requested.connect(lambda cid, m="poly": self.open_settings_for_camera(cid, m))
             panel.camera_setting_requested.connect(lambda cid, m="basic": self.open_settings_for_camera(cid, m))
+            panel.threshold_changed.connect(self.on_threshold_changed)
             layout.addWidget(panel, 1)
             self.panels[cam["camera_id"]] = panel
             try:
                 worker = CameraWorker(cam, self.app_cfg.system, self.root_dir)
             except Exception as exc:
                 panel.set_status("MODEL ERROR")
-                print(exc)
+                logging.exception("cam%s worker init failed: %s", cam.get("camera_id"), exc)
                 continue
             thread = QtCore.QThread(self)
             worker.moveToThread(thread)
@@ -2030,27 +2138,35 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_camera_payload(self, payload: dict[str, Any]) -> None:
         cid = int(payload.get("camera_id", -1))
         if cid in self.panels:
-            self.panels[cid].update_view(payload)
+            try:
+                self.panels[cid].update_view(payload)
+            except Exception as exc:
+                logging.exception("[ERROR] cam%s update_view failed: %s", cid, exc)
         self.latest_payloads[cid] = payload
-        self._update_status_level()
+        try:
+            self._update_status_level()
+        except Exception as exc:
+            logging.warning("on_camera_payload status update skipped cam%s: %s", cid, exc)
         self.pending_report_update = True
 
     def _show_on_target_screen(self) -> None:
-        screens = QtGui.QGuiApplication.screens()
-        if not screens:
-            self.showMaximized()
-            return
-
-        target_index = 2 if len(screens) >= 3 else len(screens) - 1
-        target_screen = screens[target_index]
-        geom = target_screen.availableGeometry()
-        self.setGeometry(geom)
-        self.move(geom.topLeft())
+        try:
+            screens = QtGui.QGuiApplication.screens()
+            if not screens:
+                self.showMaximized()
+                return
+            target_index = 2 if len(screens) >= 3 else len(screens) - 1
+            target_screen = screens[target_index]
+            geom = target_screen.availableGeometry()
+            self.setGeometry(geom)
+            self.move(geom.topLeft())
+        except Exception as exc:
+            logging.warning("show_on_target_screen fallback to maximized: %s", exc)
         self.showMaximized()
 
     @QtCore.pyqtSlot(int, str)
     def on_camera_error(self, camera_id: int, message: str) -> None:
-        print(f"[WARN] camera {camera_id}: {message}")
+        logging.warning("camera %s: %s", camera_id, message)
 
     @QtCore.pyqtSlot(int, str)
     def on_camera_status_changed(self, camera_id: int, status_text: str) -> None:
@@ -2074,17 +2190,34 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         overall_smoothed = max((item["smoothed_congestion_index"] for item in camera_states), default=0.0)
         overall_level = congestion_level_from_index(overall_smoothed, th2, th3, th4)
-        self.status_mgr.update_if_needed(
-            {
-                "congestion_level": int(overall_level),
-                "smoothed_congestion_index": round(overall_smoothed, 3),
-                "level2_threshold": th2,
-                "level3_threshold": th3,
-                "level4_threshold": th4,
-                "camera_states": camera_states,
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
+        try:
+            self.status_mgr.update_if_needed(
+                {
+                    "congestion_level": int(overall_level),
+                    "smoothed_congestion_index": round(overall_smoothed, 3),
+                    "level2_threshold": th2,
+                    "level3_threshold": th3,
+                    "level4_threshold": th4,
+                    "camera_states": camera_states,
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+        except Exception as exc:
+            logging.warning("ai_status update skipped: %s", exc)
+
+    @QtCore.pyqtSlot(int, float)
+    def on_threshold_changed(self, camera_id: int, value: float) -> None:
+        try:
+            target = next((cam for cam in self.app_cfg.cameras if int(cam.get("camera_id", -1)) == int(camera_id)), None)
+            if target is None:
+                return
+            target["congestion_threshold"] = float(value)
+            self.cfg_mgr.save_camera_settings(self.app_cfg.cameras)
+            worker = self.workers.get(camera_id)
+            if worker is not None:
+                worker.update_camera_config({"congestion_threshold": float(value)})
+        except Exception as exc:
+            logging.warning("cam%s threshold update failed: %s", camera_id, exc)
 
     def _update_global_status(self) -> None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2195,7 +2328,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
         except Exception as exc:
             self.pending_report_update = True
-            print(f"[WARN] report update skipped: {exc}")
+            logging.warning("report update skipped: %s", exc)
 
     def _flush_report_update_if_needed(self) -> None:
         if not self.pending_report_update:
@@ -2235,10 +2368,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root_dir = Path(args.root)
+    setup_logging(root_dir / "logs")
+    logging.info("AI monitor starting. root=%s", root_dir)
     app = QtWidgets.QApplication(sys.argv)
     win = MainWindow(root_dir)
     win.show()
-    return app.exec()
+    try:
+        return app.exec()
+    except Exception:
+        err_path = root_dir / "logs" / "ai_monitor_last_traceback.log"
+        err_path.write_text(traceback.format_exc(), encoding="utf-8")
+        logging.exception("fatal exception in QApplication loop")
+        return 1
 
 
 if __name__ == "__main__":
