@@ -1873,12 +1873,9 @@ class CameraWorker(QtCore.QObject):
         self.last_wakimura_update_ts = 0.0
         self.wakimura_update_interval_sec = 1.0
         self.cached_wakimura_payload = self._default_wakimura_payload()
-        display_update_interval_ms = int(self.system_cfg.get("display_update_interval_ms", 800))
-        self.infer_interval_sec = 0.20
+        # old版寄りに戻すため、推論の時間間引きを停止（frame_skip のみ有効）
+        self.infer_interval_sec = 0.0
         self.last_infer_ts = 0.0
-        self.last_ui_emit_ts = 0.0
-        self.ui_emit_interval_sec = max(0.20, display_update_interval_ms / 1000.0)
-        self.last_payload: dict[str, Any] | None = None
         self.last_graph_revision_ts = 0.0
 
         self.today = datetime.now().date()
@@ -2119,16 +2116,9 @@ class CameraWorker(QtCore.QObject):
         while self._running:
             try:
                 payload = self.process_once_nonblocking()
-                now_ts = time.time()
                 if payload is not None:
-                    self.last_payload = payload
-                if now_ts - self.last_ui_emit_ts >= self.ui_emit_interval_sec:
-                    if payload is not None:
-                        self.frame_ready.emit(payload)
-                        self.last_ui_emit_ts = now_ts
-                    elif self.last_payload is not None:
-                        self.frame_ready.emit(dict(self.last_payload))
-                        self.last_ui_emit_ts = now_ts
+                    # old版寄りに戻すため、UI送信間引きを廃止して即時反映
+                    self.frame_ready.emit(payload)
             except Exception as exc:
                 self.error_occurred.emit(self.camera_id, str(exc))
             QtCore.QThread.msleep(5)
@@ -2181,7 +2171,7 @@ class CameraWorker(QtCore.QObject):
                 return None
 
             now_ts = time.time()
-            if now_ts - self.last_infer_ts < self.infer_interval_sec:
+            if self.infer_interval_sec > 0 and (now_ts - self.last_infer_ts < self.infer_interval_sec):
                 return None
             self.last_infer_ts = now_ts
 
@@ -2379,7 +2369,6 @@ class CameraWorker(QtCore.QObject):
                 "device": self.device,
                 "gpu_name": self.gpu_name,
             }
-            self.last_payload = payload
             return payload
         except Exception as exc:
             self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} loop exception: {exc}")
@@ -2627,7 +2616,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 800)))
+        self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 200)))
         QtCore.QTimer.singleShot(0, self._show_on_target_screen)
 
     def tick(self) -> None:
