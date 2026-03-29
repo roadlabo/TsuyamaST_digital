@@ -1391,7 +1391,7 @@ class CameraPanel(QtWidgets.QFrame):
         self._stay_entries: list[list[float] | tuple[int, float]] = []
         self._last_stay_signature: tuple[tuple[int, int], ...] = ()
         self._last_stay_visible_count = -1
-        self.stay_card_widgets: dict[int, QtWidgets.QLabel] = {}
+        self.stay_card_widgets: dict[int, QtWidgets.QWidget] = {}
         self.stay_empty_label: QtWidgets.QLabel | None = None
         self._status_connected = False
         self.is_king = self.camera_id == 2
@@ -1401,9 +1401,10 @@ class CameraPanel(QtWidgets.QFrame):
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(1)
+        self.panel_total_width = 1128
+        self.right_panel_width = 542
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.setMinimumWidth(930)
-        self.setMaximumWidth(930)
+        self.setFixedWidth(self.panel_total_width)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -1425,7 +1426,7 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setFixedWidth(344)
+        right_box.setFixedWidth(self.right_panel_width)
         right_box.setFixedHeight(324)
         right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
@@ -1433,8 +1434,24 @@ class CameraPanel(QtWidgets.QFrame):
         right.setSpacing(2)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
+        display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
+        role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
+        role_style = {
+            "KING": ("#C9A227", "#111111"),
+            "QUEEN": ("#C2185B", "#FFFFFF"),
+            "JACK": ("#1565C0", "#FFFFFF"),
+        }
+        role_bg, role_fg = role_style.get(role_name, ("#2A3B47", "#FFFFFF"))
+        self.role_badge = QtWidgets.QLabel(role_name)
+        self.role_badge.setFixedHeight(38)
+        self.role_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.role_badge.setStyleSheet(
+            f"background:{role_bg};color:{role_fg};border:1px solid #c8d4e0;border-radius:6px;font-size:20px;font-weight:900;letter-spacing:1px;padding:0px 4px;"
+        )
+        right.addWidget(self.role_badge, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+
         self.title = QtWidgets.QLabel("")
-        self.title.setStyleSheet("font-size:12px;color:#00D7FF;font-weight:bold;line-height:1.0em;")
+        self.title.setStyleSheet("font-size:11px;color:#00D7FF;font-weight:bold;line-height:1.0em;")
         self.title.setWordWrap(False)
         self.title.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         right.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignTop)
@@ -1466,11 +1483,12 @@ class CameraPanel(QtWidgets.QFrame):
         count_row = QtWidgets.QHBoxLayout()
         count_row.setContentsMargins(0, 0, 0, 0)
         count_row.setSpacing(1)
-        self.ltor_card = QtWidgets.QLabel("LtoR：0")
-        self.rtol_card = QtWidgets.QLabel("RtoL：0")
+        self.ltor_card = QtWidgets.QLabel("")
+        self.rtol_card = QtWidgets.QLabel("")
         for card in (self.ltor_card, self.rtol_card):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            card.setStyleSheet("font-size:12px;font-weight:900;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:0px;")
+            card.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            card.setStyleSheet("font-size:10px;font-weight:700;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:1px;")
             count_row.addWidget(card, 1)
         right.addLayout(count_row)
 
@@ -1478,31 +1496,31 @@ class CameraPanel(QtWidgets.QFrame):
         self.wakimura_frames: dict[str, QtWidgets.QFrame] = {}
         if self.is_king:
             self.wakimura_row = QtWidgets.QWidget()
-            self.wakimura_row.setFixedHeight(54)
+            self.wakimura_row.setFixedHeight(98)
             self.wakimura_row.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             wak_row_layout = QtWidgets.QHBoxLayout(self.wakimura_row)
             wak_row_layout.setContentsMargins(0, 0, 0, 0)
-            wak_row_layout.setSpacing(1)
+            wak_row_layout.setSpacing(2)
             for key, title in (
-                ("alpha", "α判定"),
-                ("stay", "滞在"),
-                ("exit", "退出"),
-                ("time", "滞在時間"),
+                ("alpha", "運用効率指標"),
+                ("stay", "高付加判定"),
+                ("exit", "流れ評価[WIN]"),
+                ("time", "滞留評価[HL]"),
             ):
                 card = QtWidgets.QFrame()
-                card.setStyleSheet("background:#09131d;border:1px solid #6a4cff;border-radius:6px;")
+                card.setStyleSheet("background:#081225;border:1px solid #6a4cff;border-radius:6px;")
                 card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-                card.setFixedHeight(54)
+                card.setFixedHeight(98)
                 card_layout = QtWidgets.QVBoxLayout(card)
-                card_layout.setContentsMargins(2, 2, 2, 2)
-                card_layout.setSpacing(0)
+                card_layout.setContentsMargins(4, 3, 4, 3)
+                card_layout.setSpacing(1)
                 title_label = QtWidgets.QLabel(title)
-                title_label.setStyleSheet("font-size:9px;color:#bca7ff;font-weight:600;")
+                title_label.setStyleSheet("font-size:10px;color:#c6afff;font-weight:800;")
                 title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 value_label = QtWidgets.QLabel("--")
-                value_label.setStyleSheet("font-size:11px;color:#d8c8ff;font-weight:700;")
-                value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-                value_label.setWordWrap(False)
+                value_label.setStyleSheet("font-size:9px;color:#d8c8ff;font-weight:500;")
+                value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+                value_label.setWordWrap(True)
                 card_layout.addWidget(title_label)
                 card_layout.addWidget(value_label, 1)
                 wak_row_layout.addWidget(card, 1)
@@ -1516,16 +1534,17 @@ class CameraPanel(QtWidgets.QFrame):
         right.addWidget(stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
         self.stay_grid.setContentsMargins(0, 0, 0, 0)
-        self.stay_grid.setHorizontalSpacing(0)
-        self.stay_grid.setVerticalSpacing(0)
+        self.stay_grid.setHorizontalSpacing(2)
+        self.stay_grid.setVerticalSpacing(1)
         self.stay_grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.stay_box = QtWidgets.QWidget()
         self.stay_box.setLayout(self.stay_grid)
         self.stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
         self.stay_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Minimum)
-        self.stay_box.setMinimumHeight(20)
+        self.stay_box.setMinimumHeight(38)
         right.addWidget(self.stay_box)
         self._render_stay_cards([])
+        self._update_count_cards(0, 0)
         # UI余白圧縮はディスプレイ内に収めるための調整。
 
         btn_col = QtWidgets.QVBoxLayout()
@@ -1538,8 +1557,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.btn_ai = QtWidgets.QPushButton("解析条件")
         self.btn_ai.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
         for btn in (self.btn_line, self.btn_exclude, self.btn_ai):
-            btn.setFixedHeight(19)
-            btn.setStyleSheet("font-size:9px;padding:0px 4px;")
+            btn.setFixedHeight(20)
+            btn.setStyleSheet("font-size:10px;padding:0px 4px;")
             btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             btn_col.addWidget(btn)
         right.addLayout(btn_col)
@@ -1651,13 +1670,17 @@ class CameraPanel(QtWidgets.QFrame):
         self.threshold_changed.emit(self.camera_id, float(value))
 
     def _update_count_cards(self, ltor_total: int, rtol_total: int) -> None:
-        self.ltor_card.setText(f"LtoR：{ltor_total}")
-        self.rtol_card.setText(f"RtoL：{rtol_total}")
+        self.ltor_card.setText(
+            f"<div style='text-align:center;line-height:1.05em;'><span style='font-size:10px;font-weight:700;'>LtoR</span><br><span style='font-size:22px;font-weight:900;'>{ltor_total}</span></div>"
+        )
+        self.rtol_card.setText(
+            f"<div style='text-align:center;line-height:1.05em;'><span style='font-size:10px;font-weight:700;'>RtoL</span><br><span style='font-size:22px;font-weight:900;'>{rtol_total}</span></div>"
+        )
 
     def _render_stay_cards(self, entries: list[list[float] | tuple[int, float]]) -> None:
         try:
             self._stay_entries = list(entries)
-            visible_entries = self._stay_entries[:4]
+            visible_entries = self._stay_entries[:8]
             visible_ids: set[int] = set()
             existing_ids = set(self.stay_card_widgets.keys())
             for item in visible_entries:
@@ -1682,8 +1705,8 @@ class CameraPanel(QtWidgets.QFrame):
             if self.stay_empty_label is None:
                 self.stay_empty_label = QtWidgets.QLabel("該当なし")
                 self.stay_empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-                self.stay_empty_label.setStyleSheet("font-size:10px;color:#5fa2b8;padding:0px;")
-                self.stay_empty_label.setFixedHeight(20)
+                self.stay_empty_label.setStyleSheet("font-size:11px;font-weight:700;color:#7dc7df;padding:0px;")
+                self.stay_empty_label.setFixedHeight(36)
             self.stay_empty_label.setVisible(not visible_entries)
 
             if len(visible_entries) != self._last_stay_visible_count or added_ids or removed_ids:
@@ -1700,10 +1723,11 @@ class CameraPanel(QtWidgets.QFrame):
         except Exception as exc:
             logging.exception("[ERROR] cam%s stay card render failed: %s", self.camera_id, exc)
 
-    def _create_stay_card(self) -> QtWidgets.QLabel:
+    def _create_stay_card(self) -> QtWidgets.QWidget:
         card = QtWidgets.QLabel("")
         card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        card.setFixedHeight(20)
+        card.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        card.setFixedHeight(36)
         return card
 
     def _update_stay_card(self, card: QtWidgets.QLabel, track_id: int, stay_mins_int: int) -> None:
@@ -1712,39 +1736,41 @@ class CameraPanel(QtWidgets.QFrame):
             border_color = "#ff4d4d"
         elif stay_mins_int >= 10:
             border_color = "#ffe066"
-        card.setText(f"ID:{track_id:03d} {stay_mins_int:d}分")
+        card.setText(
+            f"<div style='text-align:center;line-height:1.05em;'><span style='font-size:11px;font-weight:800;'>ID{track_id:03d}</span><br><span style='font-size:13px;font-weight:900;'>{stay_mins_int:d}分</span></div>"
+        )
         card.setStyleSheet(
-            "font-size:9px;"
+            "font-size:10px;"
             "background:#061726;"
             f"border:1px solid {border_color};"
-            "border-radius:5px;"
+            "border-radius:4px;"
             "color:#95f6ff;"
             "padding:0px;"
             "font-weight:bold;"
-            "line-height:1.0em;"
+            "line-height:1.05em;"
         )
 
     def _relayout_stay_cards(self) -> None:
-        cols = 4
+        cols = 8
         spacing = max(0, self.stay_grid.horizontalSpacing())
         contents = self.stay_grid.contentsMargins()
-        box_w = max(self.stay_box.width(), self.stay_box.sizeHint().width(), 220)
+        box_w = max(self.stay_box.width(), self.stay_box.sizeHint().width(), 440)
         available_w = max(
             8,
             box_w - contents.left() - contents.right() - spacing * (cols - 1),
         )
-        card_w = max(44, available_w // cols)
+        card_w = max(50, available_w // cols)
         extra_px = max(0, available_w - card_w * cols)
         col_widths = [card_w + (1 if i < extra_px else 0) for i in range(cols)]
 
-        visible_entries = self._stay_entries[:4]
+        visible_entries = self._stay_entries[:8]
         if not visible_entries:
             if self.stay_empty_label is not None:
                 self.stay_grid.removeWidget(self.stay_empty_label)
-                self.stay_empty_label.setFixedWidth(col_widths[0])
-                self.stay_grid.addWidget(self.stay_empty_label, 0, 0)
+                self.stay_empty_label.setFixedWidth(available_w)
+                self.stay_grid.addWidget(self.stay_empty_label, 0, 0, 1, cols)
                 self.stay_empty_label.show()
-            self.stay_box.setFixedHeight(20)
+            self.stay_box.setFixedHeight(36)
             return
 
         if self.stay_empty_label is not None:
@@ -1761,11 +1787,11 @@ class CameraPanel(QtWidgets.QFrame):
             card.setFixedWidth(col_widths[col])
             self.stay_grid.addWidget(card, idx // cols, col)
 
-        self.stay_box.setFixedHeight(20)
+        self.stay_box.setFixedHeight(36)
 
     def _build_stay_signature(self, entries: list[list[float] | tuple[int, float]]) -> tuple[tuple[int, int], ...]:
         signature: list[tuple[int, int]] = []
-        for item in entries[:4]:
+        for item in entries[:8]:
             signature.append((int(item[0]), max(0, int(float(item[1])))))
         return tuple(signature)
 
@@ -1777,18 +1803,27 @@ class CameraPanel(QtWidgets.QFrame):
         avg_stay_sec = max(0, int(round(float(payload.get("wakimura_avg_stay_sec", 0.0)))))
         base_stay = int(round(float(self.camera_cfg.get("wakimura_base_stay_time_sec", 60.0))))
         mode_text = "HL" if wak_mode else "WIN"
-        hl_text = "ON" if wak_mode else "OFF"
-        border = "#ff8c42" if wak_mode else "#6a4cff"
-        value_color = "#ffe0bf" if wak_mode else "#d8c8ff"
         for key, frame in self.wakimura_frames.items():
-            frame.setStyleSheet(f"background:#09131d;border:1px solid {border if key == 'alpha' else '#6a4cff'};border-radius:6px;")
+            if key in ("alpha", "time") and wak_mode:
+                card_border = "#ff944d"
+            else:
+                card_border = "#6a4cff"
+            frame.setStyleSheet(f"background:#081225;border:1px solid {card_border};border-radius:6px;")
         for label in self.wakimura_cards.values():
-            label.setStyleSheet(f"font-size:11px;color:{value_color};font-weight:700;")
+            label.setStyleSheet("font-size:9px;color:#dfd4ff;font-weight:500;")
 
-        self.wakimura_cards["alpha"].setText(f"α {wak_alpha:.2f}\n[{mode_text}] <85%")
-        self.wakimura_cards["stay"].setText(f"Nt={nt}台\nHL={hl_text}")
-        self.wakimura_cards["exit"].setText(f"{n_out} / 50台")
-        self.wakimura_cards["time"].setText(f"{avg_stay_sec} / {base_stay}秒")
+        self.wakimura_cards["alpha"].setText(
+            f"α＝{wak_alpha:.2f}[{mode_text}]\n判定基準：α＜0.85\n評価期間：5分"
+        )
+        self.wakimura_cards["stay"].setText(
+            f"現在滞在台数：{nt}台\n判定基準：7台以上\n判定：[WIN] or [HL]"
+        )
+        self.wakimura_cards["exit"].setText(
+            f"基準退出台数(5min)：50台\n現在退出状況(5min)：{n_out}台\nα[WIN]={n_out}/50={n_out/50.0:.2f}"
+        )
+        self.wakimura_cards["time"].setText(
+            f"基準滞在時間：{base_stay}秒\n平均滞在時間：{avg_stay_sec}秒\nα[HL]={base_stay}/{max(1, avg_stay_sec)}={base_stay/max(1, avg_stay_sec):.2f}"
+        )
 
     def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
         while layout.count():
@@ -2552,7 +2587,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("AI Congestion Monitor")
         self.setStyleSheet("background:#02060a;")
         self.resize(1220, 1600)
-        self.setMinimumSize(1160, 1300)
+        self.setMinimumSize(1220, 1300)
 
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
@@ -2600,7 +2635,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(scroll)
         content = QtWidgets.QWidget()
         content.setMinimumWidth(1140)
-        content.setMaximumWidth(16777215)
+        content.setMaximumWidth(1140)
         content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(content)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -2650,11 +2685,12 @@ class MainWindow(QtWidgets.QMainWindow):
         level_block.setSpacing(3)
         level_block_widget = QtWidgets.QWidget()
         level_block_widget.setLayout(level_block)
-        level_block_widget.setFixedWidth(420)
+        level_block_widget.setFixedWidth(430)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(58)
-        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:30px;padding:2px 10px;")
+        self.level_badge.setMinimumWidth(400)
+        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:28px;padding:2px 6px;")
         self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
         self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_title_ja.setStyleSheet("font-size:30px;font-weight:900;color:#9fe8ff;")
