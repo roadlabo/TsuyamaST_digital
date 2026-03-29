@@ -1162,9 +1162,13 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         y_axis_w = 28
         right_margin = 5
         header_h = 22
-        top_margin = header_h + 2
+        plot_scale_y = 0.8
+        top_margin = header_h + 4
         bottom_margin = 15
-        plot = QtCore.QRectF(y_axis_w, top_margin, max(10, self.width() - y_axis_w - right_margin), max(10, self.height() - top_margin - bottom_margin))
+        plot_w = max(10.0, float(self.width() - y_axis_w - right_margin))
+        raw_plot_h = max(10.0, float(self.height() - top_margin - bottom_margin))
+        plot_h = max(10.0, raw_plot_h * plot_scale_y)
+        plot = QtCore.QRectF(y_axis_w, top_margin, plot_w, plot_h)
 
         painter.setPen(QtGui.QPen(QtGui.QColor("#1d6f8b"), 1))
         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 3, 3)
@@ -1173,7 +1177,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         title_rect = QtCore.QRectF(0, 0, self.width(), header_h)
         painter.drawText(
             title_rect.adjusted(8, 0, -8, 0),
-            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
             self.title,
         )
 
@@ -1337,20 +1341,17 @@ class CameraPanel(QtWidgets.QFrame):
         self._status_connected = False
         self.is_king = self.camera_id == 2
         self.max_video_height = 270
+        self.video_frame_w = 528
+        self.video_frame_h = 297
+        self.info_panel_w = 528
         self.last_graph_update_ts = 0.0
         self.graph_update_interval_sec = 1.0
         self._last_graph_revision_ts = -1.0
         self._last_hist_revision = (-1, -1)
         display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
         role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
-        panel_tint_map = {
-            "KING": "rgba(201,162,39,0.10)",
-            "QUEEN": "rgba(194,24,91,0.10)",
-            "JACK": "rgba(21,101,192,0.10)",
-        }
-        panel_tint = panel_tint_map.get(role_name, "rgba(15,26,40,0.95)")
         self.setStyleSheet(
-            f"QFrame{{background:{panel_tint};border:1px solid #169db8;border-radius:6px;}} QLabel{{color:#cfefff;}}"
+            "QFrame{background:#343a40;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}"
         )
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(3, 3, 3, 3)
@@ -1369,16 +1370,19 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
+        self.video.setFixedSize(self.video_frame_w, self.video_frame_h)
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-        top_row.addWidget(self.video_box, 3, QtCore.Qt.AlignmentFlag.AlignTop)
+        self.video_box.setFixedSize(self.video_frame_w, self.video_frame_h)
+        top_row.addWidget(self.video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.right_box = QtWidgets.QWidget()
         self.right_box.setMinimumHeight(0)
-        self.right_box.setFixedHeight(self.max_video_height)
-        self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.right_box.setFixedWidth(self.info_panel_w)
+        self.right_box.setFixedHeight(self.video_frame_h)
+        self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(self.right_box)
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(1)
@@ -1505,8 +1509,6 @@ class CameraPanel(QtWidgets.QFrame):
         # UI余白圧縮はディスプレイ内に収めるための調整。
 
         top_row.addWidget(self.right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        top_row.setStretch(0, 0)
-        top_row.setStretch(1, 1)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1588,17 +1590,11 @@ class CameraPanel(QtWidgets.QFrame):
     def _update_video_pixmap(self) -> None:
         if self._latest_pixmap is None:
             return
-        frame_w, frame_h = self._last_frame_size
-        if not frame_w or not frame_h:
-            frame_w = max(1, self._latest_pixmap.width())
-            frame_h = max(1, self._latest_pixmap.height())
-        current_display_h = max(1, self.max_video_height)
-        display_h = max(1, int(current_display_h * 1.1))
-        aspect = frame_w / frame_h if frame_h else 1.0
-        display_w = max(1, int(display_h * aspect))
-        self.video_box.setFixedWidth(display_w)
-        self.video_box.setFixedHeight(display_h)
+        display_w = self.video_frame_w
+        display_h = self.video_frame_h
+        self.video_box.setFixedSize(display_w, display_h)
         self.video.setFixedSize(display_w, display_h)
+        self.right_box.setFixedWidth(self.info_panel_w)
         self.right_box.setFixedHeight(display_h)
         qimg = self._latest_pixmap.toImage()
         pix = QtGui.QPixmap.fromImage(qimg).scaled(
@@ -2622,9 +2618,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumWidth(500)
         self.level_badge.setMaximumWidth(500)
-        self.level_badge.setMinimumHeight(72)
+        self.level_badge.setMinimumHeight(58)
         self.level_badge.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:28px;padding:2px 4px;")
+        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:28px;padding:1px 4px;")
         self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
         self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_title_ja.setStyleSheet("font-size:30px;font-weight:900;color:#9fe8ff;")
@@ -2874,14 +2870,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.blink_timer.stop()
             self._blink_on = False
             self.level_badge.setStyleSheet(
-                f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:38px;padding:4px 12px;"
+                f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:38px;padding:2px 10px;"
             )
 
     def _toggle_level_blink(self) -> None:
         self._blink_on = not self._blink_on
         blink_bg = "red" if self._blink_on else "black"
         self.level_badge.setStyleSheet(
-            f"background:{blink_bg};color:white;border-radius:8px;font-weight:900;font-size:38px;padding:4px 12px;"
+            f"background:{blink_bg};color:white;border-radius:8px;font-weight:900;font-size:38px;padding:2px 10px;"
         )
 
     def _system_level_metrics_dir(self) -> Path:
