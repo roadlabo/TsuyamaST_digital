@@ -2647,6 +2647,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_rule_label.setMaximumWidth(520)
         self.level_rule_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Preferred)
         level_block.addWidget(self.level_badge)
+        self.blink_timer = QtCore.QTimer(self)
+        self.blink_timer.setInterval(500)
+        self.blink_timer.timeout.connect(self._toggle_level_blink)
+        self._blink_on = False
 
         top_header_row = QtWidgets.QHBoxLayout()
         top_header_row.setContentsMargins(0, 0, 0, 0)
@@ -2862,8 +2866,22 @@ class MainWindow(QtWidgets.QMainWindow):
         level = self.compute_system_level()
         style = level_style(level)
         self.level_badge.setText(f"{style['icon']} 渋滞LEVEL{level}")
+        if level == 4:
+            if not self.blink_timer.isActive():
+                self.blink_timer.start()
+        else:
+            if self.blink_timer.isActive():
+                self.blink_timer.stop()
+            self._blink_on = False
+            self.level_badge.setStyleSheet(
+                f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:38px;padding:4px 12px;"
+            )
+
+    def _toggle_level_blink(self) -> None:
+        self._blink_on = not self._blink_on
+        blink_bg = "red" if self._blink_on else "black"
         self.level_badge.setStyleSheet(
-            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:38px;padding:4px 12px;"
+            f"background:{blink_bg};color:white;border-radius:8px;font-weight:900;font-size:38px;padding:4px 12px;"
         )
 
     def _system_level_metrics_dir(self) -> Path:
@@ -3007,6 +3025,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self._flush_current_10min_bin()
+        if self.blink_timer.isActive():
+            self.blink_timer.stop()
         for worker in self.workers.values():
             try:
                 worker.stop()
