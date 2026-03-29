@@ -1458,7 +1458,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.graph_update_interval_sec = 1.0
         self._last_graph_revision_ts = -1.0
         self._last_hist_revision = (-1, -1)
-        display_name_map = {2: "QUEEN", 1: "JACK", 3: "KING"}
+        display_name_map = {2: "JACK", 1: "QUEEN", 3: "KING"}
         role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
         self.setStyleSheet(
             "QFrame{background:#343a40;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}"
@@ -1499,8 +1499,8 @@ class CameraPanel(QtWidgets.QFrame):
 
         role_style = {
             "KING": ("#D9A441", "#111111"),
-            "QUEEN": ("#C2185B", "#FFFFFF"),
-            "JACK": ("#6ECBEF", "#082033"),
+            "QUEEN": ("#6ECBEF", "#082033"),
+            "JACK": ("#C2185B", "#FFFFFF"),
         }
         role_bg, role_fg = role_style.get(role_name, ("#2A3B47", "#FFFFFF"))
         self.role_badge = QtWidgets.QLabel(role_name)
@@ -1728,7 +1728,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.video.setPixmap(pix)
 
     def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
-        display_name_map = {2: "QUEEN", 1: "JACK", 3: "KING"}
+        display_name_map = {2: "JACK", 1: "QUEEN", 3: "KING"}
         fallback_name = display_name_map.get(self.camera_id, f"Camera{self.camera_id}")
         cam_name = display_name_map.get(self.camera_id) or camera_name or self.camera_cfg.get("camera_name", fallback_name)
         raw_stream = stream_name or self.camera_cfg.get("stream_name") or self.camera_cfg.get("stream_url")
@@ -2764,9 +2764,9 @@ class MainWindow(QtWidgets.QMainWindow):
         top_left_box.addWidget(self.system_runtime_label)
         self.level_rule_label = QtWidgets.QLabel(
             "<b>LEVEL1：</b>通常時<br>"
-            "<b>LEVEL2：</b>[QUEEN]渋滞指数5以上 + 5分以上滞在台数3台以上<br>"
-            "<b>LEVEL3：</b>[JACK]渋滞指数3以上<br>"
-            "<b>LEVEL4：</b>[JACK]渋滞指数3以上 + [KING]渋滞指数3以上"
+            "<b>LEVEL2：</b>[JACK]渋滞指数5以上 + 5分以上滞在台数3台以上<br>"
+            "<b>LEVEL3：</b>[QUEEN]渋滞指数3以上<br>"
+            "<b>LEVEL4：</b>[QUEEN]渋滞指数3以上 + [KING]渋滞指数3以上"
         )
         self.level_rule_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.level_rule_label.setWordWrap(True)
@@ -2968,9 +2968,9 @@ class MainWindow(QtWidgets.QMainWindow):
         cam3_th = self.get_camera_threshold("Camera3")
         self.level_rule_label.setText(
             "<b>LEVEL1：</b>通常時<br>"
-            f"<b>LEVEL2：</b>[QUEEN]渋滞指数{cam2_th:.1f}以上 + 5分以上滞在台数3台以上<br>"
-            f"<b>LEVEL3：</b>[JACK]渋滞指数{cam1_th:.1f}以上<br>"
-            f"<b>LEVEL4：</b>[JACK]渋滞指数{cam1_th:.1f}以上 + [KING]渋滞指数{cam3_th:.1f}以上"
+            f"<b>LEVEL2：</b>[JACK]渋滞指数{cam2_th:.1f}以上 + 5分以上滞在台数3台以上<br>"
+            f"<b>LEVEL3：</b>[QUEEN]渋滞指数{cam1_th:.1f}以上<br>"
+            f"<b>LEVEL4：</b>[QUEEN]渋滞指数{cam1_th:.1f}以上 + [KING]渋滞指数{cam3_th:.1f}以上"
         )
 
     @QtCore.pyqtSlot(int, float)
