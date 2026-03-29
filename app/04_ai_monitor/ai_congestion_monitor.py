@@ -1876,7 +1876,7 @@ class CameraWorker(QtCore.QObject):
         self.max_read_fail_before_reconnect = 5
         self.last_reconnect_at = 0.0
         self.reconnect_fail_count = 0
-        self.max_graph_points = 300
+        self.max_graph_points = 1500
         self.last_wakimura_update_ts = 0.0
         self.wakimura_update_interval_sec = 1.0
         self.cached_wakimura_payload = self._default_wakimura_payload()
@@ -2061,6 +2061,19 @@ class CameraWorker(QtCore.QObject):
             self.display_id_map[track_id] = self.display_id_counter
             self.display_id_counter += 1
         return self.display_id_map[track_id]
+
+    @staticmethod
+    def _aggregate_points_by_minute(points: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
+        if not points:
+            return []
+        minute_buckets: dict[datetime, list[float]] = {}
+        for ts, value in points:
+            minute_ts = ts.replace(second=0, microsecond=0)
+            minute_buckets.setdefault(minute_ts, []).append(float(value))
+        return sorted(
+            [(minute_ts, float(np.mean(values))) for minute_ts, values in minute_buckets.items()],
+            key=lambda x: x[0],
+        )
 
     @staticmethod
     def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -2338,8 +2351,9 @@ class CameraWorker(QtCore.QObject):
                 self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} long_stay list sort skipped: {exc}")
                 long_stay_list = []
             smoothed_score = float(self.congestion.state.current_smoothed_index)
-            curr_points = list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores))[-self.max_graph_points:]
-            prev_points = self.previous_day_congestion_points[-self.max_graph_points:]
+            current_raw_points = list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores))
+            curr_points = self._aggregate_points_by_minute(current_raw_points)[-self.max_graph_points:]
+            prev_points = self._aggregate_points_by_minute(self.previous_day_congestion_points)[-self.max_graph_points:]
 
             payload = {
                 "camera_id": self.camera_id,
