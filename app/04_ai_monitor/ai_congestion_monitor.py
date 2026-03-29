@@ -1330,7 +1330,6 @@ class CameraPanel(QtWidgets.QFrame):
         self.stay_empty_label: QtWidgets.QLabel | None = None
         self._status_connected = False
         self.is_king = self.camera_id == 2
-        self.video_target_w = 548
         self.max_video_height = 270
         self.last_graph_update_ts = 0.0
         self.graph_update_interval_sec = 1.0
@@ -1353,22 +1352,20 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
-        self.video.setFixedWidth(self.video_target_w)
         self.video.setMaximumHeight(self.max_video_height)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        self.video_box.setFixedWidth(self.video_target_w)
         self.video_box.setMaximumHeight(self.max_video_height)
-        self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
-        top_row.addWidget(self.video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        top_row.addWidget(self.video_box, 1, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.right_box = QtWidgets.QWidget()
-        self.right_box.setMinimumWidth(500)
+        self.right_box.setFixedWidth(440)
         self.right_box.setMinimumHeight(0)
         self.right_box.setFixedHeight(self.max_video_height)
-        self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(self.right_box)
         right.setContentsMargins(2, 2, 2, 2)
         right.setSpacing(2)
@@ -1429,6 +1426,8 @@ class CameraPanel(QtWidgets.QFrame):
             card.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             card.setTextFormat(QtCore.Qt.TextFormat.RichText)
             card.setStyleSheet("font-size:10px;font-weight:700;background:#071925;border:1px solid #14b6dc;color:#98f5ff;border-radius:6px;padding:1px;")
+            card.setFixedHeight(44)
+            card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             count_row.addWidget(card, 1)
         right.addLayout(count_row)
 
@@ -1436,7 +1435,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.wakimura_frames: dict[str, QtWidgets.QFrame] = {}
         self.wakimura_row: QtWidgets.QWidget | None = None
         if self.is_king:
-            wakimura_card_height = 66
+            wakimura_card_height = 62
             self.wakimura_row = QtWidgets.QWidget()
             self.wakimura_row.setFixedHeight(wakimura_card_height)
             self.wakimura_row.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
@@ -1490,25 +1489,9 @@ class CameraPanel(QtWidgets.QFrame):
         self._update_count_cards(0, 0)
         # UI余白圧縮はディスプレイ内に収めるための調整。
 
-        btn_col = QtWidgets.QVBoxLayout()
-        btn_col.setContentsMargins(0, 0, 0, 0)
-        btn_col.setSpacing(1)
-        self.btn_line = QtWidgets.QPushButton("ライン設定")
-        self.btn_line.clicked.connect(lambda: self.line_setting_requested.emit(self.camera_id))
-        self.btn_exclude = QtWidgets.QPushButton("除外エリア")
-        self.btn_exclude.clicked.connect(lambda: self.exclude_setting_requested.emit(self.camera_id))
-        self.btn_ai = QtWidgets.QPushButton("解析条件")
-        self.btn_ai.clicked.connect(lambda: self.camera_setting_requested.emit(self.camera_id))
-        for btn in (self.btn_line, self.btn_exclude, self.btn_ai):
-            btn.setFixedHeight(20)
-            btn.setStyleSheet("font-size:10px;padding:0px 4px;")
-            btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-            btn_col.addWidget(btn)
-        right.addLayout(btn_col)
-
         top_row.addWidget(self.right_box, 1, QtCore.Qt.AlignmentFlag.AlignTop)
-        top_row.setStretch(0, 0)
-        top_row.setStretch(1, 1)
+        top_row.setStretch(0, 1)
+        top_row.setStretch(1, 0)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1518,7 +1501,7 @@ class CameraPanel(QtWidgets.QFrame):
         graphs_layout.setSpacing(0)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
-            g.setFixedHeight(62)
+            g.setFixedHeight(57)
             self.graphs.append(g)
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
@@ -1590,7 +1573,7 @@ class CameraPanel(QtWidgets.QFrame):
     def _update_video_pixmap(self) -> None:
         if self._latest_pixmap is None:
             return
-        target_w = max(1, self.video.width() or self.video_target_w)
+        target_w = max(1, self.video.width())
         max_h = max(1, self.max_video_height)
         scaled = self._latest_pixmap.scaled(
             QtCore.QSize(target_w, max_h),
@@ -1731,8 +1714,8 @@ class CameraPanel(QtWidgets.QFrame):
         if not visible_entries:
             if self.stay_empty_label is not None:
                 self.stay_grid.removeWidget(self.stay_empty_label)
-                self.stay_empty_label.setFixedWidth(available_w)
-                self.stay_grid.addWidget(self.stay_empty_label, 0, 0, 1, cols)
+                self.stay_empty_label.setFixedWidth(col_widths[0])
+                self.stay_grid.addWidget(self.stay_empty_label, 0, 0)
                 self.stay_empty_label.show()
             self.stay_box.setFixedHeight(36)
             return
