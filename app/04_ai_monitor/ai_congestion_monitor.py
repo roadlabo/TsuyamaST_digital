@@ -21,8 +21,6 @@ os.environ.setdefault("OPENCV_VIDEOIO_DEBUG", "0")
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 
 import cv2
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -593,40 +591,13 @@ class ReportWriter:
         self.output_root = output_root
 
     def write_daily_report(self, target_date: date, cameras: list[dict], metrics_root: Path) -> Path:
-        wb = Workbook()
-        ws_summary = wb.active
-        ws_summary.title = "summary"
-        self._style_sheet(ws_summary)
-
-        ws_summary["A1"] = f"Daily Report {target_date.isoformat()}"
-        ws_summary["A1"].font = Font(bold=True, size=16, color="00D7FF")
-        headers = ["camera", "total_pass", "max_congestion", "over_threshold_points", "long_stay_events"]
-        ws_summary.append(headers)
-
-        total_pass_all = 0
-        for cam in cameras:
-            cid = cam["camera_id"]
-            date_str = target_date.isoformat()
-            cam_dir = metrics_root / f"cam{cid}"
-            pass_df = self._safe_read(cam_dir / f"pass_events_{date_str}.csv")
-            metric_df = self._safe_read(cam_dir / f"congestion_timeseries_{date_str}.csv")
-            long_df = self._safe_read(cam_dir / f"long_stay_events_{date_str}.csv")
-
-            total_pass = len(pass_df)
-            total_pass_all += total_pass
-            max_cong = float(metric_df["congestion_score"].max()) if not metric_df.empty else 0.0
-            over_count = int((metric_df["congestion_score"] > metric_df["congestion_threshold"]).sum()) if not metric_df.empty else 0
-            long_count = len(long_df)
-            ws_summary.append([cam["camera_name"], total_pass, round(max_cong, 2), over_count, long_count])
-            self._add_camera_sheet(wb, cam, pass_df, metric_df, long_df)
-
-        ws_summary["A2"] = "date"
-        ws_summary["B2"] = target_date.isoformat()
-        ws_summary["A3"] = "all_cameras_total_pass"
-        ws_summary["B3"] = total_pass_all
-
-        out_path = self.output_root / "reports" / "daily" / f"daily_report_{target_date.isoformat()}.xlsx"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        del cameras, metrics_root
+        out_path = self.output_root / "reports" / "daily" / f"{target_date.isoformat()}.xlsx"
+        if not out_path.exists():
+            raise FileNotFoundError(f"日次Excelが見つかりません: {out_path}")
+        wb = load_workbook(out_path)
+        if "Graph" not in wb.sheetnames:
+            wb.create_sheet("Graph")
         wb.save(out_path)
         return out_path
 
@@ -635,25 +606,49 @@ class ReportWriter:
         ws = wb.active
         ws.title = "monthly"
         self._style_sheet(ws)
-        ws.append(["date", "total_pass", "max_congestion", "long_stay_events"])
+        ws.append(
+            [
+                "date",
+                "max_level",
+                "cam1_avg_congestion",
+                "cam1_total_ltor",
+                "cam1_total_rtol",
+                "cam2_avg_congestion",
+                "cam2_total_ltor",
+                "cam2_total_rtol",
+                "cam3_avg_congestion",
+                "cam3_total_ltor",
+                "cam3_total_rtol",
+            ]
+        )
+        del metrics_root, cameras
 
-        daily_map: dict[str, dict[str, float]] = {}
-        for cam in cameras:
-            cam_dir = metrics_root / f"cam{cam['camera_id']}"
-            for file in cam_dir.glob(f"congestion_timeseries_{target_month}-*.csv"):
-                date_str = file.stem.split("_")[-1]
-                d = daily_map.setdefault(date_str, {"pass": 0, "max": 0, "long": 0})
-                metric_df = self._safe_read(file)
-                pass_df = self._safe_read(cam_dir / f"pass_events_{date_str}.csv")
-                long_df = self._safe_read(cam_dir / f"long_stay_events_{date_str}.csv")
-                d["pass"] += len(pass_df)
-                if not metric_df.empty:
-                    d["max"] = max(d["max"], float(metric_df["congestion_score"].max()))
-                d["long"] += len(long_df)
+        daily_dir = self.output_root / "reports" / "daily"
+        for file in sorted(daily_dir.glob(f"{target_month}-*.xlsx")):
+            if file.name.startswith("daily_report_"):
+                continue
+            try:
+                data_df = pd.read_excel(file, sheet_name="Data")
+            except Exception:
+                continue
+            if data_df.empty:
+                continue
 
-        for key in sorted(daily_map.keys()):
-            d = daily_map[key]
-            ws.append([key, int(d["pass"]), round(d["max"], 2), int(d["long"])])
+            ws.append(
+                [
+                    file.stem,
+                    int(data_df["渋滞LEVEL"].max()),
+                    round(float(data_df["Camera1 渋滞指数"].mean()), 3),
+                    int(data_df["Camera1 LtoR"].sum()),
+                    int(data_df["Camera1 RtoL"].sum()),
+                    round(float(data_df["Camera2 渋滞指数"].mean()), 3),
+                    int(data_df["Camera2 LtoR"].sum()),
+                    int(data_df["Camera2 RtoL"].sum()),
+                    round(float(data_df["Camera3 渋滞指数"].mean()), 3),
+                    int(data_df["Camera3 LtoR"].sum()),
+                    int(data_df["Camera3 RtoL"].sum()),
+                ]
+            )
 
         out_path = self.output_root / "reports" / "monthly" / f"monthly_report_{target_month}.xlsx"
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -727,20 +722,10 @@ class ReportWriter:
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
         ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5)
 
-    @staticmethod
-    def _safe_read(path: Path) -> pd.DataFrame:
-        if not path.exists():
-            return pd.DataFrame()
-        try:
-            return pd.read_csv(path)
-        except Exception:
-            return pd.DataFrame()
-
-
 class TenMinuteRecordWriter:
     HEADERS = [
         "時刻（10分単位）",
-        "渋滞レベル",
+        "渋滞LEVEL",
         "Camera1 渋滞指数",
         "Camera1 脇村指標α",
         "Camera1 LtoR",
@@ -872,56 +857,6 @@ class TenMinuteRecordWriter:
         wb.create_sheet("Graph")
         wb.save(path)
         return wb, path
-
-
-# =========================================
-# Graph Utilities
-# =========================================
-def _normalize_time(ts: pd.Timestamp) -> pd.Timestamp:
-    return pd.Timestamp(year=1900, month=1, day=1, hour=ts.hour, minute=ts.minute, second=ts.second)
-
-
-def build_multi_day_trend(metrics_files: list[Path], metric_col: str) -> pd.DataFrame:
-    frames = []
-    for path in metrics_files:
-        if not path.exists():
-            continue
-        df = pd.read_csv(path)
-        if "timestamp" not in df.columns or metric_col not in df.columns:
-            continue
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df["time_normalized"] = df["timestamp"].apply(_normalize_time)
-        frames.append(df[["time_normalized", metric_col]])
-
-    if not frames:
-        return pd.DataFrame(columns=["time_normalized", "avg", "median"])
-
-    merged = pd.concat(frames, ignore_index=True)
-    merged["time_rounded"] = merged["time_normalized"].dt.floor("1min")
-    grouped = merged.groupby("time_rounded")[metric_col]
-    out = grouped.mean().rename("avg").to_frame()
-    out["median"] = grouped.median()
-    return out.reset_index().rename(columns={"time_rounded": "time_normalized"})
-
-
-def save_multi_day_trend_plot(metrics_files: list[Path], metric_col: str, output_png: Path) -> None:
-    trend = build_multi_day_trend(metrics_files, metric_col)
-    if trend.empty:
-        return
-    output_png.parent.mkdir(parents=True, exist_ok=True)
-
-    plt.figure(figsize=(12, 4.5))
-    plt.plot(trend["time_normalized"], trend["avg"], label="Average", linewidth=2)
-    plt.plot(trend["time_normalized"], trend["median"], label="Median", linewidth=2)
-    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=1))
-    plt.xticks(rotation=45)
-    plt.grid(alpha=0.3)
-    plt.title(f"Multi-day trend: {metric_col}")
-    plt.tight_layout()
-    plt.legend()
-    plt.savefig(output_png, dpi=150)
-    plt.close()
 
 
 # =========================================
@@ -1930,8 +1865,6 @@ class CameraWorker(QtCore.QObject):
         self._last_warn_emit = 0.0
         self._status_text = "INIT"
         self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
-        self.csv_error_state = {"congestion": False, "pass": False, "long_stay": False}
-        self._csv_error_count = {"congestion": 0, "pass": 0, "long_stay": 0}
         self.read_fail_count = 0
         self.max_read_fail_before_reconnect = 5
         self.last_reconnect_at = 0.0
@@ -1943,32 +1876,16 @@ class CameraWorker(QtCore.QObject):
         display_update_interval_ms = int(self.system_cfg.get("display_update_interval_ms", 800))
         self.last_ui_emit_ts = 0.0
         self.ui_emit_interval_sec = max(0.25, display_update_interval_ms / 1000.0)
-        self.pending_pass_rows: list[list[Any]] = []
-        self.pending_long_stay_rows: list[list[Any]] = []
-        self.pending_congestion_rows: list[list[Any]] = []
-        self.last_csv_flush_ts = 0.0
-        self.csv_flush_interval_sec = 1.0
         self.last_graph_revision_ts = 0.0
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
-        self.congestion_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
+        self.daily_report_dir = root_dir / "data" / "reports" / "daily"
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
-        today_ltor, today_rtol = self._load_today_pass_histogram()
-        self.counter.state.pass_bins_ltor = today_ltor
-        self.counter.state.pass_bins_rtol = today_rtol
-        today_points = self._load_today_congestion_points()
-        self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
-        self.congestion.state.frame_motion_scores = [v for _, v in today_points]
-        self.congestion.state.smoothed_motion_scores = []
-        for _, score in today_points:
-            self.congestion.smoother.add(float(score))
-            self.congestion.state.smoothed_motion_scores.append(self.congestion.smoother.current())
-        if today_points:
-            self.congestion.state.current_congestion_index = today_points[-1][1]
-            self.congestion.state.current_smoothed_index = self.congestion.state.smoothed_motion_scores[-1]
+        self.counter.state.pass_bins_ltor = [0] * 144
+        self.counter.state.pass_bins_rtol = [0] * 144
 
     def get_latest_raw_frame(self):
         return None if self.last_raw_frame is None else self.last_raw_frame.copy()
@@ -2060,53 +1977,15 @@ class CameraWorker(QtCore.QObject):
         poly = np.array(polygon_points, np.int32)
         return cv2.pointPolygonTest(poly, point, False) >= 0
 
-    def _ensure_daily_csvs(self):
-        date_str = self.today.strftime("%Y-%m-%d")
-        congestion_ts = self.metrics_dir / f"congestion_timeseries_{date_str}.csv"
-        pass_events = self.metrics_dir / f"pass_events_{date_str}.csv"
-        long_stay = self.metrics_dir / f"long_stay_events_{date_str}.csv"
-
-        self._ensure_csv_header(
-            congestion_ts,
-            ["timestamp", "camera_id", "camera_name", "congestion_score", "congestion_threshold", "threshold_over", "fps"],
-        )
-        self._ensure_csv_header(pass_events, ["timestamp", "camera_id", "track_id", "class_name", "direction"])
-        self._ensure_csv_header(long_stay, ["first_seen", "detected_at", "camera_id", "track_id", "stay_minutes", "class_name"])
-        return congestion_ts, pass_events, long_stay
-
-    @staticmethod
-    def _ensure_csv_header(path: Path, header: list[str]) -> None:
-        if path.exists():
-            return
-        with path.open("w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(header)
-
-    def _append_csv(self, path: Path, row: list[Any]) -> None:
-        with path.open("a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(row)
-
-    def _append_csv_safe(self, path: Path, row: list[Any], kind: str) -> None:
+    def _load_daily_data_sheet(self, target_date: date) -> pd.DataFrame:
+        path = self.daily_report_dir / f"{target_date.isoformat()}.xlsx"
+        if not path.exists():
+            return pd.DataFrame()
         try:
-            self._append_csv(path, row)
-            if self.csv_error_state.get(kind, False):
-                self.error_occurred.emit(self.camera_id, f"[INFO] cam{self.camera_id} {kind} csv write recovered")
-            self.csv_error_state[kind] = False
-            self._csv_error_count[kind] = 0
-        except PermissionError as exc:
-            self._csv_error_count[kind] = self._csv_error_count.get(kind, 0) + 1
-            count = self._csv_error_count[kind]
-            if not self.csv_error_state.get(kind, False) or count % 20 == 0:
-                self.error_occurred.emit(
-                    self.camera_id,
-                    f"[WARN] cam{self.camera_id} {kind} csv is locked ({count}): {exc}",
-                )
-            self.csv_error_state[kind] = True
-        except Exception as exc:
-            self._csv_error_count[kind] = self._csv_error_count.get(kind, 0) + 1
-            count = self._csv_error_count[kind]
-            if not self.csv_error_state.get(kind, False) or count % 20 == 0:
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} {kind} csv write failed ({count}): {exc}")
-            self.csv_error_state[kind] = True
+            df = pd.read_excel(path, sheet_name="Data")
+        except Exception:
+            return pd.DataFrame()
+        return df if not df.empty else pd.DataFrame()
 
     def _default_wakimura_payload(self) -> dict[str, Any]:
         return {
@@ -2118,99 +1997,39 @@ class CameraWorker(QtCore.QObject):
             "wak_max_stay_min": 0.0,
         }
 
-    def _queue_csv_row(self, kind: str, row: list[Any]) -> None:
-        if kind == "pass":
-            self.pending_pass_rows.append(row)
-        elif kind == "long_stay":
-            self.pending_long_stay_rows.append(row)
-        elif kind == "congestion":
-            self.pending_congestion_rows.append(row)
-
-    def _flush_pending_csv_rows(self, force: bool = False) -> None:
-        now_ts = time.time()
-        if not force and (now_ts - self.last_csv_flush_ts < self.csv_flush_interval_sec):
-            return
-        self.last_csv_flush_ts = now_ts
-        buffers = [
-            ("pass", self.pass_csv, self.pending_pass_rows),
-            ("long_stay", self.long_stay_csv, self.pending_long_stay_rows),
-            ("congestion", self.congestion_csv, self.pending_congestion_rows),
-        ]
-        for kind, path, rows in buffers:
-            if not rows:
-                continue
-            pending = list(rows)
-            rows.clear()
-            for row in pending:
-                self._append_csv_safe(path, row, kind=kind)
-
     def _load_previous_day_histogram(self) -> tuple[list[int], list[int]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
-        prev_file = self.metrics_dir / f"pass_events_{prev.strftime('%Y-%m-%d')}.csv"
         ltor = [0] * 144
         rtol = [0] * 144
-        if not prev_file.exists():
+        df = self._load_daily_data_sheet(prev)
+        if df.empty:
             return ltor, rtol
-        with prev_file.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                dt = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
+        for _, row in df.iterrows():
+            try:
+                hhmm = str(row.get("時刻（10分単位）", "")).strip()
+                dt = datetime.strptime(hhmm, "%H:%M")
                 idx = (dt.hour * 60 + dt.minute) // 10
                 if 0 <= idx < 144:
-                    if row.get("direction") == "LtoR":
-                        ltor[idx] += 1
-                    else:
-                        rtol[idx] += 1
+                    ltor[idx] = int(row.get(f"Camera{self.camera_id} LtoR", 0) or 0)
+                    rtol[idx] = int(row.get(f"Camera{self.camera_id} RtoL", 0) or 0)
+            except Exception:
+                continue
         return ltor, rtol
 
     def _load_previous_day_congestion_points(self) -> list[tuple[datetime, float]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
-        prev_file = self.metrics_dir / f"congestion_timeseries_{prev.strftime('%Y-%m-%d')}.csv"
         points: list[tuple[datetime, float]] = []
-        if not prev_file.exists():
+        df = self._load_daily_data_sheet(prev)
+        if df.empty:
             return points
-        with prev_file.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    ts = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
-                    score = float(row.get("congestion_score", 0.0))
-                    points.append((ts, score))
-                except Exception:
-                    continue
-        return points
-
-    def _load_today_pass_histogram(self) -> tuple[list[int], list[int]]:
-        today_file = self.metrics_dir / f"pass_events_{self.today.strftime('%Y-%m-%d')}.csv"
-        ltor = [0] * 144
-        rtol = [0] * 144
-        if not today_file.exists():
-            return ltor, rtol
-        with today_file.open("r", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                try:
-                    dt = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-                idx = (dt.hour * 60 + dt.minute) // 10
-                if 0 <= idx < 144:
-                    if row.get("direction") == "LtoR":
-                        ltor[idx] += 1
-                    else:
-                        rtol[idx] += 1
-        return ltor, rtol
-
-    def _load_today_congestion_points(self) -> list[tuple[datetime, float]]:
-        today_file = self.metrics_dir / f"congestion_timeseries_{self.today.strftime('%Y-%m-%d')}.csv"
-        points: list[tuple[datetime, float]] = []
-        if not today_file.exists():
-            return points
-        with today_file.open("r", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                try:
-                    points.append((datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S"), float(row["congestion_score"])))
-                except Exception:
-                    continue
+        for _, row in df.iterrows():
+            try:
+                hhmm = str(row.get("時刻（10分単位）", "")).strip()
+                ts = datetime.combine(prev, datetime.strptime(hhmm, "%H:%M").time())
+                score = float(row.get(f"Camera{self.camera_id} 渋滞指数", 0.0) or 0.0)
+                points.append((ts, score))
+            except Exception:
+                continue
         return points
 
     def _rollover_if_needed(self, now: datetime) -> None:
@@ -2220,20 +2039,15 @@ class CameraWorker(QtCore.QObject):
         self.display_id_map.clear()
         self.display_id_counter = 1
         self.cross_flash_frames.clear()
-        self.congestion_csv, self.pass_csv, self.long_stay_csv = self._ensure_daily_csvs()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
-        self.counter.state.pass_bins_ltor, self.counter.state.pass_bins_rtol = self._load_today_pass_histogram()
-        today_points = self._load_today_congestion_points()
-        self.congestion.state.frame_time_stamps = [ts for ts, _ in today_points]
-        self.congestion.state.frame_motion_scores = [v for _, v in today_points]
+        self.counter.state.pass_bins_ltor, self.counter.state.pass_bins_rtol = ([0] * 144, [0] * 144)
+        self.congestion.state.frame_time_stamps = []
+        self.congestion.state.frame_motion_scores = []
         self.congestion.state.smoothed_motion_scores = []
         self.congestion.smoother = CongestionSmoother(int(self.system_cfg.get("congestion_smoothing_window", 6)))
-        for _, score in today_points:
-            self.congestion.smoother.add(float(score))
-            self.congestion.state.smoothed_motion_scores.append(self.congestion.smoother.current())
-        self.congestion.state.current_congestion_index = today_points[-1][1] if today_points else 0.0
-        self.congestion.state.current_smoothed_index = self.congestion.state.smoothed_motion_scores[-1] if today_points else 0.0
+        self.congestion.state.current_congestion_index = 0.0
+        self.congestion.state.current_smoothed_index = 0.0
 
     def _get_display_id(self, track_id: int) -> int:
         if track_id not in self.display_id_map:
@@ -2309,7 +2123,6 @@ class CameraWorker(QtCore.QObject):
             except Exception as exc:
                 self.error_occurred.emit(self.camera_id, str(exc))
             QtCore.QThread.msleep(5)
-        self._flush_pending_csv_rows(force=True)
         self._release_capture()
         self.finished.emit(self.camera_id)
 
@@ -2504,29 +2317,8 @@ class CameraWorker(QtCore.QObject):
             elapsed = max(1e-6, time.time() - start)
             self.fps = 1.0 / elapsed
 
-            for pe in pass_events:
-                self._queue_csv_row("pass", [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]])
-            for le in long_stay_events:
-                self._queue_csv_row(
-                    "long_stay",
-                    [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]],
-                )
-
             if len(self.congestion.state.frame_time_stamps) > prev_points_len:
                 self.last_graph_revision_ts = time.time()
-                self._queue_csv_row(
-                    "congestion",
-                    [
-                        now.strftime("%Y-%m-%d %H:%M:%S"),
-                        self.camera_id,
-                        self.camera_name,
-                        round(congestion_score, 2),
-                        round(threshold, 2),
-                        bool(threshold_over),
-                        round(self.fps, 2),
-                    ],
-                )
-            self._flush_pending_csv_rows()
 
             self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks))
             try:
@@ -3083,22 +2875,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def export_daily(self) -> None:
         path = self.reporter.write_daily_report(date.today(), self.app_cfg.cameras, self.root_dir / "data" / "metrics")
-        self._export_multi_day_plot()
         QtWidgets.QMessageBox.information(self, "日次", f"出力完了: {path}")
 
     def export_monthly(self) -> None:
         month = datetime.now().strftime("%Y-%m")
         path = self.reporter.write_monthly_report(month, self.root_dir / "data" / "metrics", self.app_cfg.cameras)
         QtWidgets.QMessageBox.information(self, "月次", f"出力完了: {path}")
-
-    def _export_multi_day_plot(self) -> None:
-        metrics_files = []
-        for cam in self.app_cfg.cameras:
-            cid = cam["camera_id"]
-            cam_dir = self.root_dir / "data" / "metrics" / f"cam{cid}"
-            metrics_files.extend(sorted(cam_dir.glob("congestion_timeseries_*.csv"))[-7:])
-        out = self.root_dir / "data" / "reports" / "daily" / f"multi_day_trend_{date.today().isoformat()}.png"
-        save_multi_day_trend_plot(metrics_files, "congestion_score", out)
 
     def _collect_and_flush_10min_records(self, now: datetime) -> None:
         level = self.compute_system_level()
