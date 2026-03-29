@@ -1123,7 +1123,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         self.y_min_override: float | None = None
         self.y_max_override: float | None = None
         self.y_axis_labels: dict[float, str] = {}
-        self.setFixedHeight(75)
+        self.setFixedHeight(60)
 
     def set_line_data(self, prev_points: list[tuple[datetime, float]], today_points: list[tuple[datetime, float]], title: str, threshold: float | None = None, show_threshold: bool = True) -> None:
         self.mode = "line"
@@ -1161,10 +1161,10 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
 
         y_axis_w = 28
         right_margin = 5
-        header_h = 22
-        plot_scale_y = 0.8
-        top_margin = header_h + 4
-        bottom_margin = 15
+        header_h = 18
+        plot_scale_y = 0.92
+        top_margin = header_h + 2
+        bottom_margin = 11
         plot_w = max(10.0, float(self.width() - y_axis_w - right_margin))
         raw_plot_h = max(10.0, float(self.height() - top_margin - bottom_margin))
         plot_h = max(10.0, raw_plot_h * plot_scale_y)
@@ -1195,11 +1195,17 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         if self.y_axis_labels:
             ticks = [(float(v), str(lbl)) for v, lbl in sorted(self.y_axis_labels.items(), key=lambda x: x[0]) if y_min <= float(v) <= y_max]
         else:
-            ticks = []
-            for i in range(5):
-                ratio = i / 4.0
-                value = y_min + (y_max - y_min) * ratio
-                ticks.append((value, f"{value:.1f}"))
+            def _format_tick(value: float) -> str:
+                if abs(value - round(value)) < 0.05:
+                    return str(int(round(value)))
+                return f"{value:.1f}"
+
+            mid = (y_min + y_max) / 2.0
+            ticks = [
+                (y_min, _format_tick(y_min)),
+                (mid, _format_tick(mid)),
+                (y_max, _format_tick(y_max)),
+            ]
 
         for value, tick_label in ticks:
             ratio = (value - y_min) / (y_max - y_min)
@@ -1268,16 +1274,16 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
             th_w = painter.fontMetrics().horizontalAdvance(threshold_text)
             x -= th_w
             painter.drawText(x, y + 4, threshold_text)
-            x -= 12
+            x -= 10
         for label, color in reversed(legend):
             text_w = painter.fontMetrics().horizontalAdvance(label)
             x -= text_w
             painter.setPen(QtGui.QColor("#d9ecff"))
             painter.drawText(x, y + 4, label)
-            x -= 16
+            x -= 12
             painter.setPen(QtGui.QPen(color, 2))
-            painter.drawLine(x, y, x + 12, y)
-            x -= 10
+            painter.drawLine(x, y, x + 10, y)
+            x -= 8
 
 
 class CongestionIndexBar(QtWidgets.QWidget):
@@ -1354,24 +1360,25 @@ class CameraPanel(QtWidgets.QFrame):
             "QFrame{background:#343a40;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}"
         )
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(3, 3, 3, 3)
+        root.setContentsMargins(1, 1, 1, 1)
         root.setSpacing(1)
         self.setMinimumWidth(1272)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(3)
+        top_row.setSpacing(1)
 
         self.video_box = QtWidgets.QWidget()
+        self.video_box.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout = QtWidgets.QVBoxLayout(self.video_box)
         video_layout.setContentsMargins(0, 0, 0, 0)
-        video_layout.setSpacing(2)
+        video_layout.setSpacing(0)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
+        self.video.setStyleSheet("background:#010203;border:none;")
         self.video.setFixedSize(self.video_frame_w, self.video_frame_h)
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
@@ -1518,7 +1525,7 @@ class CameraPanel(QtWidgets.QFrame):
         graphs_layout.setSpacing(3)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
-            g.setFixedHeight(75)
+            g.setFixedHeight(60)
             self.graphs.append(g)
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
