@@ -1902,8 +1902,12 @@ class CameraWorker(QtCore.QObject):
         self.daily_report_dir = root_dir / "data" / "reports" / "daily"
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
-        self.counter.state.pass_bins_ltor = [0] * 144
-        self.counter.state.pass_bins_rtol = [0] * 144
+        self.boot_today_hist_ltor, self.boot_today_hist_rtol = self._load_today_histogram()
+        self.boot_today_congestion_points = self._load_today_congestion_points()
+        self.counter.state.pass_bins_ltor = list(self.boot_today_hist_ltor)
+        self.counter.state.pass_bins_rtol = list(self.boot_today_hist_rtol)
+        if self.boot_today_congestion_points:
+            self.last_graph_revision_ts = time.time()
 
     def get_latest_raw_frame(self):
         return None if self.last_raw_frame is None else self.last_raw_frame.copy()
@@ -2050,6 +2054,51 @@ class CameraWorker(QtCore.QObject):
                 continue
         return points
 
+    @staticmethod
+    def _parse_hhmm_to_bin_index(value: Any) -> int | None:
+        try:
+            hhmm = str(value).strip()
+            dt = datetime.strptime(hhmm, "%H:%M")
+            idx = (dt.hour * 60 + dt.minute) // 10
+            return idx if 0 <= idx < 144 else None
+        except Exception:
+            return None
+
+    def _load_today_histogram(self) -> tuple[list[int], list[int]]:
+        ltor = [0] * 144
+        rtol = [0] * 144
+        df = self._load_daily_data_sheet(self.today)
+        if df.empty:
+            return ltor, rtol
+        ltor_col = f"Camera{self.camera_id} LtoR"
+        rtol_col = f"Camera{self.camera_id} RtoL"
+        for _, row in df.iterrows():
+            idx = self._parse_hhmm_to_bin_index(row.get("時刻（10分単位）", ""))
+            if idx is None:
+                continue
+            try:
+                ltor[idx] = int(row.get(ltor_col, 0) or 0)
+                rtol[idx] = int(row.get(rtol_col, 0) or 0)
+            except Exception:
+                continue
+        return ltor, rtol
+
+    def _load_today_congestion_points(self) -> list[tuple[datetime, float]]:
+        points: list[tuple[datetime, float]] = []
+        df = self._load_daily_data_sheet(self.today)
+        if df.empty:
+            return points
+        score_col = f"Camera{self.camera_id} 渋滞指数"
+        for _, row in df.iterrows():
+            try:
+                hhmm = str(row.get("時刻（10分単位）", "")).strip()
+                ts = datetime.combine(self.today, datetime.strptime(hhmm, "%H:%M").time())
+                score = float(row.get(score_col, 0.0) or 0.0)
+                points.append((ts, score))
+            except Exception:
+                continue
+        return points
+
     def _rollover_if_needed(self, now: datetime) -> None:
         if now.date() == self.today:
             return
@@ -2059,13 +2108,19 @@ class CameraWorker(QtCore.QObject):
         self.cross_flash_frames.clear()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
-        self.counter.state.pass_bins_ltor, self.counter.state.pass_bins_rtol = ([0] * 144, [0] * 144)
+        self.boot_today_hist_ltor, self.boot_today_hist_rtol = self._load_today_histogram()
+        self.boot_today_congestion_points = self._load_today_congestion_points()
+        self.counter.state.pass_bins_ltor, self.counter.state.pass_bins_rtol = (
+            list(self.boot_today_hist_ltor),
+            list(self.boot_today_hist_rtol),
+        )
         self.congestion.state.frame_time_stamps = []
         self.congestion.state.frame_motion_scores = []
         self.congestion.state.smoothed_motion_scores = []
         self.congestion.smoother = CongestionSmoother(int(self.system_cfg.get("congestion_smoothing_window", 6)))
         self.congestion.state.current_congestion_index = 0.0
         self.congestion.state.current_smoothed_index = 0.0
+        self.last_graph_revision_ts = time.time() if self.boot_today_congestion_points else 0.0
 
     def _get_display_id(self, track_id: int) -> int:
         if track_id not in self.display_id_map:
@@ -2363,7 +2418,13 @@ class CameraWorker(QtCore.QObject):
                 long_stay_list = []
             smoothed_score = float(self.congestion.state.current_smoothed_index)
             current_raw_points = list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores))
-            curr_points = self._aggregate_points_by_minute(current_raw_points)[-self.max_graph_points:]
+            merged_points_by_ts: dict[datetime, float] = {}
+            for ts, score in self.boot_today_congestion_points:
+                merged_points_by_ts[ts] = float(score)
+            for ts, score in current_raw_points:
+                merged_points_by_ts[ts] = float(score)
+            merged_today_points = sorted(merged_points_by_ts.items(), key=lambda x: x[0])
+            curr_points = self._aggregate_points_by_minute(merged_today_points)[-self.max_graph_points:]
             prev_points = self._aggregate_points_by_minute(self.previous_day_congestion_points)[-self.max_graph_points:]
 
             payload = {
