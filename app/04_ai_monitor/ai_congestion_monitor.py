@@ -1364,11 +1364,12 @@ class CameraPanel(QtWidgets.QFrame):
         self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         top_row.addWidget(self.video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
-        right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(500)
-        right_box.setMinimumHeight(0)
-        right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        right = QtWidgets.QVBoxLayout(right_box)
+        self.right_box = QtWidgets.QWidget()
+        self.right_box.setMinimumWidth(500)
+        self.right_box.setMinimumHeight(0)
+        self.right_box.setFixedHeight(self.max_video_height)
+        self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        right = QtWidgets.QVBoxLayout(self.right_box)
         right.setContentsMargins(2, 2, 2, 2)
         right.setSpacing(2)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
@@ -1502,7 +1503,7 @@ class CameraPanel(QtWidgets.QFrame):
             btn_col.addWidget(btn)
         right.addLayout(btn_col)
 
-        top_row.addWidget(right_box, 1, QtCore.Qt.AlignmentFlag.AlignTop)
+        top_row.addWidget(self.right_box, 1, QtCore.Qt.AlignmentFlag.AlignTop)
         top_row.setStretch(0, 0)
         top_row.setStretch(1, 1)
         root.addLayout(top_row)
@@ -1596,6 +1597,7 @@ class CameraPanel(QtWidgets.QFrame):
         display_h = max(1, min(scaled.height(), max_h))
         self.video.setFixedHeight(display_h)
         self.video_box.setFixedHeight(display_h)
+        self.right_box.setFixedHeight(display_h)
         self.video.setPixmap(scaled)
 
     def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
