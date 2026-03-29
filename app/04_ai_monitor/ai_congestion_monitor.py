@@ -1331,7 +1331,7 @@ class CameraPanel(QtWidgets.QFrame):
         self._status_connected = False
         self.is_king = self.camera_id == 2
         self.video_target_w = 548
-        self.video_target_h = 300
+        self.max_video_height = 270
         self.last_graph_update_ts = 0.0
         self.graph_update_interval_sec = 1.0
         self._last_graph_revision_ts = -1.0
@@ -1347,20 +1347,22 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(2)
 
-        video_box = QtWidgets.QWidget()
-        video_layout = QtWidgets.QVBoxLayout(video_box)
+        self.video_box = QtWidgets.QWidget()
+        video_layout = QtWidgets.QVBoxLayout(self.video_box)
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
-        self.video.setFixedSize(self.video_target_w, self.video_target_h)
+        self.video.setFixedWidth(self.video_target_w)
+        self.video.setMaximumHeight(self.max_video_height)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        video_box.setFixedSize(self.video_target_w, self.video_target_h)
-        video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-        top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        self.video_box.setFixedWidth(self.video_target_w)
+        self.video_box.setMaximumHeight(self.max_video_height)
+        self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
+        top_row.addWidget(self.video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
         right_box.setMinimumWidth(500)
@@ -1584,11 +1586,16 @@ class CameraPanel(QtWidgets.QFrame):
     def _update_video_pixmap(self) -> None:
         if self._latest_pixmap is None:
             return
+        target_w = max(1, self.video.width() or self.video_target_w)
+        max_h = max(1, self.max_video_height)
         scaled = self._latest_pixmap.scaled(
-            self.video.size(),
+            QtCore.QSize(target_w, max_h),
             QtCore.Qt.AspectRatioMode.KeepAspectRatio,
             QtCore.Qt.TransformationMode.SmoothTransformation,
         )
+        display_h = max(1, min(scaled.height(), max_h))
+        self.video.setFixedHeight(display_h)
+        self.video_box.setFixedHeight(display_h)
         self.video.setPixmap(scaled)
 
     def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
