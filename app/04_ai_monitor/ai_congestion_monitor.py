@@ -1341,7 +1341,17 @@ class CameraPanel(QtWidgets.QFrame):
         self.graph_update_interval_sec = 1.0
         self._last_graph_revision_ts = -1.0
         self._last_hist_revision = (-1, -1)
-        self.setStyleSheet("QFrame{background:#0f1a28;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
+        display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
+        role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
+        panel_tint_map = {
+            "KING": "rgba(201,162,39,0.10)",
+            "QUEEN": "rgba(194,24,91,0.10)",
+            "JACK": "rgba(21,101,192,0.10)",
+        }
+        panel_tint = panel_tint_map.get(role_name, "rgba(15,26,40,0.95)")
+        self.setStyleSheet(
+            f"QFrame{{background:{panel_tint};border:1px solid #169db8;border-radius:6px;}} QLabel{{color:#cfefff;}}"
+        )
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(3, 3, 3, 3)
         root.setSpacing(1)
@@ -1358,28 +1368,22 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
-        self.video.setMaximumHeight(self.max_video_height)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        self.video_box.setMaximumHeight(self.max_video_height)
-        self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        self.video_box.setMinimumWidth(744)
+        self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         top_row.addWidget(self.video_box, 3, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.right_box = QtWidgets.QWidget()
-        self.right_box.setFixedWidth(528)
         self.right_box.setMinimumHeight(0)
         self.right_box.setFixedHeight(self.max_video_height)
-        self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(self.right_box)
-        right.setContentsMargins(1, 1, 1, 1)
+        right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(1)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
-        role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
         role_style = {
             "KING": ("#C9A227", "#111111"),
             "QUEEN": ("#C2185B", "#FFFFFF"),
@@ -1422,7 +1426,9 @@ class CameraPanel(QtWidgets.QFrame):
         th_box_layout.addWidget(th_label)
         th_box_layout.addWidget(self.threshold_edit, 1)
         level_row.addWidget(th_box, 1)
+        right.addSpacing(5)
         right.addLayout(level_row)
+        right.addSpacing(5)
 
         count_row = QtWidgets.QHBoxLayout()
         count_row.setContentsMargins(0, 0, 0, 0)
@@ -1475,10 +1481,11 @@ class CameraPanel(QtWidgets.QFrame):
                 self.wakimura_cards[key] = value_label
                 self.wakimura_frames[key] = card
 
-        stay_head = QtWidgets.QLabel("1分以上滞在ID")
-        stay_head.setStyleSheet("font-size:11px;font-weight:bold;color:#9de7ff;padding:0px;margin:0px;")
-        stay_head.setContentsMargins(0, 0, 0, 0)
-        right.addWidget(stay_head)
+        right.addSpacing(5)
+        self.stay_head = QtWidgets.QLabel("1分以上滞在ID")
+        self.stay_head.setStyleSheet("font-size:11px;font-weight:bold;color:#9de7ff;padding:0px;margin:0px;")
+        self.stay_head.setContentsMargins(0, 0, 0, 0)
+        right.addWidget(self.stay_head)
         self.stay_grid = QtWidgets.QGridLayout()
         self.stay_grid.setContentsMargins(0, 0, 0, 0)
         self.stay_grid.setHorizontalSpacing(2)
@@ -1490,6 +1497,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.stay_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Minimum)
         self.stay_box.setMinimumHeight(44)
         right.addWidget(self.stay_box)
+        right.addSpacing(5)
         if self.is_king and self.wakimura_row is not None:
             right.addWidget(self.wakimura_row)
         self._render_stay_cards([])
@@ -1497,8 +1505,8 @@ class CameraPanel(QtWidgets.QFrame):
         # UI余白圧縮はディスプレイ内に収めるための調整。
 
         top_row.addWidget(self.right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        top_row.setStretch(0, 3)
-        top_row.setStretch(1, 0)
+        top_row.setStretch(0, 0)
+        top_row.setStretch(1, 1)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1580,18 +1588,26 @@ class CameraPanel(QtWidgets.QFrame):
     def _update_video_pixmap(self) -> None:
         if self._latest_pixmap is None:
             return
-        target_w = max(1, self.video.width())
-        max_h = max(1, self.max_video_height)
-        scaled = self._latest_pixmap.scaled(
-            QtCore.QSize(target_w, max_h),
-            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+        frame_w, frame_h = self._last_frame_size
+        if not frame_w or not frame_h:
+            frame_w = max(1, self._latest_pixmap.width())
+            frame_h = max(1, self._latest_pixmap.height())
+        current_display_h = max(1, self.max_video_height)
+        display_h = max(1, int(current_display_h * 1.1))
+        aspect = frame_w / frame_h if frame_h else 1.0
+        display_w = max(1, int(display_h * aspect))
+        self.video_box.setFixedWidth(display_w)
+        self.video_box.setFixedHeight(display_h)
+        self.video.setFixedSize(display_w, display_h)
+        self.right_box.setFixedHeight(display_h)
+        qimg = self._latest_pixmap.toImage()
+        pix = QtGui.QPixmap.fromImage(qimg).scaled(
+            display_w,
+            display_h,
+            QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
             QtCore.Qt.TransformationMode.SmoothTransformation,
         )
-        display_h = max(1, min(scaled.height(), max_h))
-        self.video.setFixedHeight(display_h)
-        self.video_box.setFixedHeight(display_h)
-        self.right_box.setFixedHeight(display_h)
-        self.video.setPixmap(scaled)
+        self.video.setPixmap(pix)
 
     def _update_title(self, camera_name: str | None = None, stream_name: str | None = None) -> None:
         display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
