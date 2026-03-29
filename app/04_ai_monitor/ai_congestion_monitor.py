@@ -2633,14 +2633,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(58)
         self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:30px;padding:2px 10px;")
-        self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム　AI Congestion Detection System")
+        self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
         self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_title_ja.setStyleSheet("font-size:30px;font-weight:900;color:#9fe8ff;")
         self.system_runtime_label = QtWidgets.QLabel("GPU: n/a ｜ model: n/a ｜ tracker: ByteTrack")
         self.system_runtime_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_runtime_label.setStyleSheet("font-size:11px;color:#9abed0;")
         top_left_box.addWidget(self.system_title_ja)
-        top_left_box.addWidget(self.system_title_en)
         top_left_box.addWidget(self.system_runtime_label)
         self.level_rule_label = QtWidgets.QLabel(
             "<b>LEVEL1：</b>通常時<br>"
