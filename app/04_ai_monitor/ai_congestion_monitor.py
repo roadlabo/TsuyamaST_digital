@@ -140,7 +140,7 @@ DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "ai_status_json_path": "app/11_config/ai_status.json",
     "status_update_interval_sec": 10,
     "output_root": "app/04_ai_monitor/data",
-    "display_update_interval_ms": 120,
+    "display_update_interval_ms": 200,
     "graph_update_interval_sec": 10,
     "level2_threshold": 8.0,
     "level3_threshold": 12.0,
@@ -1331,7 +1331,7 @@ class CameraPanel(QtWidgets.QFrame):
         self._status_connected = False
         self.is_king = self.camera_id == 2
         self.video_target_w = 548
-        self.video_target_h = 308
+        self.video_target_h = 300
         self.last_graph_update_ts = 0.0
         self.graph_update_interval_sec = 1.0
         self._last_graph_revision_ts = -1.0
@@ -1364,8 +1364,8 @@ class CameraPanel(QtWidgets.QFrame):
 
         right_box = QtWidgets.QWidget()
         right_box.setMinimumWidth(500)
-        right_box.setMinimumHeight(self.video_target_h)
-        right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        right_box.setMinimumHeight(0)
+        right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         right = QtWidgets.QVBoxLayout(right_box)
         right.setContentsMargins(2, 2, 2, 2)
         right.setSpacing(2)
@@ -1478,7 +1478,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.stay_box.setLayout(self.stay_grid)
         self.stay_box.setStyleSheet("background:#07131f;border:1px solid #145c7a;border-radius:6px;")
         self.stay_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Minimum)
-        self.stay_box.setMinimumHeight(38)
+        self.stay_box.setMinimumHeight(44)
         right.addWidget(self.stay_box)
         self._render_stay_cards([])
         self._update_count_cards(0, 0)
@@ -1874,8 +1874,11 @@ class CameraWorker(QtCore.QObject):
         self.wakimura_update_interval_sec = 1.0
         self.cached_wakimura_payload = self._default_wakimura_payload()
         display_update_interval_ms = int(self.system_cfg.get("display_update_interval_ms", 800))
+        self.infer_interval_sec = 0.20
+        self.last_infer_ts = 0.0
         self.last_ui_emit_ts = 0.0
-        self.ui_emit_interval_sec = max(0.12, display_update_interval_ms / 1000.0)
+        self.ui_emit_interval_sec = max(0.20, display_update_interval_ms / 1000.0)
+        self.last_payload: dict[str, Any] | None = None
         self.last_graph_revision_ts = 0.0
 
         self.today = datetime.now().date()
@@ -2117,9 +2120,15 @@ class CameraWorker(QtCore.QObject):
             try:
                 payload = self.process_once_nonblocking()
                 now_ts = time.time()
-                if payload is not None and (now_ts - self.last_ui_emit_ts >= self.ui_emit_interval_sec):
-                    self.frame_ready.emit(payload)
-                    self.last_ui_emit_ts = now_ts
+                if payload is not None:
+                    self.last_payload = payload
+                if now_ts - self.last_ui_emit_ts >= self.ui_emit_interval_sec:
+                    if payload is not None:
+                        self.frame_ready.emit(payload)
+                        self.last_ui_emit_ts = now_ts
+                    elif self.last_payload is not None:
+                        self.frame_ready.emit(dict(self.last_payload))
+                        self.last_ui_emit_ts = now_ts
             except Exception as exc:
                 self.error_occurred.emit(self.camera_id, str(exc))
             QtCore.QThread.msleep(5)
@@ -2170,6 +2179,11 @@ class CameraWorker(QtCore.QObject):
             frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
             if self.frame_index % frame_skip != 0:
                 return None
+
+            now_ts = time.time()
+            if now_ts - self.last_infer_ts < self.infer_interval_sec:
+                return None
+            self.last_infer_ts = now_ts
 
             try:
                 result = self.model.track(
@@ -2330,7 +2344,7 @@ class CameraWorker(QtCore.QObject):
             curr_points = list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores))[-self.max_graph_points:]
             prev_points = self.previous_day_congestion_points[-self.max_graph_points:]
 
-            return {
+            payload = {
                 "camera_id": self.camera_id,
                 "camera_name": self.camera_name,
                 "stream_name": self.camera_cfg.get("stream_name", self.camera_cfg.get("stream_url", "")),
@@ -2365,6 +2379,8 @@ class CameraWorker(QtCore.QObject):
                 "device": self.device,
                 "gpu_name": self.gpu_name,
             }
+            self.last_payload = payload
+            return payload
         except Exception as exc:
             self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} loop exception: {exc}")
             self._reconnect_capture("loop exception")
