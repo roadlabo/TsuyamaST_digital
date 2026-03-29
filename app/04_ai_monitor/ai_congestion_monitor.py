@@ -723,6 +723,7 @@ class ReportWriter:
         ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5)
 
 class TenMinuteRecordWriter:
+    MAX_SAFE_STEP_10MIN = 300
     HEADERS = [
         "時刻（10分単位）",
         "渋滞LEVEL",
@@ -750,14 +751,103 @@ class TenMinuteRecordWriter:
     def collect_sample(self, now: datetime, level: int, latest_payloads: dict[int, dict[str, Any]]) -> dict[str, Any]:
         sample: dict[str, Any] = {"time": now, "level": int(level), "cameras": {}}
         for cid in (1, 2, 3):
-            payload = latest_payloads.get(cid, {})
+            payload = latest_payloads.get(cid)
             sample["cameras"][cid] = {
-                "index": float(payload.get("smoothed_congestion_score", payload.get("congestion_score", 0.0))),
-                "wakimura_alpha": float(payload.get("wakimura_alpha", 0.0)),
-                "ltor_total": int(payload.get("count_ltor", 0)),
-                "rtol_total": int(payload.get("count_rtol", 0)),
+                "index": float(payload.get("smoothed_congestion_score", payload.get("congestion_score", 0.0))) if payload else 0.0,
+                "wakimura_alpha": float(payload.get("wakimura_alpha", 0.0)) if payload else 0.0,
+                # payload 未到着時は 0 補完せず None にして、集計時に除外する。
+                "ltor_total": payload.get("count_ltor") if payload else None,
+                "rtol_total": payload.get("count_rtol") if payload else None,
+                "session_id": str(payload.get("session_id", "")) if payload else "",
             }
         return sample
+
+    def _safe_cumulative_delta(self, values: list[int], *, max_step: int = MAX_SAFE_STEP_10MIN) -> int:
+        if len(values) < 2:
+            # 10分バッファ先頭サンプルは基準値扱い。単体では交通量を持たせない。
+            return 0
+        total = 0
+        prev = int(values[0])
+        for raw in values[1:]:
+            cur = int(raw)
+            diff = cur - prev
+            if diff < 0:
+                logging.warning("[10min] cumulative counter reset detected: prev=%s cur=%s", prev, cur)
+                prev = cur
+                continue
+            if diff > max_step:
+                logging.warning("[10min] abnormal cumulative jump ignored: prev=%s cur=%s diff=%s", prev, cur, diff)
+                prev = cur
+                continue
+            total += diff
+            prev = cur
+        return max(0, int(total))
+
+    def _safe_cumulative_delta_with_sessions(
+        self,
+        values: list[int],
+        session_ids: list[str],
+        *,
+        max_step: int = MAX_SAFE_STEP_10MIN,
+    ) -> int:
+        if not values:
+            return 0
+        if len(values) != len(session_ids):
+            logging.warning(
+                "[10min] values/session_ids length mismatch: values=%s session_ids=%s",
+                len(values),
+                len(session_ids),
+            )
+            return self._safe_cumulative_delta(values, max_step=max_step)
+        if len(values) < 2:
+            return 0
+
+        total = 0
+        prev = int(values[0])
+        prev_session = str(session_ids[0] or "")
+        for raw, sid in zip(values[1:], session_ids[1:]):
+            cur = int(raw)
+            cur_session = str(sid or "")
+            if prev_session and cur_session and cur_session != prev_session:
+                logging.warning("[10min] session changed detected: old=%s new=%s", prev_session, cur_session)
+                prev = cur
+                prev_session = cur_session
+                continue
+            diff = cur - prev
+            if diff < 0:
+                logging.warning("[10min] cumulative counter reset detected: prev=%s cur=%s", prev, cur)
+                prev = cur
+                prev_session = cur_session
+                continue
+            if diff > max_step:
+                logging.warning("[10min] abnormal cumulative jump ignored: prev=%s cur=%s diff=%s", prev, cur, diff)
+                prev = cur
+                prev_session = cur_session
+                continue
+            total += diff
+            prev = cur
+            prev_session = cur_session
+        return max(0, int(total))
+
+    @staticmethod
+    def _extract_counter_series(
+        samples: list[dict[str, Any]],
+        cid: int,
+        key: str,
+    ) -> tuple[list[int], list[str]]:
+        values: list[int] = []
+        session_ids: list[str] = []
+        for sample in samples:
+            cam = sample["cameras"][cid]
+            raw = cam.get(key)
+            if raw is None:
+                continue
+            try:
+                values.append(int(raw))
+                session_ids.append(str(cam.get("session_id", "")))
+            except Exception:
+                continue
+        return values, session_ids
 
     def aggregate_10min(self, bin_start: datetime, samples: list[dict[str, Any]]) -> list[Any]:
         if not samples:
@@ -767,12 +857,25 @@ class TenMinuteRecordWriter:
         for cid in (1, 2, 3):
             indices = [float(s["cameras"][cid]["index"]) for s in samples]
             wakimuras = [float(s["cameras"][cid]["wakimura_alpha"]) for s in samples]
-            ltor_values = [int(s["cameras"][cid]["ltor_total"]) for s in samples]
-            rtol_values = [int(s["cameras"][cid]["rtol_total"]) for s in samples]
-            ltor = max(0, max(ltor_values) - min(ltor_values)) if ltor_values else 0
-            rtol = max(0, max(rtol_values) - min(rtol_values)) if rtol_values else 0
+            # _safe_cumulative_delta の自己確認例:
+            #   正常系: [100,110,130] -> 30
+            #   再起動混在: [3000,3020,5,12] -> 27（減少点は加算せず再基準化）
+            #   payload 欠落(None)混在: [100,None,120] -> 20 相当（None除外）
+            #   異常ジャンプ: [100,5000] -> 0（max_step超過を無効化）
+            ltor_values, ltor_sessions = self._extract_counter_series(samples, cid, "ltor_total")
+            rtol_values, rtol_sessions = self._extract_counter_series(samples, cid, "rtol_total")
+            ltor = self._safe_cumulative_delta_with_sessions(ltor_values, ltor_sessions, max_step=self.MAX_SAFE_STEP_10MIN)
+            rtol = self._safe_cumulative_delta_with_sessions(rtol_values, rtol_sessions, max_step=self.MAX_SAFE_STEP_10MIN)
             avg_index = round(float(np.mean(indices)), 3) if indices else 0.0
             avg_wakimura = round(float(np.mean(wakimuras)), 3) if wakimuras else 0.0
+            if ltor > self.MAX_SAFE_STEP_10MIN or rtol > self.MAX_SAFE_STEP_10MIN:
+                logging.warning(
+                    "[10min] suspicious slot volume: bin=%s cam=%s ltor=%s rtol=%s",
+                    bin_start.strftime("%Y-%m-%d %H:%M"),
+                    cid,
+                    ltor,
+                    rtol,
+                )
             row.extend([avg_index, avg_wakimura, ltor, rtol])
         return row
 
@@ -1856,6 +1959,7 @@ class CameraWorker(QtCore.QObject):
         self.root_dir = root_dir
         self.camera_id = int(camera_cfg["camera_id"])
         self.camera_name = camera_cfg["camera_name"]
+        self.session_id = datetime.now().strftime("%Y%m%d%H%M%S_%f")
 
         self.device = self._resolve_device(system_cfg.get("device_preference", "auto"))
         self.gpu_name = torch.cuda.get_device_name(0) if self.device.startswith("cuda") else "CPU"
@@ -1917,6 +2021,8 @@ class CameraWorker(QtCore.QObject):
         self.daily_report_dir = root_dir / "data" / "reports" / "daily"
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
+        # 当日ここまでの累積値を復元する。10分集計側は safe delta / session 境界で保護するため、
+        # 途中再起動後も過大計上しない設計。
         self.boot_today_hist_ltor, self.boot_today_hist_rtol = self._load_today_histogram()
         self.boot_today_congestion_points = self._load_today_congestion_points()
         self.counter.state.pass_bins_ltor = list(self.boot_today_hist_ltor)
@@ -2123,6 +2229,8 @@ class CameraWorker(QtCore.QObject):
         self.cross_flash_frames.clear()
         self.previous_day_hist_ltor, self.previous_day_hist_rtol = self._load_previous_day_histogram()
         self.previous_day_congestion_points = self._load_previous_day_congestion_points()
+        # 当日ここまでの累積値を復元する。10分集計側は safe delta / session 境界で保護するため、
+        # 日付切替後の再読込でも過大計上しない設計。
         self.boot_today_hist_ltor, self.boot_today_hist_rtol = self._load_today_histogram()
         self.boot_today_congestion_points = self._load_today_congestion_points()
         self.counter.state.pass_bins_ltor, self.counter.state.pass_bins_rtol = (
@@ -2445,6 +2553,7 @@ class CameraWorker(QtCore.QObject):
             payload = {
                 "camera_id": self.camera_id,
                 "camera_name": self.camera_name,
+                "session_id": self.session_id,
                 "stream_name": self.camera_cfg.get("stream_name", self.camera_cfg.get("stream_url", "")),
                 "frame": self.last_frame,
                 "source_frame_width": int(src_w),
