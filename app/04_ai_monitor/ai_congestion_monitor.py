@@ -1123,7 +1123,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         self.y_min_override: float | None = None
         self.y_max_override: float | None = None
         self.y_axis_labels: dict[float, str] = {}
-        self.setFixedHeight(64)
+        self.setFixedHeight(75)
 
     def set_line_data(self, prev_points: list[tuple[datetime, float]], today_points: list[tuple[datetime, float]], title: str, threshold: float | None = None, show_threshold: bool = True) -> None:
         self.mode = "line"
@@ -1161,18 +1161,19 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
 
         y_axis_w = 28
         right_margin = 5
-        top_margin = 18
-        bottom_margin = 16
+        header_h = 22
+        top_margin = header_h + 2
+        bottom_margin = 15
         plot = QtCore.QRectF(y_axis_w, top_margin, max(10, self.width() - y_axis_w - right_margin), max(10, self.height() - top_margin - bottom_margin))
 
         painter.setPen(QtGui.QPen(QtGui.QColor("#1d6f8b"), 1))
         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 3, 3)
         painter.drawRect(plot)
         painter.setPen(QtGui.QColor("#cfefff"))
-        title_rect = QtCore.QRectF(0, 0, self.width(), 18)
+        title_rect = QtCore.QRectF(0, 0, self.width(), header_h)
         painter.drawText(
-            title_rect,
-            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            title_rect.adjusted(8, 0, -8, 0),
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
             self.title,
         )
 
@@ -1233,8 +1234,6 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
                 th_y = plot.bottom() - ((self.threshold - y_min) / (y_max - y_min)) * plot.height()
                 painter.setPen(QtGui.QPen(QtGui.QColor("#ffd400"), 2.0))
                 painter.drawLine(QtCore.QPointF(plot.left(), th_y), QtCore.QPointF(plot.right(), th_y))
-                painter.setPen(QtGui.QColor("#ffd400"))
-                painter.drawText(int(plot.left()) + 6, int(plot.top()) + 12, f"TH={self.threshold:.2f}")
         elif self.mode == "bar" and (self.prev_values or self.today_values):
             n = max(1, len(self.prev_values), len(self.today_values))
             slot_w = plot.width() / n
@@ -1251,14 +1250,21 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
                 painter.fillRect(QtCore.QRectF(prev_x, plot.bottom() - prev_h, bar_w, prev_h), QtGui.QColor("#2f7dff"))
                 painter.fillRect(QtCore.QRectF(today_x, plot.bottom() - today_h, bar_w, today_h), QtGui.QColor("#ff3b3b"))
 
-        self._draw_legend(painter, plot)
+        threshold_text = f"TH={self.threshold:.2f}" if (self.mode == "line" and self.show_threshold and self.threshold is not None) else None
+        self._draw_legend(painter, title_rect, threshold_text)
 
-    def _draw_legend(self, painter: QtGui.QPainter, plot: QtCore.QRectF) -> None:
+    def _draw_legend(self, painter: QtGui.QPainter, header_rect: QtCore.QRectF, threshold_text: str | None = None) -> None:
         legend = [("前日", QtGui.QColor("#2f7dff")), ("当日", QtGui.QColor("#ff3b3b"))]
         if self.mode == "line" and self.show_threshold:
             legend.append(("閾値", QtGui.QColor("#ffd400")))
-        y = int(plot.top()) + 10
-        x = int(plot.right()) - 8
+        y = int(header_rect.center().y())
+        x = int(header_rect.right()) - 8
+        if threshold_text:
+            painter.setPen(QtGui.QColor("#ffd400"))
+            th_w = painter.fontMetrics().horizontalAdvance(threshold_text)
+            x -= th_w
+            painter.drawText(x, y + 4, threshold_text)
+            x -= 12
         for label, color in reversed(legend):
             text_w = painter.fontMetrics().horizontalAdvance(label)
             x -= text_w
@@ -1335,16 +1341,16 @@ class CameraPanel(QtWidgets.QFrame):
         self.graph_update_interval_sec = 1.0
         self._last_graph_revision_ts = -1.0
         self._last_hist_revision = (-1, -1)
-        self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
+        self.setStyleSheet("QFrame{background:#0f1a28;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
+        root.setContentsMargins(3, 3, 3, 3)
         root.setSpacing(1)
-        self.setMinimumWidth(1068)
+        self.setMinimumWidth(1272)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(2)
+        top_row.setSpacing(3)
 
         self.video_box = QtWidgets.QWidget()
         video_layout = QtWidgets.QVBoxLayout(self.video_box)
@@ -1359,16 +1365,17 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         self.video_box.setMaximumHeight(self.max_video_height)
         self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        top_row.addWidget(self.video_box, 1, QtCore.Qt.AlignmentFlag.AlignTop)
+        self.video_box.setMinimumWidth(744)
+        top_row.addWidget(self.video_box, 3, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.right_box = QtWidgets.QWidget()
-        self.right_box.setFixedWidth(440)
+        self.right_box.setFixedWidth(528)
         self.right_box.setMinimumHeight(0)
         self.right_box.setFixedHeight(self.max_video_height)
         self.right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(self.right_box)
-        right.setContentsMargins(2, 2, 2, 2)
-        right.setSpacing(2)
+        right.setContentsMargins(1, 1, 1, 1)
+        right.setSpacing(1)
         right.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
         display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
@@ -1435,7 +1442,7 @@ class CameraPanel(QtWidgets.QFrame):
         self.wakimura_frames: dict[str, QtWidgets.QFrame] = {}
         self.wakimura_row: QtWidgets.QWidget | None = None
         if self.is_king:
-            wakimura_card_height = 62
+            wakimura_card_height = 74
             self.wakimura_row = QtWidgets.QWidget()
             self.wakimura_row.setFixedHeight(wakimura_card_height)
             self.wakimura_row.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
@@ -1456,10 +1463,10 @@ class CameraPanel(QtWidgets.QFrame):
                 card_layout.setContentsMargins(3, 2, 3, 2)
                 card_layout.setSpacing(0)
                 title_label = QtWidgets.QLabel(title)
-                title_label.setStyleSheet("font-size:10px;color:#c6afff;font-weight:800;")
+                title_label.setStyleSheet("font-size:12px;color:#c6afff;font-weight:800;")
                 title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 value_label = QtWidgets.QLabel("--")
-                value_label.setStyleSheet("font-size:9px;color:#d8c8ff;font-weight:500;")
+                value_label.setStyleSheet("font-size:11px;color:#d8c8ff;font-weight:500;")
                 value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
                 value_label.setWordWrap(True)
                 card_layout.addWidget(title_label)
@@ -1489,19 +1496,19 @@ class CameraPanel(QtWidgets.QFrame):
         self._update_count_cards(0, 0)
         # UI余白圧縮はディスプレイ内に収めるための調整。
 
-        top_row.addWidget(self.right_box, 1, QtCore.Qt.AlignmentFlag.AlignTop)
-        top_row.setStretch(0, 1)
+        top_row.addWidget(self.right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        top_row.setStretch(0, 3)
         top_row.setStretch(1, 0)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
         graphs_box = QtWidgets.QWidget()
         graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
-        graphs_layout.setContentsMargins(0, 0, 0, 0)
-        graphs_layout.setSpacing(0)
+        graphs_layout.setContentsMargins(0, 1, 0, 0)
+        graphs_layout.setSpacing(3)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
-            g.setFixedHeight(57)
+            g.setFixedHeight(75)
             self.graphs.append(g)
             graphs_layout.addWidget(g)
         root.addWidget(graphs_box)
@@ -1701,7 +1708,7 @@ class CameraPanel(QtWidgets.QFrame):
         cols = 8
         spacing = max(0, self.stay_grid.horizontalSpacing())
         contents = self.stay_grid.contentsMargins()
-        box_w = max(self.stay_box.width(), self.stay_box.sizeHint().width(), 440)
+        box_w = max(self.stay_box.width(), self.stay_box.sizeHint().width(), 528)
         available_w = max(
             8,
             box_w - contents.left() - contents.right() - spacing * (cols - 1),
@@ -1757,7 +1764,7 @@ class CameraPanel(QtWidgets.QFrame):
                 card_border = "#6a4cff"
             frame.setStyleSheet(f"background:#081225;border:1px solid {card_border};border-radius:6px;")
         for label in self.wakimura_cards.values():
-            label.setStyleSheet("font-size:9px;color:#dfd4ff;font-weight:500;")
+            label.setStyleSheet("font-size:11px;color:#dfd4ff;font-weight:500;")
 
         self.wakimura_cards["alpha"].setText(
             f"α＝{wak_alpha:.2f}[{mode_text}]\n判定基準：α＜0.85\n評価期間：5分"
