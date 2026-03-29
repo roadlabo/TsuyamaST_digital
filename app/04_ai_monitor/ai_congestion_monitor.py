@@ -2658,16 +2658,18 @@ class MainWindow(QtWidgets.QMainWindow):
         top_info_grid.setHorizontalSpacing(6)
         top_info_grid.setVerticalSpacing(4)
         self.congestion_formula_label = QtWidgets.QLabel(
-            "渋滞指数＝車両の停滞傾向を表す指標。移動量が小さい車ほど値が高くなり、流れが悪い状態を表す。\n"
-            "直近30秒の各車両の移動量 d を用いて score=Σ[1/(1+d/(W×500))] を算出し、画面全体の停滞感を集計する。"
+            "【渋滞指数】車両の停滞傾向を表す指標。移動量が小さい車ほど値が高くなり、流れが悪い状態を表す。\n"
+            "各車両のAI認識によるバウンディングボックスの移動量 d を用い、認識されている全ての車両の累積 score=Σ[1/(1+d/(W×500))] を算出する。（W:入力画像幅）\n"
+            "例えば渋滞指標＝３であれば、停止している車が３台という目安になる。車両がAIに認識されていても動きがある状態、つまりdが大きい状態では数値は大きくならない。"
         )
         self.congestion_formula_label.setWordWrap(True)
         self.congestion_formula_label.setStyleSheet(
             "color:#9af2ff;background:#08121b;border:1px solid #1f4f7a;padding:4px;font-size:13px;"
         )
         self.wakimura_formula_label = QtWidgets.QLabel(
-            "脇村指標は、停止寄り車両の割合や滞在傾向を補助的に見るための参考指標。\n"
-            "停止台数・低速台数・平均移動量・score情報を用いて、渋滞指数だけでは見えにくい詰まり方を補足する。"
+            "【運用効率指標α】は、どの程度効率的に車が流れているかを簡略化して表す指標。\n"
+            "監視カメラ映像からリアルタイムで得られる滞在台数と滞在時間を用いて算出する。\n"
+            "α=1(100%)を理想状態とし、α<0.85(85%以下)となる状態を「効率低下」として判定する。（慶応SFC考案の指標）"
         )
         self.wakimura_formula_label.setWordWrap(True)
         self.wakimura_formula_label.setStyleSheet(
@@ -2700,13 +2702,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(58)
-        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:36px;padding:4px 10px;")
+        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:50px;padding:2px 10px;")
         self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
         self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        self.system_title_ja.setStyleSheet("font-size:26px;font-weight:900;color:#9fe8ff;")
+        self.system_title_ja.setStyleSheet("font-size:50px;font-weight:900;color:#9fe8ff;")
         self.system_title_en = QtWidgets.QLabel("AI Congestion Detection System")
         self.system_title_en.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        self.system_title_en.setStyleSheet("font-size:14px;font-weight:bold;color:#b7dbff;")
+        self.system_title_en.setStyleSheet("font-size:30px;font-weight:bold;color:#b7dbff;")
         self.system_runtime_label = QtWidgets.QLabel("GPU: n/a ｜ model: n/a ｜ tracker: ByteTrack")
         self.system_runtime_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_runtime_label.setStyleSheet("font-size:11px;color:#9abed0;")
