@@ -2481,7 +2481,7 @@ class MainWindow(QtWidgets.QMainWindow):
         content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(content)
         layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(4)
+        layout.setSpacing(5)
         scroll.setWidget(content)
 
         top_info_layout = QtWidgets.QVBoxLayout()
@@ -2578,13 +2578,14 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addLayout(top_info_layout)
 
         self.system_level_graph = CombinedTimelineGraph("line")
-        self.system_level_graph.setFixedHeight(60)
+        self.system_level_graph.setFixedHeight(78)
         self.system_level_graph.set_y_axis_config(
             y_min=1.0,
             y_max=4.0,
             labels={1.0: "LEVEL1", 2.0: "LEVEL2", 3.0: "LEVEL3", 4.0: "LEVEL4"},
         )
         layout.addWidget(self.system_level_graph)
+        layout.addSpacing(4)
         self.system_level_history_yesterday = self._load_system_level_history(self.system_level_history_date - timedelta(days=1))
         self.system_level_history_today = self._load_system_level_history(self.system_level_history_date)
         self.update_level_rule_text()
