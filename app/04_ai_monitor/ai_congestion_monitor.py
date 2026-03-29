@@ -170,7 +170,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "imgsz": 640,
+            "imgsz": 512,
             "target_classes": [2, 3, 5, 7],
             "bt_track_high_thresh": 0.3,
             "bt_track_low_thresh": 0.1,
@@ -232,7 +232,7 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "imgsz": 640,
+            "imgsz": 512,
             "target_classes": [2, 3, 5, 7],
             "bt_track_high_thresh": 0.3,
             "bt_track_low_thresh": 0.1,
@@ -1395,16 +1395,18 @@ class CameraPanel(QtWidgets.QFrame):
         self.stay_empty_label: QtWidgets.QLabel | None = None
         self._status_connected = False
         self.is_king = self.camera_id == 2
-        self.video_target_w = 576
-        self.video_target_h = 324
+        self.video_target_w = 560
+        self.video_target_h = 315
+        self.last_graph_update_ts = 0.0
+        self.graph_update_interval_sec = 1.0
+        self._last_graph_revision_ts = -1.0
+        self._last_hist_revision = (-1, -1)
         self.setStyleSheet("QFrame{background:#0a0e13;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}")
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(1)
-        self.panel_total_width = 1128
-        self.right_panel_width = 542
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.setFixedWidth(self.panel_total_width)
+        self.setMinimumWidth(1080)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -1416,19 +1418,19 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.setSpacing(2)
         video_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.video = QtWidgets.QLabel("video")
-        self.video.setFixedSize(576, 324)
+        self.video.setFixedSize(self.video_target_w, self.video_target_h)
         self.video.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-        video_box.setFixedSize(576, 324)
+        video_box.setFixedSize(self.video_target_w, self.video_target_h)
         video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setFixedWidth(self.right_panel_width)
-        right_box.setFixedHeight(324)
-        right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        right_box.setMinimumWidth(480)
+        right_box.setMinimumHeight(self.video_target_h)
+        right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
         right.setContentsMargins(2, 2, 2, 2)
         right.setSpacing(2)
@@ -1563,7 +1565,9 @@ class CameraPanel(QtWidgets.QFrame):
             btn_col.addWidget(btn)
         right.addLayout(btn_col)
 
-        top_row.addWidget(right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        top_row.addWidget(right_box, 1, QtCore.Qt.AlignmentFlag.AlignTop)
+        top_row.setStretch(0, 0)
+        top_row.setStretch(1, 1)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
@@ -1613,9 +1617,22 @@ class CameraPanel(QtWidgets.QFrame):
             wak_alpha = float(payload.get("wakimura_alpha", 0.0))
             wak_mode = bool(payload.get("wakimura_high_load_mode", False))
             self._update_wakimura_card(payload, wak_alpha, wak_mode)
-        self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
-        self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
-        self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
+        now_ts = time.time()
+        graph_revision_ts = float(payload.get("graph_revision_ts", 0.0))
+        should_update_line = (
+            graph_revision_ts > self._last_graph_revision_ts
+            and (now_ts - self.last_graph_update_ts >= self.graph_update_interval_sec)
+        )
+        hist_revision = (int(sum(ltor)), int(sum(rtol)))
+        should_update_hist = hist_revision != self._last_hist_revision
+        if should_update_line:
+            self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
+            self._last_graph_revision_ts = graph_revision_ts
+            self.last_graph_update_ts = now_ts
+        if should_update_hist:
+            self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
+            self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
+            self._last_hist_revision = hist_revision
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -1919,6 +1936,19 @@ class CameraWorker(QtCore.QObject):
         self.max_read_fail_before_reconnect = 5
         self.last_reconnect_at = 0.0
         self.reconnect_fail_count = 0
+        self.max_graph_points = 300
+        self.last_wakimura_update_ts = 0.0
+        self.wakimura_update_interval_sec = 1.0
+        self.cached_wakimura_payload = self._default_wakimura_payload()
+        display_update_interval_ms = int(self.system_cfg.get("display_update_interval_ms", 800))
+        self.last_ui_emit_ts = 0.0
+        self.ui_emit_interval_sec = max(0.25, display_update_interval_ms / 1000.0)
+        self.pending_pass_rows: list[list[Any]] = []
+        self.pending_long_stay_rows: list[list[Any]] = []
+        self.pending_congestion_rows: list[list[Any]] = []
+        self.last_csv_flush_ts = 0.0
+        self.csv_flush_interval_sec = 1.0
+        self.last_graph_revision_ts = 0.0
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
@@ -2078,6 +2108,42 @@ class CameraWorker(QtCore.QObject):
                 self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} {kind} csv write failed ({count}): {exc}")
             self.csv_error_state[kind] = True
 
+    def _default_wakimura_payload(self) -> dict[str, Any]:
+        return {
+            "wakimura_alpha": 0.0,
+            "wakimura_n_out": 0,
+            "wakimura_avg_stay_sec": 0.0,
+            "wakimura_high_load_mode": False,
+            "wak_total_tracks": 0,
+            "wak_max_stay_min": 0.0,
+        }
+
+    def _queue_csv_row(self, kind: str, row: list[Any]) -> None:
+        if kind == "pass":
+            self.pending_pass_rows.append(row)
+        elif kind == "long_stay":
+            self.pending_long_stay_rows.append(row)
+        elif kind == "congestion":
+            self.pending_congestion_rows.append(row)
+
+    def _flush_pending_csv_rows(self, force: bool = False) -> None:
+        now_ts = time.time()
+        if not force and (now_ts - self.last_csv_flush_ts < self.csv_flush_interval_sec):
+            return
+        self.last_csv_flush_ts = now_ts
+        buffers = [
+            ("pass", self.pass_csv, self.pending_pass_rows),
+            ("long_stay", self.long_stay_csv, self.pending_long_stay_rows),
+            ("congestion", self.congestion_csv, self.pending_congestion_rows),
+        ]
+        for kind, path, rows in buffers:
+            if not rows:
+                continue
+            pending = list(rows)
+            rows.clear()
+            for row in pending:
+                self._append_csv_safe(path, row, kind=kind)
+
     def _load_previous_day_histogram(self) -> tuple[list[int], list[int]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
         prev_file = self.metrics_dir / f"pass_events_{prev.strftime('%Y-%m-%d')}.csv"
@@ -2236,11 +2302,14 @@ class CameraWorker(QtCore.QObject):
         while self._running:
             try:
                 payload = self.process_once_nonblocking()
-                if payload is not None:
+                now_ts = time.time()
+                if payload is not None and (now_ts - self.last_ui_emit_ts >= self.ui_emit_interval_sec):
                     self.frame_ready.emit(payload)
+                    self.last_ui_emit_ts = now_ts
             except Exception as exc:
                 self.error_occurred.emit(self.camera_id, str(exc))
             QtCore.QThread.msleep(5)
+        self._flush_pending_csv_rows(force=True)
         self._release_capture()
         self.finished.emit(self.camera_id)
 
@@ -2403,79 +2472,61 @@ class CameraWorker(QtCore.QObject):
             threshold_over = congestion_score >= threshold
             count_ltor = int(sum(self.counter.state.pass_bins_ltor))
             count_rtol = int(sum(self.counter.state.pass_bins_rtol))
-
-            # tracks 上の現在IDに対して滞在秒数平均を別計算（脇村指標 α 用）
-            avg_stay_sec = 0.0
-            if tracks:
-                stay_secs = []
-                for tr in tracks:
-                    seen = self.track_state.first_seen.get(int(tr["track_id"]))
-                    if seen is not None:
-                        stay_secs.append(max(0.0, (now - seen).total_seconds()))
-                avg_stay_sec = float(np.mean(stay_secs)) if stay_secs else 0.0
-            movement_values: list[float] = []
-            for tr in tracks:
-                tid = int(tr["track_id"])
-                cx, cy = tr["center"]
-                prev = self.congestion.state.previous_positions.get(tid)
-                if prev is None:
-                    continue
-                px, py = prev
-                movement_values.append(float(((cx - px) ** 2 + (cy - py) ** 2) ** 0.5))
-            stop_count = sum(1 for d in movement_values if d <= 1.0)
-            slow_count = sum(1 for d in movement_values if d <= 3.0)
-            below_threshold_count = sum(1 for d in movement_values if d <= 2.0)
-            track_count = len(tracks)
             max_stay_min = max((mins for _, mins in long_stay_list), default=0.0)
-            move_avg = float(np.mean(movement_values)) if movement_values else 0.0
-            move_median = float(np.median(movement_values)) if movement_values else 0.0
-            score_sum = float(self.congestion.state.frame_cumulative_motion_score)
-            score_avg = float(congestion_score)
-
-            wakimura = {
-                "wakimura_alpha": 0.0,
-                "wakimura_alpha_window": 0.0,
-                "wakimura_n_out": 0,
-                "wakimura_avg_stay_sec": 0.0,
-                "wakimura_high_load_mode": False,
-            }
-            try:
-                wakimura = self.wakimura_alpha.update(now=now, vehicle_count=len(tracks), avg_stay_sec=avg_stay_sec)
-            except Exception as exc:
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} 脇村指標 α update skipped: {exc}")
+            wakimura = self.cached_wakimura_payload
+            if self.camera_id == 2 and (time.time() - self.last_wakimura_update_ts >= self.wakimura_update_interval_sec):
+                avg_stay_sec = 0.0
+                if tracks:
+                    stay_secs = []
+                    for tr in tracks:
+                        seen = self.track_state.first_seen.get(int(tr["track_id"]))
+                        if seen is not None:
+                            stay_secs.append(max(0.0, (now - seen).total_seconds()))
+                    avg_stay_sec = float(np.mean(stay_secs)) if stay_secs else 0.0
+                try:
+                    updated = self.wakimura_alpha.update(now=now, vehicle_count=len(tracks), avg_stay_sec=avg_stay_sec)
+                    wakimura = {
+                        "wakimura_alpha": float(updated.get("wakimura_alpha", 0.0)),
+                        "wakimura_n_out": int(updated.get("wakimura_n_out", 0)),
+                        "wakimura_avg_stay_sec": float(updated.get("wakimura_avg_stay_sec", 0.0)),
+                        "wakimura_high_load_mode": bool(updated.get("wakimura_high_load_mode", False)),
+                        "wak_total_tracks": int(len(tracks)),
+                        "wak_max_stay_min": float(max_stay_min),
+                    }
+                except Exception as exc:
+                    self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} 脇村指標 α update skipped: {exc}")
+                    wakimura = self.cached_wakimura_payload
+                self.cached_wakimura_payload = wakimura
+                self.last_wakimura_update_ts = time.time()
+            elif self.camera_id != 2:
+                wakimura = self._default_wakimura_payload()
 
             elapsed = max(1e-6, time.time() - start)
             self.fps = 1.0 / elapsed
 
-            try:
-                for pe in pass_events:
-                    self._append_csv_safe(self.pass_csv, [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]], kind="pass")
-                for le in long_stay_events:
-                    self._append_csv_safe(
-                        self.long_stay_csv,
-                        [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]],
-                        kind="long_stay",
-                    )
-            except Exception as exc:
-                self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} csv helper skipped: {exc}")
+            for pe in pass_events:
+                self._queue_csv_row("pass", [pe["timestamp"], self.camera_id, pe["track_id"], pe["class_name"], pe["direction"]])
+            for le in long_stay_events:
+                self._queue_csv_row(
+                    "long_stay",
+                    [le["first_seen"], le["detected_at"], le["camera_id"], le["track_id"], le["stay_minutes"], le["class_name"]],
+                )
 
             if len(self.congestion.state.frame_time_stamps) > prev_points_len:
-                try:
-                    self._append_csv_safe(
-                        self.congestion_csv,
-                        [
-                            now.strftime("%Y-%m-%d %H:%M:%S"),
-                            self.camera_id,
-                            self.camera_name,
-                            round(congestion_score, 2),
-                            round(threshold, 2),
-                            bool(threshold_over),
-                            round(self.fps, 2),
-                        ],
-                        kind="congestion",
-                    )
-                except Exception as exc:
-                    self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} congestion csv skipped: {exc}")
+                self.last_graph_revision_ts = time.time()
+                self._queue_csv_row(
+                    "congestion",
+                    [
+                        now.strftime("%Y-%m-%d %H:%M:%S"),
+                        self.camera_id,
+                        self.camera_name,
+                        round(congestion_score, 2),
+                        round(threshold, 2),
+                        bool(threshold_over),
+                        round(self.fps, 2),
+                    ],
+                )
+            self._flush_pending_csv_rows()
 
             self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks))
             try:
@@ -2484,6 +2535,8 @@ class CameraWorker(QtCore.QObject):
                 self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} long_stay list sort skipped: {exc}")
                 long_stay_list = []
             smoothed_score = float(self.congestion.state.current_smoothed_index)
+            curr_points = list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores))[-self.max_graph_points:]
+            prev_points = self.previous_day_congestion_points[-self.max_graph_points:]
 
             return {
                 "camera_id": self.camera_id,
@@ -2497,32 +2550,18 @@ class CameraWorker(QtCore.QObject):
                 "congestion_level": 1,
                 "threshold": threshold,
                 "threshold_over": threshold_over,
-                "congestion_points": list(zip(self.congestion.state.frame_time_stamps, self.congestion.state.frame_motion_scores)),
-                "prev_congestion_points": self.previous_day_congestion_points,
+                "congestion_points": curr_points,
+                "prev_congestion_points": prev_points,
                 "pass_bins_ltor": self.counter.state.pass_bins_ltor,
                 "pass_bins_rtol": self.counter.state.pass_bins_rtol,
                 "count_ltor": count_ltor,
                 "count_rtol": count_rtol,
                 "hist_prev_ltor": self.previous_day_hist_ltor,
                 "hist_prev_rtol": self.previous_day_hist_rtol,
+                "graph_revision_ts": float(self.last_graph_revision_ts),
                 "long_stay_count": len(long_stay_list),
                 "long_stay_list": [[int(tid), float(minutes)] for tid, minutes in long_stay_list[:10]],
                 **wakimura,
-                "wak_stop_count": int(stop_count),
-                "wak_slow_count": int(slow_count),
-                "wak_total_tracks": int(track_count),
-                "wak_avg_move": float(move_avg),
-                "wak_median_move": float(move_median),
-                "wak_below_threshold_count": int(below_threshold_count),
-                "wak_below_threshold_ratio": float((below_threshold_count / track_count) if track_count else 0.0),
-                "wak_stop_ratio": float((stop_count / track_count) if track_count else 0.0),
-                "wak_slow_ratio": float((slow_count / track_count) if track_count else 0.0),
-                "wak_window_count": int(len(self.congestion.state.frame_time_stamps)),
-                "wak_score_sum": float(score_sum),
-                "wak_score_avg": float(score_avg),
-                "wak_max_stay_min": float(max_stay_min),
-                "wak_stay_over_1min": int(sum(1 for _, mins in long_stay_list if mins >= 1.0)),
-                "wak_updated_at": now.strftime("%H:%M:%S"),
                 "debug_metrics": {
                     "raw_congestion_index": round(float(congestion_score), 3),
                     "smoothed_congestion_index": round(smoothed_score, 3),
@@ -2587,7 +2626,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("AI Congestion Monitor")
         self.setStyleSheet("background:#02060a;")
         self.resize(1220, 1600)
-        self.setMinimumSize(1220, 1300)
+        self.setMinimumSize(1180, 1300)
 
         self.cfg_mgr = ConfigManager(root_dir)
         self.app_cfg = self.cfg_mgr.load()
@@ -2634,18 +2673,16 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setCentralWidget(scroll)
         content = QtWidgets.QWidget()
-        content.setMinimumWidth(1140)
-        content.setMaximumWidth(1140)
+        content.setMinimumWidth(1080)
         content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(content)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(4)
         scroll.setWidget(content)
 
-        top_info_grid = QtWidgets.QGridLayout()
-        top_info_grid.setContentsMargins(0, 0, 0, 0)
-        top_info_grid.setHorizontalSpacing(6)
-        top_info_grid.setVerticalSpacing(4)
+        top_info_layout = QtWidgets.QVBoxLayout()
+        top_info_layout.setContentsMargins(0, 0, 0, 0)
+        top_info_layout.setSpacing(4)
         self.congestion_formula_label = QtWidgets.QLabel(
             "【渋滞指数】車両の停滞傾向を表す指標。移動量が小さい車ほど値が高くなり、流れが悪い状態を表す。\n"
             "例えば渋滞指標＝３であれば、停止している車が３台という目安になる。"
@@ -2662,15 +2699,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.wakimura_formula_label.setStyleSheet(
             "color:#d6cbff;background:#0d1020;border:1px solid #4b3cb0;padding:4px;font-size:10px;"
         )
-        self.congestion_formula_label.setFixedWidth(640)
-        self.wakimura_formula_label.setFixedWidth(640)
+        self.congestion_formula_label.setMinimumWidth(560)
+        self.wakimura_formula_label.setMinimumWidth(560)
+        self.congestion_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.wakimura_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         top_left_box = QtWidgets.QVBoxLayout()
         top_left_box.setSpacing(2)
         top_left_box.setContentsMargins(4, 4, 4, 4)
         top_left_widget = QtWidgets.QWidget()
         top_left_widget.setLayout(top_left_box)
-        top_left_widget.setFixedWidth(640)
+        top_left_widget.setMinimumWidth(560)
+        top_left_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         formula_stack = QtWidgets.QVBoxLayout()
         formula_stack.setContentsMargins(0, 0, 0, 0)
@@ -2685,12 +2725,13 @@ class MainWindow(QtWidgets.QMainWindow):
         level_block.setSpacing(3)
         level_block_widget = QtWidgets.QWidget()
         level_block_widget.setLayout(level_block)
-        level_block_widget.setFixedWidth(430)
+        level_block_widget.setMaximumWidth(400)
+        level_block_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Preferred)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.level_badge.setMinimumHeight(58)
-        self.level_badge.setMinimumWidth(400)
-        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:28px;padding:2px 6px;")
+        self.level_badge.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:28px;padding:2px 4px;")
         self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
         self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_title_ja.setStyleSheet("font-size:30px;font-weight:900;color:#9fe8ff;")
@@ -2709,13 +2750,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_rule_label.setWordWrap(True)
         self.level_rule_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;line-height:1.25em;")
+        self.level_rule_label.setMaximumWidth(400)
+        self.level_rule_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Preferred)
         level_block.addWidget(self.level_badge)
 
-        top_info_grid.addWidget(top_left_widget, 0, 0)
-        top_info_grid.addWidget(level_block_widget, 0, 1)
-        top_info_grid.addWidget(formula_widget, 1, 0)
-        top_info_grid.addWidget(self.level_rule_label, 1, 1)
-        layout.addLayout(top_info_grid)
+        top_header_row = QtWidgets.QHBoxLayout()
+        top_header_row.setContentsMargins(0, 0, 0, 0)
+        top_header_row.setSpacing(6)
+        top_header_row.addWidget(top_left_widget, 1)
+        top_header_row.addWidget(level_block_widget, 0)
+        top_info_layout.addLayout(top_header_row)
+
+        top_detail_row = QtWidgets.QHBoxLayout()
+        top_detail_row.setContentsMargins(0, 0, 0, 0)
+        top_detail_row.setSpacing(6)
+        top_detail_row.addWidget(formula_widget, 1)
+        top_detail_row.addWidget(self.level_rule_label, 0)
+        top_info_layout.addLayout(top_detail_row)
+        layout.addLayout(top_info_layout)
 
         self.system_level_graph = CombinedTimelineGraph("line")
         self.system_level_graph.setFixedHeight(60)
@@ -2916,7 +2968,7 @@ class MainWindow(QtWidgets.QMainWindow):
         style = level_style(level)
         self.level_badge.setText(f"{style['icon']} 渋滞LEVEL{level}")
         self.level_badge.setStyleSheet(
-            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:36px;padding:4px 14px;"
+            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:36px;padding:3px 10px;"
         )
 
     def _system_level_metrics_dir(self) -> Path:
