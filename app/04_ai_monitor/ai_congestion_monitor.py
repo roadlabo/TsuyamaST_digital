@@ -1356,8 +1356,9 @@ class CameraPanel(QtWidgets.QFrame):
         self._last_hist_revision = (-1, -1)
         display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
         role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
+        # DEBUG 視認用: CameraPanel 本体の占有領域を可視化
         self.setStyleSheet(
-            "QFrame{background:#343a40;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}"
+            "QFrame{background:#1e3a5f;border:2px solid #ffffff;border-radius:6px;} QLabel{color:#cfefff;}"
         )
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(1, 1, 1, 1)
@@ -1370,7 +1371,8 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.setSpacing(1)
 
         self.video_box = QtWidgets.QWidget()
-        self.video_box.setStyleSheet("background:#010203;border:1px solid #00a6d6;")
+        # DEBUG 視認用: video_box の占有領域を可視化
+        self.video_box.setStyleSheet("background:#7a1010;border:2px solid #ffff00;")
         video_layout = QtWidgets.QVBoxLayout(self.video_box)
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(0)
@@ -1386,6 +1388,8 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.addWidget(self.video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.right_box = QtWidgets.QWidget()
+        # DEBUG 視認用: right_box の占有領域を可視化
+        self.right_box.setStyleSheet("background:#0f5a2a;border:2px solid #ffff00;")
         self.right_box.setMinimumHeight(0)
         self.right_box.setFixedWidth(self.info_panel_w)
         self.right_box.setFixedHeight(self.video_frame_h)
