@@ -1434,13 +1434,15 @@ class CameraPanel(QtWidgets.QFrame):
 
         self.wakimura_cards: dict[str, QtWidgets.QLabel] = {}
         self.wakimura_frames: dict[str, QtWidgets.QFrame] = {}
+        self.wakimura_row: QtWidgets.QWidget | None = None
         if self.is_king:
+            wakimura_card_height = 66
             self.wakimura_row = QtWidgets.QWidget()
-            self.wakimura_row.setFixedHeight(98)
+            self.wakimura_row.setFixedHeight(wakimura_card_height)
             self.wakimura_row.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             wak_row_layout = QtWidgets.QHBoxLayout(self.wakimura_row)
             wak_row_layout.setContentsMargins(0, 0, 0, 0)
-            wak_row_layout.setSpacing(2)
+            wak_row_layout.setSpacing(1)
             for key, title in (
                 ("alpha", "運用効率指標"),
                 ("stay", "高付加判定"),
@@ -1450,10 +1452,10 @@ class CameraPanel(QtWidgets.QFrame):
                 card = QtWidgets.QFrame()
                 card.setStyleSheet("background:#081225;border:1px solid #6a4cff;border-radius:6px;")
                 card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-                card.setFixedHeight(98)
+                card.setFixedHeight(wakimura_card_height)
                 card_layout = QtWidgets.QVBoxLayout(card)
-                card_layout.setContentsMargins(4, 3, 4, 3)
-                card_layout.setSpacing(1)
+                card_layout.setContentsMargins(3, 2, 3, 2)
+                card_layout.setSpacing(0)
                 title_label = QtWidgets.QLabel(title)
                 title_label.setStyleSheet("font-size:10px;color:#c6afff;font-weight:800;")
                 title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -1466,7 +1468,6 @@ class CameraPanel(QtWidgets.QFrame):
                 wak_row_layout.addWidget(card, 1)
                 self.wakimura_cards[key] = value_label
                 self.wakimura_frames[key] = card
-            right.addWidget(self.wakimura_row)
 
         stay_head = QtWidgets.QLabel("1分以上滞在ID")
         stay_head.setStyleSheet("font-size:11px;font-weight:bold;color:#9de7ff;padding:0px;margin:0px;")
@@ -1483,6 +1484,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.stay_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Minimum)
         self.stay_box.setMinimumHeight(44)
         right.addWidget(self.stay_box)
+        if self.is_king and self.wakimura_row is not None:
+            right.addWidget(self.wakimura_row)
         self._render_stay_cards([])
         self._update_count_cards(0, 0)
         # UI余白圧縮はディスプレイ内に収めるための調整。
@@ -1512,7 +1515,7 @@ class CameraPanel(QtWidgets.QFrame):
         graphs_box = QtWidgets.QWidget()
         graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
         graphs_layout.setContentsMargins(0, 0, 0, 0)
-        graphs_layout.setSpacing(2)
+        graphs_layout.setSpacing(0)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
             g.setFixedHeight(62)
@@ -2497,7 +2500,7 @@ class MainWindow(QtWidgets.QMainWindow):
         content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(content)
         layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(5)
+        layout.setSpacing(14)
         scroll.setWidget(content)
 
         top_info_layout = QtWidgets.QVBoxLayout()
@@ -2601,7 +2604,7 @@ class MainWindow(QtWidgets.QMainWindow):
             labels={1.0: "LEVEL1", 2.0: "LEVEL2", 3.0: "LEVEL3", 4.0: "LEVEL4"},
         )
         layout.addWidget(self.system_level_graph)
-        layout.addSpacing(4)
+        layout.addSpacing(12)
         self.system_level_history_yesterday = self._load_system_level_history(self.system_level_history_date - timedelta(days=1))
         self.system_level_history_today = self._load_system_level_history(self.system_level_history_date)
         self.update_level_rule_text()
