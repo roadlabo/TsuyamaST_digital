@@ -140,7 +140,7 @@ DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "ai_status_json_path": "app/11_config/ai_status.json",
     "status_update_interval_sec": 10,
     "output_root": "app/04_ai_monitor/data",
-    "display_update_interval_ms": 800,
+    "display_update_interval_ms": 120,
     "graph_update_interval_sec": 10,
     "level2_threshold": 8.0,
     "level3_threshold": 12.0,
@@ -1330,8 +1330,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.stay_empty_label: QtWidgets.QLabel | None = None
         self._status_connected = False
         self.is_king = self.camera_id == 2
-        self.video_target_w = 560
-        self.video_target_h = 315
+        self.video_target_w = 548
+        self.video_target_h = 308
         self.last_graph_update_ts = 0.0
         self.graph_update_interval_sec = 1.0
         self._last_graph_revision_ts = -1.0
@@ -1340,7 +1340,7 @@ class CameraPanel(QtWidgets.QFrame):
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(1)
-        self.setMinimumWidth(1080)
+        self.setMinimumWidth(1068)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         top_row = QtWidgets.QHBoxLayout()
@@ -1363,7 +1363,7 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.addWidget(video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         right_box = QtWidgets.QWidget()
-        right_box.setMinimumWidth(480)
+        right_box.setMinimumWidth(500)
         right_box.setMinimumHeight(self.video_target_h)
         right_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         right = QtWidgets.QVBoxLayout(right_box)
@@ -1875,7 +1875,7 @@ class CameraWorker(QtCore.QObject):
         self.cached_wakimura_payload = self._default_wakimura_payload()
         display_update_interval_ms = int(self.system_cfg.get("display_update_interval_ms", 800))
         self.last_ui_emit_ts = 0.0
-        self.ui_emit_interval_sec = max(0.25, display_update_interval_ms / 1000.0)
+        self.ui_emit_interval_sec = max(0.12, display_update_interval_ms / 1000.0)
         self.last_graph_revision_ts = 0.0
 
         self.today = datetime.now().date()
@@ -2491,8 +2491,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.wakimura_formula_label.setStyleSheet(
             "color:#d6cbff;background:#0d1020;border:1px solid #4b3cb0;padding:4px;font-size:10px;"
         )
-        self.congestion_formula_label.setMinimumWidth(560)
-        self.wakimura_formula_label.setMinimumWidth(560)
+        self.congestion_formula_label.setMinimumWidth(500)
+        self.wakimura_formula_label.setMinimumWidth(500)
         self.congestion_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         self.wakimura_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
@@ -2501,7 +2501,7 @@ class MainWindow(QtWidgets.QMainWindow):
         top_left_box.setContentsMargins(4, 4, 4, 4)
         top_left_widget = QtWidgets.QWidget()
         top_left_widget.setLayout(top_left_box)
-        top_left_widget.setMinimumWidth(560)
+        top_left_widget.setMinimumWidth(500)
         top_left_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         formula_stack = QtWidgets.QVBoxLayout()
@@ -2517,11 +2517,14 @@ class MainWindow(QtWidgets.QMainWindow):
         level_block.setSpacing(3)
         level_block_widget = QtWidgets.QWidget()
         level_block_widget.setLayout(level_block)
-        level_block_widget.setMaximumWidth(400)
+        level_block_widget.setMinimumWidth(520)
+        level_block_widget.setMaximumWidth(520)
         level_block_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Preferred)
         self.level_badge = QtWidgets.QLabel("🟢 渋滞LEVEL1")
         self.level_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.level_badge.setMinimumHeight(58)
+        self.level_badge.setMinimumWidth(500)
+        self.level_badge.setMaximumWidth(500)
+        self.level_badge.setMinimumHeight(72)
         self.level_badge.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
         self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:28px;padding:2px 4px;")
         self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
@@ -2542,7 +2545,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_rule_label.setWordWrap(True)
         self.level_rule_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.level_rule_label.setStyleSheet("color:#b7dbff;background:#0a1420;border:1px solid #1f4f7a;padding:4px;font-size:12px;line-height:1.25em;")
-        self.level_rule_label.setMaximumWidth(400)
+        self.level_rule_label.setMinimumWidth(520)
+        self.level_rule_label.setMaximumWidth(520)
         self.level_rule_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Preferred)
         level_block.addWidget(self.level_badge)
 
@@ -2760,7 +2764,7 @@ class MainWindow(QtWidgets.QMainWindow):
         style = level_style(level)
         self.level_badge.setText(f"{style['icon']} 渋滞LEVEL{level}")
         self.level_badge.setStyleSheet(
-            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:36px;padding:3px 10px;"
+            f"background:{style['bg']};color:{style['fg']};border-radius:8px;font-weight:900;font-size:38px;padding:4px 12px;"
         )
 
     def _system_level_metrics_dir(self) -> Path:
