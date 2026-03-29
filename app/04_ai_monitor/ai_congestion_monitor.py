@@ -1356,7 +1356,6 @@ class CameraPanel(QtWidgets.QFrame):
         self._last_hist_revision = (-1, -1)
         display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
         role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
-        # DEBUG 視認用: CameraPanel 本体の占有領域を可視化
         self.setStyleSheet(
             "QFrame{background:#1e3a5f;border:2px solid #ffffff;border-radius:6px;} QLabel{color:#cfefff;}"
         )
@@ -1371,8 +1370,6 @@ class CameraPanel(QtWidgets.QFrame):
         top_row.setSpacing(1)
 
         self.video_box = QtWidgets.QWidget()
-        # DEBUG 視認用: video_box の占有領域を可視化
-        self.video_box.setStyleSheet("background:#7a1010;border:2px solid #ffff00;")
         video_layout = QtWidgets.QVBoxLayout(self.video_box)
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(0)
@@ -1385,11 +1382,8 @@ class CameraPanel(QtWidgets.QFrame):
         video_layout.addWidget(self.video, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         self.video_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.video_box.setFixedSize(self.video_frame_w, self.video_frame_h)
-        top_row.addWidget(self.video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
         self.right_box = QtWidgets.QWidget()
-        # DEBUG 視認用: right_box の占有領域を可視化
-        self.right_box.setStyleSheet("background:#0f5a2a;border:2px solid #ffff00;")
         self.right_box.setMinimumHeight(0)
         self.right_box.setFixedWidth(self.info_panel_w)
         self.right_box.setFixedHeight(self.video_frame_h)
@@ -1519,7 +1513,17 @@ class CameraPanel(QtWidgets.QFrame):
         self._update_count_cards(0, 0)
         # UI余白圧縮はディスプレイ内に収めるための調整。
 
-        top_row.addWidget(self.right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        wrapper = QtWidgets.QWidget()
+        wrapper.setFixedWidth(self.video_frame_w + 1 + self.info_panel_w)
+        wrapper.setFixedHeight(self.video_frame_h)
+        wrapper.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        inner_row = QtWidgets.QHBoxLayout(wrapper)
+        inner_row.setContentsMargins(0, 0, 0, 0)
+        inner_row.setSpacing(1)
+        inner_row.addWidget(self.video_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        inner_row.addWidget(self.right_box, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        top_row.addWidget(wrapper, 0, QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        top_row.addStretch(1)
         root.addLayout(top_row)
 
         self.graphs: list[CombinedTimelineGraph] = []
