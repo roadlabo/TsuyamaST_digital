@@ -1123,6 +1123,7 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
         self.y_min_override: float | None = None
         self.y_max_override: float | None = None
         self.y_axis_labels: dict[float, str] = {}
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setFixedHeight(60)
 
     def set_line_data(self, prev_points: list[tuple[datetime, float]], today_points: list[tuple[datetime, float]], title: str, threshold: float | None = None, show_threshold: bool = True) -> None:
@@ -1357,13 +1358,13 @@ class CameraPanel(QtWidgets.QFrame):
         display_name_map = {2: "KING", 1: "QUEEN", 3: "JACK"}
         role_name = display_name_map.get(self.camera_id, f"CAM{self.camera_id}")
         self.setStyleSheet(
-            "QFrame{background:#1e3a5f;border:2px solid #ffffff;border-radius:6px;} QLabel{color:#cfefff;}"
+            "QFrame{background:#343a40;border:1px solid #169db8;border-radius:6px;} QLabel{color:#cfefff;}"
         )
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(1, 1, 1, 1)
         root.setSpacing(1)
-        self.setMinimumWidth(1272)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.setFixedWidth(1068)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
 
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -1528,15 +1529,18 @@ class CameraPanel(QtWidgets.QFrame):
 
         self.graphs: list[CombinedTimelineGraph] = []
         graphs_box = QtWidgets.QWidget()
+        graphs_box.setFixedWidth(1057)
+        graphs_box.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         graphs_layout = QtWidgets.QVBoxLayout(graphs_box)
         graphs_layout.setContentsMargins(0, 1, 0, 0)
         graphs_layout.setSpacing(3)
         for _ in range(3):
             g = CombinedTimelineGraph("line")
             g.setFixedHeight(60)
+            g.setFixedWidth(1057)
             self.graphs.append(g)
             graphs_layout.addWidget(g)
-        root.addWidget(graphs_box)
+        root.addWidget(graphs_box, 0, QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self._update_title()
         self.threshold_edit.setText(f"{float(self.camera_cfg.get('congestion_threshold', 5.0)):.1f}")
 
@@ -2572,10 +2576,11 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
         self.setCentralWidget(scroll)
         content = QtWidgets.QWidget()
-        content.setMinimumWidth(1080)
-        content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        content.setFixedWidth(1068)
+        content.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         layout = QtWidgets.QVBoxLayout(content)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(14)
@@ -2600,24 +2605,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.wakimura_formula_label.setStyleSheet(
             "color:#d6cbff;background:#0d1020;border:1px solid #4b3cb0;padding:4px;font-size:10px;"
         )
-        self.congestion_formula_label.setMinimumWidth(500)
-        self.wakimura_formula_label.setMinimumWidth(500)
-        self.congestion_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        self.wakimura_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.congestion_formula_label.setFixedWidth(542)
+        self.wakimura_formula_label.setFixedWidth(542)
+        self.congestion_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.wakimura_formula_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
 
         top_left_box = QtWidgets.QVBoxLayout()
         top_left_box.setSpacing(2)
         top_left_box.setContentsMargins(4, 4, 4, 4)
         top_left_widget = QtWidgets.QWidget()
         top_left_widget.setLayout(top_left_box)
-        top_left_widget.setMinimumWidth(500)
-        top_left_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        top_left_widget.setFixedWidth(542)
+        top_left_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
 
         formula_stack = QtWidgets.QVBoxLayout()
         formula_stack.setContentsMargins(0, 0, 0, 0)
         formula_stack.setSpacing(3)
         formula_widget = QtWidgets.QWidget()
         formula_widget.setLayout(formula_stack)
+        formula_widget.setFixedWidth(542)
+        formula_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         formula_stack.addWidget(self.congestion_formula_label)
         formula_stack.addWidget(self.wakimura_formula_label)
 
@@ -2637,9 +2644,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.level_badge.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
         self.level_badge.setStyleSheet("background:#7fd0ff;color:#000000;border-radius:8px;font-weight:900;font-size:28px;padding:1px 4px;")
         self.system_title_ja = QtWidgets.QLabel("AI渋滞判定システム")
+        self.system_title_ja.setFixedWidth(542)
         self.system_title_ja.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_title_ja.setStyleSheet("font-size:30px;font-weight:900;color:#9fe8ff;")
         self.system_runtime_label = QtWidgets.QLabel("GPU: n/a ｜ model: n/a ｜ tracker: ByteTrack")
+        self.system_runtime_label.setFixedWidth(542)
         self.system_runtime_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.system_runtime_label.setStyleSheet("font-size:11px;color:#9abed0;")
         top_left_box.addWidget(self.system_title_ja)
@@ -2666,20 +2675,29 @@ class MainWindow(QtWidgets.QMainWindow):
         top_header_row = QtWidgets.QHBoxLayout()
         top_header_row.setContentsMargins(0, 0, 0, 0)
         top_header_row.setSpacing(6)
-        top_header_row.addWidget(top_left_widget, 1)
+        top_header_row.addWidget(top_left_widget, 0)
         top_header_row.addWidget(level_block_widget, 0)
-        top_info_layout.addLayout(top_header_row)
+        header_wrapper = QtWidgets.QWidget()
+        header_wrapper.setFixedWidth(1068)
+        header_wrapper.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
+        header_wrapper.setLayout(top_header_row)
+        top_info_layout.addWidget(header_wrapper, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
 
         top_detail_row = QtWidgets.QHBoxLayout()
         top_detail_row.setContentsMargins(0, 0, 0, 0)
         top_detail_row.setSpacing(6)
-        top_detail_row.addWidget(formula_widget, 1)
+        top_detail_row.addWidget(formula_widget, 0)
         top_detail_row.addWidget(self.level_rule_label, 0)
-        top_info_layout.addLayout(top_detail_row)
+        detail_wrapper = QtWidgets.QWidget()
+        detail_wrapper.setFixedWidth(1068)
+        detail_wrapper.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
+        detail_wrapper.setLayout(top_detail_row)
+        top_info_layout.addWidget(detail_wrapper, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         layout.addLayout(top_info_layout)
 
         self.system_level_graph = CombinedTimelineGraph("line")
         self.system_level_graph.setFixedHeight(78)
+        self.system_level_graph.setFixedWidth(1068)
         self.system_level_graph.set_y_axis_config(
             y_min=1.0,
             y_max=4.0,
