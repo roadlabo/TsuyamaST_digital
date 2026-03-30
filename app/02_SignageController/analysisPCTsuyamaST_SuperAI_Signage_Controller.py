@@ -49,14 +49,14 @@ if str(ROOT_DIR) not in sys.path:
 
 _congestion_common = importlib.import_module("10_common.congestion_common")
 level_style = _congestion_common.level_style
-CONFIG_DIR = ROOT_DIR / "11_config"
+CONFIG_DIR = ROOT_DIR / "config"
 CONTENT_DIR = ROOT_DIR.parent / "content"
 LOG_DIR = ROOT_DIR.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TELEMETRY_LOCAL_PATH = Path(r"C:\_TsuyamaSignage\app\logs\telemetry_local.json")
 
 REMOTE_APP_DIR = "app"
-REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\11_config"
+REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\config"
 REMOTE_LOGS_DIR = "logs"
 REMOTE_CONTENT_DIR = "content"
 
@@ -373,11 +373,18 @@ def write_json_atomic_remote(path: Path, payload: dict) -> None:
                     os.fsync(fh.fileno())
                 except OSError:
                     pass
+            verify = safe_read_json(path, default=None, retries=3)
+            if not isinstance(verify, dict):
+                raise RuntimeError("verify read failed")
+            if verify.get("active_channel") != payload.get("active_channel"):
+                raise RuntimeError(
+                    f"verify mismatch: expected={payload.get('active_channel')} actual={verify.get('active_channel')}"
+                )
             return
-        except (PermissionError, OSError) as exc:
+        except (PermissionError, OSError, RuntimeError) as exc:
             last_exc = exc
             _sleep_backoff(i)
-    logging.error("write_json_remote_overwrite failed: %s (%s)", path, last_exc)
+    raise RuntimeError(f"write_json_atomic_remote failed: {path} ({last_exc})")
 
 
 def parse_time(value: str) -> time:
@@ -2348,6 +2355,41 @@ QPushButton:disabled {
     def _log_sign_error(self, state: SignState, message: str) -> None:
         logging.info("[ERR] %s %s", state.name, message)
 
+    def _build_active_command_summary(self) -> str:
+        parts = []
+        for state in sorted(self.sign_states.values(), key=lambda s: s.name):
+            if not state.exists or not state.enabled:
+                continue
+            ch = state.active_channel or "-"
+            parts.append(f"{state.name}={ch}")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"[ACTIVE] {ts} " + " ".join(parts)
+
+    def _append_active_write_error_ui(self, state: SignState, message: str) -> None:
+        ch = state.active_channel or "-"
+        now = QtCore.QDateTime.currentDateTime().toString("yyyy/MM/dd HH:mm:ss")
+        self.log_view.appendPlainText(
+            f"[ERR] {now} active.json書込失敗 {state.name}({ch}) {message}"
+        )
+
+    def _is_active_write_error(self, message: str) -> bool:
+        if not message:
+            return False
+        lower = message.lower()
+        if "active_channel missing" in lower:
+            return False
+        if "共有" in message or "到達" in message or "unreachable" in lower:
+            return False
+        error_keys = (
+            "write_json_atomic_remote failed",
+            "verify mismatch",
+            "verify read failed",
+            "permissionerror",
+            "runtimeerror",
+            "oserror",
+        )
+        return any(key in lower for key in error_keys)
+
     def _save_inventory_state(self, state: SignState) -> None:
         info = self.inventory.get(state.name, {})
         info["enabled"] = state.enabled
@@ -2798,6 +2840,11 @@ QPushButton:disabled {
         *,
         phase: str = "sent",
     ) -> Tuple[List[dict], int, int, int]:
+        # active.json 配布ログ方針:
+        # - cmdログは配布開始時の要約1行のみ
+        # - UIログは active.json 書込失敗時のみ1行
+        # - active.json の不達/不一致は致命傷として確実に検知
+        # - 到達不可や無効端末は静かに扱う
         if getattr(self, "_distribute_busy", False):
             self._ui_call(lambda: self._log_reject("配布処理", "すでに配布中"))
             return [], 0, 0, 0
@@ -2812,15 +2859,13 @@ QPushButton:disabled {
             for state in self.sign_states.values():
                 if not state.exists:
                     skip_count += 1
-                    if log_label:
-                        self._log_sign_skip(state, "到達不可")
                     continue
                 if not state.enabled:
                     skip_count += 1
-                    if log_label:
-                        self._log_sign_skip(state, "非アクティブ")
                     continue
                 futures[self._executor.submit(self.distribute_active, state)] = state
+
+            logging.info(self._build_active_command_summary())
 
             for future, state in futures.items():
                 try:
@@ -2833,20 +2878,22 @@ QPushButton:disabled {
                 state.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if ok:
                     ok_count += 1
-                    if log_label:
-                        self._log_sign_ok(state, "配布完了")
                     results.append(self._build_pc_result(state, True, "", phase))
                 else:
                     if "共有" in message or "到達" in message:
                         skip_count += 1
-                        if log_label:
-                            self._log_sign_skip(state, f"到達不可 ({message})")
                         results.append(self._build_pc_result(state, False, "unreachable", phase))
                     else:
-                        err_count += 1
-                        if log_label:
-                            self._log_sign_error(state, message)
-                        results.append(self._build_pc_result(state, False, message, phase))
+                        if self._is_active_write_error(message):
+                            err_count += 1
+                            self._ui_call(
+                                lambda s=state, m=message: self._append_active_write_error_ui(s, m),
+                                label=f"active_write_error:{state.name}",
+                            )
+                            results.append(self._build_pc_result(state, False, message, phase))
+                        else:
+                            skip_count += 1
+                            results.append(self._build_pc_result(state, False, "skipped", phase))
                 self._ui_call(lambda s=state: self._update_column(int(s.name.replace("Sign", "")) - 1, s))
             return results, ok_count, skip_count, err_count
         finally:
@@ -2860,40 +2907,15 @@ QPushButton:disabled {
         active = read_active(CONFIG_DIR / state.name)
         if not active.get("active_channel"):
             return False, "active_channel missing"
-        t0 = time_module.monotonic()
-        self._dbg("distribute_active start sign=%s", state.name)
         ok, msg = self.is_share_reachable(state)
-        self._dbg(
-            "distribute_active share_check sign=%s ok=%s dt=%.3fs msg=%s",
-            state.name,
-            ok,
-            time_module.monotonic() - t0,
-            msg,
-        )
         if not ok:
-            logging.warning("到達不可 %s (%s)", state.name, msg)
             return False, msg
         remote_path = build_unc_path(state.ip, state.share_name, f"{REMOTE_CONFIG_DIR}\\active.json")
         try:
-            logging.info("[RUN] %s active.json 書込 -> %s", state.name, remote_path)
-            t1 = time_module.monotonic()
-            self._dbg("distribute_active write start sign=%s path=%s", state.name, remote_path)
             write_json_atomic_remote(Path(remote_path), active)
-            self._dbg(
-                "distribute_active write done sign=%s dt=%.3fs",
-                state.name,
-                time_module.monotonic() - t1,
-            )
-            logging.info("Distributed active.json to %s", state.name)
             return True, ""
         except Exception as exc:
-            logging.error(
-                "Failed to distribute to %s (%s: %s)",
-                state.name,
-                exc.__class__.__name__,
-                exc,
-            )
-            return False, f"{exc.__class__.__name__}: {exc}"
+            return False, f"{exc.__class__.__name__}: {exc} path={remote_path}"
 
     def start_sync(self) -> None:
         if self._ui_busy:
