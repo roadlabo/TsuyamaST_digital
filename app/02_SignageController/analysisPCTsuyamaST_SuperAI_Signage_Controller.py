@@ -49,13 +49,15 @@ if str(ROOT_DIR) not in sys.path:
 
 _congestion_common = importlib.import_module("10_common.congestion_common")
 level_style = _congestion_common.level_style
-CONFIG_DIR = ROOT_DIR / "config"
+# 事務所側PCは app\11_config を使う
+CONFIG_DIR = ROOT_DIR / "11_config"
 CONTENT_DIR = ROOT_DIR.parent / "content"
 LOG_DIR = ROOT_DIR.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TELEMETRY_LOCAL_PATH = Path(r"C:\_TsuyamaSignage\app\logs\telemetry_local.json")
 
 REMOTE_APP_DIR = "app"
+# サイネージPC側は従来どおり共有配下の app\config を使う
 REMOTE_CONFIG_DIR = f"{REMOTE_APP_DIR}\\config"
 REMOTE_LOGS_DIR = "logs"
 REMOTE_CONTENT_DIR = "content"
@@ -3301,6 +3303,14 @@ def main():
         setup_logging()
     except Exception:
         pass
+    logging.info(
+        "[BOOT] ROOT_DIR=%s CONFIG_DIR=%s REMOTE_CONFIG_DIR=%s CONTENT_DIR=%s LOG_DIR=%s",
+        ROOT_DIR,
+        CONFIG_DIR,
+        REMOTE_CONFIG_DIR,
+        CONTENT_DIR,
+        LOG_DIR,
+    )
 
     try:
         app = QtWidgets.QApplication(sys.argv)
