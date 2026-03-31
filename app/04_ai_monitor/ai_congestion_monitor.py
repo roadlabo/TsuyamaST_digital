@@ -11,8 +11,10 @@ import os
 import sys
 import time
 import traceback
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from zipfile import BadZipFile
 from pathlib import Path
 from typing import Any
 
@@ -909,12 +911,15 @@ class TenMinuteRecordWriter:
             row.extend([avg_index, avg_wakimura, ltor, rtol])
         return row
 
-    def append_row(self, target_date: date, row: list[Any]) -> Path:
+    def _append_row_now(self, target_date: date, row: list[Any]) -> Path:
         wb, path = self._load_or_create(target_date)
         ws = wb["Data"]
         ws.append(row)
         wb.save(path)
         return path
+
+    def append_row(self, target_date: date, row: list[Any]) -> None:
+        self._append_row_now(target_date, row)
 
     def finalize_day_graph(self, target_date: date) -> Path | None:
         path = self.output_root / f"{target_date.isoformat()}.xlsx"
@@ -990,6 +995,78 @@ class TenMinuteRecordWriter:
         wb.create_sheet("Graph")
         wb.save(path)
         return wb, path
+
+
+class DeferredExcelWriteManager:
+    def __init__(self, ten_min_writer: TenMinuteRecordWriter, parent_window: "MainWindow"):
+        self.ten_min_writer = ten_min_writer
+        self.parent_window = parent_window
+        self.pending_daily_rows: dict[date, list[list[Any]]] = defaultdict(list)
+        self.pending_finalize_dates: set[date] = set()
+        self.lock_notice_shown = False
+        self.lock_notice_dialog: QtWidgets.QMessageBox | None = None
+        self.last_lock_notice_at = 0.0
+        self.last_flush_attempt_at = 0.0
+        self.flush_interval_sec = 2.0
+
+    def enqueue_daily_row(self, target_date: date, row: list[Any]) -> None:
+        self.pending_daily_rows[target_date].append(list(row))
+
+    def enqueue_finalize(self, target_date: date) -> None:
+        self.pending_finalize_dates.add(target_date)
+
+    def has_pending(self) -> bool:
+        return bool(self.pending_daily_rows or self.pending_finalize_dates)
+
+    def process_pending_writes(self) -> None:
+        now_ts = time.time()
+        if now_ts - self.last_flush_attempt_at < self.flush_interval_sec:
+            return
+        self.last_flush_attempt_at = now_ts
+
+        flushed_any = False
+        rows_limit_per_date = 3
+        try:
+            for target_date in sorted(self.pending_daily_rows.keys()):
+                rows = self.pending_daily_rows.get(target_date, [])
+                if not rows:
+                    self.pending_daily_rows.pop(target_date, None)
+                    continue
+                processed = 0
+                while rows and processed < rows_limit_per_date:
+                    row = rows[0]
+                    path = self.ten_min_writer.output_root / f"{target_date.isoformat()}.xlsx"
+                    try:
+                        self.ten_min_writer._append_row_now(target_date, row)
+                    except Exception as exc:
+                        logging.warning("[EXCEL] write deferred: %s (%s)", path, exc)
+                        self.parent_window.show_excel_lock_notice()
+                        return
+                    rows.pop(0)
+                    processed += 1
+                    flushed_any = True
+                if not rows:
+                    self.pending_daily_rows.pop(target_date, None)
+                break
+
+            if not self.pending_daily_rows and self.pending_finalize_dates:
+                target_date = min(self.pending_finalize_dates)
+                path = self.ten_min_writer.output_root / f"{target_date.isoformat()}.xlsx"
+                try:
+                    self.ten_min_writer.finalize_day_graph(target_date)
+                except Exception as exc:
+                    logging.warning("[EXCEL] write deferred: %s (%s)", path, exc)
+                    self.parent_window.show_excel_lock_notice()
+                    return
+                self.pending_finalize_dates.discard(target_date)
+                flushed_any = True
+        finally:
+            if self.has_pending():
+                self.parent_window.show_excel_lock_notice()
+            else:
+                self.parent_window.hide_excel_lock_notice()
+                if flushed_any:
+                    logging.info("[EXCEL] deferred writes flushed: %s", self.ten_min_writer.output_root)
 
 
 # =========================================
@@ -1375,6 +1452,15 @@ class CombinedTimelineGraph(QtWidgets.QWidget):
             for points, color in [(self.prev_points, QtGui.QColor("#2f7dff")), (self.today_points, QtGui.QColor("#ff3b3b"))]:
                 if not points:
                     continue
+                if len(points) == 1:
+                    ts, value = points[0]
+                    sec = ts.hour * 3600 + ts.minute * 60 + ts.second
+                    x = plot.left() + (sec / 86400.0) * plot.width()
+                    y = plot.bottom() - ((value - y_min) / (y_max - y_min)) * plot.height()
+                    painter.setPen(QtGui.QPen(color, 2.0))
+                    painter.setBrush(color)
+                    painter.drawEllipse(QtCore.QPointF(x, y), 3.0, 3.0)
+                    continue
                 path = QtGui.QPainterPath()
                 for i, (ts, value) in enumerate(points):
                     sec = ts.hour * 3600 + ts.minute * 60 + ts.second
@@ -1498,6 +1584,8 @@ class CameraPanel(QtWidgets.QFrame):
         self.info_panel_w = 528
         self.last_graph_update_ts = 0.0
         self.graph_update_interval_sec = 1.0
+        self.last_line_force_refresh_ts = 0.0
+        self.line_force_refresh_interval_sec = 5.0
         self._last_graph_revision_ts = -1.0
         self._last_hist_revision = (-1, -1)
         display_name_map = {2: "JACK", 1: "QUEEN", 3: "KING"}
@@ -1725,15 +1813,19 @@ class CameraPanel(QtWidgets.QFrame):
         now_ts = time.time()
         graph_revision_ts = float(payload.get("graph_revision_ts", 0.0))
         should_update_line = (
-            graph_revision_ts > self._last_graph_revision_ts
-            and (now_ts - self.last_graph_update_ts >= self.graph_update_interval_sec)
+            (
+                graph_revision_ts > self._last_graph_revision_ts
+                and (now_ts - self.last_graph_update_ts >= self.graph_update_interval_sec)
+            )
+            or (now_ts - self.last_line_force_refresh_ts >= self.line_force_refresh_interval_sec)
         )
         hist_revision = (int(sum(ltor)), int(sum(rtol)))
         should_update_hist = hist_revision != self._last_hist_revision
         if should_update_line:
             self.graphs[0].set_line_data(payload.get("prev_congestion_points", []), payload.get("congestion_points", []), "渋滞指数", threshold=threshold, show_threshold=True)
-            self._last_graph_revision_ts = graph_revision_ts
+            self._last_graph_revision_ts = max(self._last_graph_revision_ts, graph_revision_ts)
             self.last_graph_update_ts = now_ts
+            self.last_line_force_refresh_ts = now_ts
         if should_update_hist:
             self.graphs[1].set_bar_data(payload.get("hist_prev_ltor", [0] * 144), ltor, "LtoR")
             self.graphs[2].set_bar_data(payload.get("hist_prev_rtol", [0] * 144), rtol, "RtoL")
@@ -2069,6 +2161,8 @@ class CameraWorker(QtCore.QObject):
         # 途中再起動後も過大計上しない設計。
         self.boot_today_hist_ltor, self.boot_today_hist_rtol = self._load_today_histogram()
         self.boot_today_congestion_points = self._load_today_congestion_points()
+        self.last_graph_reload_at = 0.0
+        self.graph_reload_interval_sec = 15.0
         self.counter.state.pass_bins_ltor = list(self.boot_today_hist_ltor)
         self.counter.state.pass_bins_rtol = list(self.boot_today_hist_rtol)
         if self.boot_today_congestion_points:
@@ -2166,15 +2260,19 @@ class CameraWorker(QtCore.QObject):
         poly = np.array(polygon_points, np.int32)
         return cv2.pointPolygonTest(poly, point, False) >= 0
 
-    def _load_daily_data_sheet(self, target_date: date) -> pd.DataFrame:
+    def _load_daily_data_sheet(self, target_date: date) -> tuple[pd.DataFrame | None, bool]:
         path = self.daily_report_dir / f"{target_date.isoformat()}.xlsx"
         if not path.exists():
-            return pd.DataFrame()
+            return pd.DataFrame(), True
         try:
             df = pd.read_excel(path, sheet_name="Data")
-        except Exception:
-            return pd.DataFrame()
-        return df if not df.empty else pd.DataFrame()
+        except (PermissionError, OSError, BadZipFile, ValueError) as exc:
+            logging.warning("[GRAPH] read failed: %s (%s)", path, exc)
+            return None, False
+        except Exception as exc:
+            logging.warning("[GRAPH] read failed: %s (%s)", path, exc)
+            return None, False
+        return (df if not df.empty else pd.DataFrame()), True
 
     def _default_wakimura_payload(self) -> dict[str, Any]:
         return {
@@ -2190,8 +2288,13 @@ class CameraWorker(QtCore.QObject):
         prev = self.today.fromordinal(self.today.toordinal() - 1)
         ltor = [0] * 144
         rtol = [0] * 144
-        df = self._load_daily_data_sheet(prev)
-        if df.empty:
+        df, ok = self._load_daily_data_sheet(prev)
+        if not ok:
+            return (
+                list(getattr(self, "previous_day_hist_ltor", ltor)),
+                list(getattr(self, "previous_day_hist_rtol", rtol)),
+            )
+        if df is None or df.empty:
             return ltor, rtol
         for _, row in df.iterrows():
             try:
@@ -2208,8 +2311,10 @@ class CameraWorker(QtCore.QObject):
     def _load_previous_day_congestion_points(self) -> list[tuple[datetime, float]]:
         prev = self.today.fromordinal(self.today.toordinal() - 1)
         points: list[tuple[datetime, float]] = []
-        df = self._load_daily_data_sheet(prev)
-        if df.empty:
+        df, ok = self._load_daily_data_sheet(prev)
+        if not ok:
+            return list(getattr(self, "previous_day_congestion_points", points))
+        if df is None or df.empty:
             return points
         for _, row in df.iterrows():
             try:
@@ -2234,8 +2339,13 @@ class CameraWorker(QtCore.QObject):
     def _load_today_histogram(self) -> tuple[list[int], list[int]]:
         ltor = [0] * 144
         rtol = [0] * 144
-        df = self._load_daily_data_sheet(self.today)
-        if df.empty:
+        df, ok = self._load_daily_data_sheet(self.today)
+        if not ok:
+            return (
+                list(getattr(self, "boot_today_hist_ltor", ltor)),
+                list(getattr(self, "boot_today_hist_rtol", rtol)),
+            )
+        if df is None or df.empty:
             return ltor, rtol
         ltor_col = f"Camera{self.camera_id} LtoR"
         rtol_col = f"Camera{self.camera_id} RtoL"
@@ -2252,8 +2362,10 @@ class CameraWorker(QtCore.QObject):
 
     def _load_today_congestion_points(self) -> list[tuple[datetime, float]]:
         points: list[tuple[datetime, float]] = []
-        df = self._load_daily_data_sheet(self.today)
-        if df.empty:
+        df, ok = self._load_daily_data_sheet(self.today)
+        if not ok:
+            return list(getattr(self, "boot_today_congestion_points", points))
+        if df is None or df.empty:
             return points
         score_col = f"Camera{self.camera_id} 渋滞指数"
         for _, row in df.iterrows():
@@ -2290,6 +2402,33 @@ class CameraWorker(QtCore.QObject):
         self.congestion.state.current_congestion_index = 0.0
         self.congestion.state.current_smoothed_index = 0.0
         self.last_graph_revision_ts = time.time() if self.boot_today_congestion_points else 0.0
+        self.last_graph_reload_at = 0.0
+
+    def _refresh_graph_source_cache_if_needed(self, now: datetime) -> None:
+        now_ts = time.time()
+        if now_ts - self.last_graph_reload_at < self.graph_reload_interval_sec:
+            return
+        self.last_graph_reload_at = now_ts
+        old_prev_points = len(self.previous_day_congestion_points)
+        old_today_points = len(self.boot_today_congestion_points)
+
+        prev_hist = self._load_previous_day_histogram()
+        prev_points = self._load_previous_day_congestion_points()
+        today_hist = self._load_today_histogram()
+        today_points = self._load_today_congestion_points()
+
+        self.previous_day_hist_ltor, self.previous_day_hist_rtol = prev_hist
+        self.previous_day_congestion_points = prev_points
+        self.boot_today_hist_ltor, self.boot_today_hist_rtol = today_hist
+        self.boot_today_congestion_points = today_points
+        if len(prev_points) != old_prev_points or len(today_points) != old_today_points:
+            self.last_graph_revision_ts = time.time()
+        logging.info(
+            "[GRAPH] cache refreshed: cam=%s prev_points=%s today_points=%s",
+            self.camera_id,
+            len(self.previous_day_congestion_points),
+            len(self.boot_today_congestion_points),
+        )
 
     def _get_display_id(self, track_id: int) -> int:
         if track_id not in self.display_id_map:
@@ -2438,6 +2577,7 @@ class CameraWorker(QtCore.QObject):
             self.last_raw_frame = self._resize_for_display(frame.copy())
             now = datetime.now()
             self._rollover_if_needed(now)
+            self._refresh_graph_source_cache_if_needed(now)
 
             self.frame_index += 1
             frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
@@ -2747,6 +2887,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.app_cfg = self.cfg_mgr.load()
         self.reporter = ReportWriter(root_dir / "data")
         self.ten_min_writer = TenMinuteRecordWriter(root_dir / "data")
+        self.deferred_excel_mgr = DeferredExcelWriteManager(
+            ten_min_writer=self.ten_min_writer,
+            parent_window=self,
+        )
+        self.pending_excel_path = self.root_dir / "data" / "reports" / "daily" / "pending_excel_writes.json"
         raw_ai_status = Path(self.app_cfg.system.get("ai_status_json_path", "app/11_config/ai_status.json"))
         script_base = Path(__file__).resolve().parents[2]
         if raw_ai_status.is_absolute():
@@ -2954,6 +3099,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 200)))
+        self._load_pending_excel_writes()
         QtCore.QTimer.singleShot(0, self._show_on_target_screen)
 
     def tick(self) -> None:
@@ -2968,6 +3114,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.last_system_level_record_ts = now_ts
             self._refresh_system_level_graph()
         self._collect_and_flush_10min_records(now)
+        self.deferred_excel_mgr.process_pending_writes()
 
     @QtCore.pyqtSlot(dict)
     def on_camera_payload(self, payload: dict[str, Any]) -> None:
@@ -3242,6 +3389,77 @@ class MainWindow(QtWidgets.QMainWindow):
         path = self.reporter.write_monthly_report(month, self.root_dir / "data" / "metrics", self.app_cfg.cameras)
         QtWidgets.QMessageBox.information(self, "月次", f"出力完了: {path}")
 
+    def show_excel_lock_notice(self) -> None:
+        if self.deferred_excel_mgr.lock_notice_dialog is None:
+            dialog = QtWidgets.QMessageBox(self)
+            dialog.setWindowTitle("日次Excelが開かれています")
+            dialog.setText(
+                "日次記録Excelが他のアプリで開かれているため、書き込みを保留しています。"
+                "Excelを閉じると自動で反映します。解析は継続中です。"
+            )
+            dialog.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+            dialog.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+            dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            dialog.finished.connect(lambda _=0: setattr(self.deferred_excel_mgr, "lock_notice_shown", False))
+            self.deferred_excel_mgr.lock_notice_dialog = dialog
+        if not self.deferred_excel_mgr.lock_notice_shown:
+            self.deferred_excel_mgr.lock_notice_shown = True
+            self.deferred_excel_mgr.last_lock_notice_at = time.time()
+            self.deferred_excel_mgr.lock_notice_dialog.show()
+            self.deferred_excel_mgr.lock_notice_dialog.raise_()
+            self.deferred_excel_mgr.lock_notice_dialog.activateWindow()
+
+    def hide_excel_lock_notice(self) -> None:
+        dialog = self.deferred_excel_mgr.lock_notice_dialog
+        if dialog is not None and dialog.isVisible():
+            dialog.hide()
+        self.deferred_excel_mgr.lock_notice_shown = False
+
+    def _load_pending_excel_writes(self) -> None:
+        payload = safe_read_json(self.pending_excel_path, default={}, retries=3)
+        if not isinstance(payload, dict):
+            return
+        loaded_rows = 0
+        for date_str, rows in (payload.get("daily_rows", {}) or {}).items():
+            try:
+                target_date = date.fromisoformat(str(date_str))
+            except Exception:
+                continue
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if isinstance(row, list):
+                    self.deferred_excel_mgr.enqueue_daily_row(target_date, row)
+                    loaded_rows += 1
+        loaded_finalize = 0
+        for date_str in (payload.get("finalize_dates", []) or []):
+            try:
+                target_date = date.fromisoformat(str(date_str))
+            except Exception:
+                continue
+            self.deferred_excel_mgr.enqueue_finalize(target_date)
+            loaded_finalize += 1
+        if loaded_rows or loaded_finalize:
+            logging.info("[EXCEL] restored pending writes rows=%s finalize=%s", loaded_rows, loaded_finalize)
+
+    def _save_pending_excel_writes(self) -> None:
+        if not self.deferred_excel_mgr.has_pending():
+            if self.pending_excel_path.exists():
+                try:
+                    self.pending_excel_path.unlink()
+                except Exception:
+                    pass
+            return
+        daily_rows: dict[str, list[list[Any]]] = {}
+        for target_date, rows in sorted(self.deferred_excel_mgr.pending_daily_rows.items(), key=lambda x: x[0]):
+            if rows:
+                daily_rows[target_date.isoformat()] = [list(row) for row in rows]
+        payload = {
+            "daily_rows": daily_rows,
+            "finalize_dates": [d.isoformat() for d in sorted(self.deferred_excel_mgr.pending_finalize_dates)],
+        }
+        write_json_atomic(self.pending_excel_path, payload, retries=3)
+
     def _collect_and_flush_10min_records(self, now: datetime) -> None:
         level = self.compute_system_level()
         self.ten_min_buffer.append(self.ten_min_writer.collect_sample(now, level, self.latest_payloads))
@@ -3253,17 +3471,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_10min_bin_start = active_bin
         self.current_10min_date = active_bin.date()
         if self.current_10min_date != prev_date:
-            self.ten_min_writer.finalize_day_graph(prev_date)
+            self.deferred_excel_mgr.enqueue_finalize(prev_date)
 
     def _flush_current_10min_bin(self) -> None:
         if not self.ten_min_buffer:
             return
         row = self.ten_min_writer.aggregate_10min(self.current_10min_bin_start, self.ten_min_buffer)
-        self.ten_min_writer.append_row(self.current_10min_bin_start.date(), row)
+        self.deferred_excel_mgr.enqueue_daily_row(self.current_10min_bin_start.date(), row)
         self.ten_min_buffer.clear()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self._flush_current_10min_bin()
+        self.deferred_excel_mgr.process_pending_writes()
+        self._save_pending_excel_writes()
+        self.hide_excel_lock_notice()
         if self.blink_timer.isActive():
             self.blink_timer.stop()
         for worker in self.workers.values():
