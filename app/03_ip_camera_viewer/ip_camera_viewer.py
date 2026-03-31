@@ -146,11 +146,12 @@ class StreamWorker(QThread):
     frame_ready = pyqtSignal(QImage)
     status_changed = pyqtSignal(str)
 
-    def __init__(self, rtsp_url: str, target_fps: float = 5.0, reconnect_seconds: float = 4.0, parent: QObject | None = None):
+    def __init__(self, rtsp_url: str, target_fps: float = 5.0, reconnect_seconds: float = 4.0, camera_label: str = "", parent: QObject | None = None):
         super().__init__(parent)
         self.rtsp_url = rtsp_url
         self.target_fps = target_fps
         self.reconnect_seconds = reconnect_seconds
+        self.camera_label = camera_label or "cam?"
         self._running = False
         self._mutex = QMutex()
         self._cap: cv2.VideoCapture | None = None
@@ -173,6 +174,8 @@ class StreamWorker(QThread):
 
         try:
             frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
+            periodic_reopen_sec = 1800.0
+            reconnect_count = 0
             while self._is_running():
                 if not self.rtsp_url:
                     self.status_changed.emit("ERROR")
@@ -194,8 +197,18 @@ class StreamWorker(QThread):
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     self.status_changed.emit("OK")
                     last_emit = 0.0
+                    opened_at = time.monotonic()
+                    read_fail_count = 0
+                    fps_frames = 0
+                    fps_last_ts = time.monotonic()
+                    current_fps = 0.0
+                    last_success_read_at = 0.0
+                    last_view_log_at = 0.0
 
                     while self._is_running():
+                        if (time.monotonic() - opened_at) >= periodic_reopen_sec:
+                            logger.info("[VIEW] %s periodic reopen", self.camera_label)
+                            break
                         try:
                             ok, frame = cap.read()
                         except cv2.error as exc:
@@ -208,14 +221,28 @@ class StreamWorker(QThread):
                             break
 
                         if not ok or frame is None:
-                            self.status_changed.emit("ERROR")
-                            logger.warning("Stream dropped. reconnecting: %s", self.rtsp_url)
-                            break
+                            read_fail_count += 1
+                            if read_fail_count >= 3:
+                                self.status_changed.emit("ERROR")
+                                logger.warning("Stream dropped repeatedly. reconnecting: %s", self.rtsp_url)
+                                break
+                            continue
+                        read_fail_count = 0
+                        last_success_read_at = time.monotonic()
 
                         now = time.monotonic()
                         if frame_interval > 0 and (now - last_emit) < frame_interval:
                             continue
                         last_emit = now
+                        fps_frames += 1
+                        if (now - fps_last_ts) >= 1.0:
+                            current_fps = fps_frames / max(1e-6, (now - fps_last_ts))
+                            fps_frames = 0
+                            fps_last_ts = now
+                        if (now - last_view_log_at) >= 60.0:
+                            age_ms = 0.0 if last_success_read_at <= 0.0 else (now - last_success_read_at) * 1000.0
+                            logger.info("[VIEW] %s fps=%.2f age=%.0fms reconnect=%d", self.camera_label, current_fps, age_ms, reconnect_count)
+                            last_view_log_at = now
 
                         try:
                             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -237,6 +264,7 @@ class StreamWorker(QThread):
                     self._cap = None
                     self._mutex.unlock()
 
+                reconnect_count += 1
                 self._sleep_with_interrupt(self.reconnect_seconds)
         except Exception as exc:  # noqa: BLE001
             self.status_changed.emit("ERROR")
@@ -257,12 +285,12 @@ class StreamPlayer(QObject):
         self._worker: Optional[StreamWorker] = None
         self._stopping = False
 
-    def start(self, rtsp_url: str, target_fps: float = 5.0) -> None:
+    def start(self, rtsp_url: str, target_fps: float = 5.0, camera_label: str = "") -> None:
         self.stop()
         if not rtsp_url:
             self.status_changed.emit("ERROR")
             return
-        self._worker = StreamWorker(rtsp_url=rtsp_url, target_fps=target_fps, parent=self)
+        self._worker = StreamWorker(rtsp_url=rtsp_url, target_fps=target_fps, camera_label=camera_label, parent=self)
         self._worker.frame_ready.connect(self.frame_ready.emit)
         self._worker.status_changed.connect(self.status_changed.emit)
         self._worker.start()
@@ -516,7 +544,7 @@ class CameraTile(QWidget):
             self.video_label.setText("サブストリーム未設定")
             return
         self._stream_type = "SUB"
-        self.stream_player.start(rtsp_sub, target_fps=5.0)
+        self.stream_player.start(rtsp_sub, target_fps=5.0, camera_label=str(self.camera_config.get("id", "cam?")))
 
     def stop_stream(self) -> None:
         self.stream_player.stop()
@@ -685,7 +713,7 @@ class FullscreenWindow(QWidget):
             QMessageBox.warning(self, "設定不足", "このカメラにはメインストリームURLがありません。")
             return
 
-        self.player.start(rtsp_main, target_fps=12.0)
+        self.player.start(rtsp_main, target_fps=5.0, camera_label=str(camera_config.get("id", "cam?")))
 
     def show_on_target(self) -> None:
         if not self.target_screen:
