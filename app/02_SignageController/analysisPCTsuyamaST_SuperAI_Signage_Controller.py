@@ -69,20 +69,23 @@ AI_STATUS_STALE_SEC = 30
 
 BASE_COL = 1
 N_SIGNAGE = 20
-MAX_CHANNEL = 50
-CHANNELS = [f"ch{idx:02d}" for idx in range(1, MAX_CHANNEL + 1)]
-COMMON_CHANNEL_CHOICES = [f"ch{n:02d}" for n in range(2, 20)]
-NORMAL_CHOICES = COMMON_CHANNEL_CHOICES.copy()
+CHANNELS = [f"ch{idx:02d}" for idx in range(1, N_SIGNAGE + 1)]
+NORMAL_CHOICES = [f"ch{n:02d}" for n in range(5, 11)]
 EMERGENCY_CHANNEL = "ch20"
-TIMER_CHOICES = COMMON_CHANNEL_CHOICES.copy()
-AI_SAME_AS_NORMAL_LABEL = "通常時と同じ"
-AI_LEVEL2_CHOICES = [AI_SAME_AS_NORMAL_LABEL] + [f"ch{n:02d}" for n in range(21, 31)]
-AI_LEVEL3_CHOICES = [AI_SAME_AS_NORMAL_LABEL] + [f"ch{n:02d}" for n in range(31, 41)]
-AI_LEVEL4_CHOICES = [AI_SAME_AS_NORMAL_LABEL] + [f"ch{n:02d}" for n in range(41, 51)]
+TIMER_CHOICES = [f"ch{n:02d}" for n in range(11, 20)]
+AI_CHOICES = ["通常時と同じ", "ch02", "ch03", "ch04"]
 SLEEP_FIXED = "ch01"
 TIMER_CHANNEL_COLORS = {
-    channel: QtGui.QColor.fromHsv(int((idx * 240) / max(1, len(TIMER_CHOICES))), 180, 235)
-    for idx, channel in enumerate(TIMER_CHOICES)
+    "ch11": QtGui.QColor(220, 50, 32),
+    "ch12": QtGui.QColor(255, 140, 0),
+    "ch13": QtGui.QColor(255, 215, 0),
+    "ch14": QtGui.QColor(154, 205, 50),
+    "ch15": QtGui.QColor(34, 139, 34),
+    "ch16": QtGui.QColor(0, 191, 255),
+    "ch17": QtGui.QColor(30, 144, 255),
+    "ch18": QtGui.QColor(138, 43, 226),
+    "ch19": QtGui.QColor(75, 0, 130),
+    "ch20": QtGui.QColor(255, 105, 180),
 }
 LEFT_COL_WIDTH = 170
 GAP_PX = 3
@@ -421,89 +424,8 @@ def build_unc_path(ip: str, share: str, relative: str) -> str:
     return rf"\\{ip}\{share}\{rel}"
 
 
-def _default_ai_channels_for_sign(sign_name: str) -> dict:
-    sign_no = int(sign_name.replace("Sign", "")) if sign_name.startswith("Sign") else 0
-    if sign_no == 1:
-        return {"level2": "ch21", "level3": "ch31", "level4": "ch41"}
-    if sign_no == 2:
-        return {"level2": "ch22", "level3": "ch32", "level4": "ch42"}
-    if sign_no == 3:
-        return {"level2": "ch23", "level3": "ch33", "level4": "ch43"}
-    if sign_no == 4:
-        return {"level2": "ch23", "level3": "ch33", "level4": "ch43"}
-    return {
-        "level2": "same_as_normal",
-        "level3": "same_as_normal",
-        "level4": "same_as_normal",
-    }
-
-
-def default_sign_config(sign_name: str) -> dict:
-    sign_no = int(sign_name.replace("Sign", "")) if sign_name.startswith("Sign") else 0
-    if sign_no == 1:
-        normal_channel = "ch02"
-    elif sign_no == 2:
-        normal_channel = "ch03"
-    elif sign_no == 3:
-        normal_channel = "ch04"
-    else:
-        normal_channel = "ch05"
-    return {
-        "sleep_channel": SLEEP_FIXED,
-        "sleep_rules": [{"start": "00:00", "end": "05:00"}],
-        "normal_channel": normal_channel,
-        "ai_channels": _default_ai_channels_for_sign(sign_name),
-        "timer_rules": [],
-    }
-
-
-def _sanitize_ai_choice(value: Optional[str], choices: List[str]) -> str:
-    if value == "same_as_normal":
-        return "same_as_normal"
-    if value in choices:
-        return value
-    return "same_as_normal"
-
-
-def sanitize_sign_config(config: dict, sign_name: str) -> dict:
-    base = default_sign_config(sign_name)
-    merged = dict(config or {})
-    merged.setdefault("sleep_channel", base["sleep_channel"])
-    merged.setdefault("sleep_rules", base["sleep_rules"])
-    merged.setdefault("timer_rules", base["timer_rules"])
-    normal_channel = merged.get("normal_channel", base["normal_channel"])
-    if normal_channel not in NORMAL_CHOICES:
-        normal_channel = "ch05"
-    merged["normal_channel"] = normal_channel
-    ai_channels = merged.get("ai_channels", {})
-    if not isinstance(ai_channels, dict):
-        ai_channels = {}
-    merged["ai_channels"] = {
-        "level2": _sanitize_ai_choice(ai_channels.get("level2"), AI_LEVEL2_CHOICES),
-        "level3": _sanitize_ai_choice(ai_channels.get("level3"), AI_LEVEL3_CHOICES),
-        "level4": _sanitize_ai_choice(ai_channels.get("level4"), AI_LEVEL4_CHOICES),
-    }
-    sanitized_timer_rules = []
-    for rule in merged.get("timer_rules", []) or []:
-        if not isinstance(rule, dict):
-            continue
-        channel = rule.get("channel", "ch05")
-        if channel not in TIMER_CHOICES:
-            channel = "ch05"
-        sanitized_timer_rules.append(
-            {
-                "start": str(rule.get("start", "")),
-                "end": str(rule.get("end", "")),
-                "channel": channel,
-            }
-        )
-    merged["timer_rules"] = sanitized_timer_rules
-    return merged
-
-
 def read_config(sign_dir: Path) -> dict:
-    config = load_json(sign_dir / "config.json", {})
-    return sanitize_sign_config(config, sign_dir.name)
+    return load_json(sign_dir / "config.json", {})
 
 
 def read_active(sign_dir: Path) -> dict:
@@ -549,7 +471,7 @@ def compute_active_channel(
         ai_choice = ai_channels.get(key)
         if ai_choice == "same_as_normal":
             return sign_config.get("normal_channel", "ch05")
-        if ai_choice in CHANNELS:
+        if ai_choice:
             return ai_choice
 
     matched_channel = None
@@ -621,18 +543,18 @@ class ConfigDialog(QtWidgets.QDialog):
 
         self.normal_combo = QtWidgets.QComboBox()
         self.normal_combo.addItems(NORMAL_CHOICES)
-        form.addRow("通常チャンネル（ch02～ch19）", self.normal_combo)
+        form.addRow("通常チャンネル", self.normal_combo)
 
         self.ai_level2 = QtWidgets.QComboBox()
-        self.ai_level2.addItems(AI_LEVEL2_CHOICES)
+        self.ai_level2.addItems(AI_CHOICES)
         form.addRow("AI LV2", self.ai_level2)
 
         self.ai_level3 = QtWidgets.QComboBox()
-        self.ai_level3.addItems(AI_LEVEL3_CHOICES)
+        self.ai_level3.addItems(AI_CHOICES)
         form.addRow("AI LV3", self.ai_level3)
 
         self.ai_level4 = QtWidgets.QComboBox()
-        self.ai_level4.addItems(AI_LEVEL4_CHOICES)
+        self.ai_level4.addItems(AI_CHOICES)
         form.addRow("AI LV4", self.ai_level4)
 
         layout.addLayout(form)
@@ -667,7 +589,7 @@ class ConfigDialog(QtWidgets.QDialog):
         self.timer_table.setMinimumHeight(
             self.timer_table.horizontalHeader().height() + row_h * visible_rows + 8
         )
-        layout.addWidget(QtWidgets.QLabel("タイマー設定（通常チャンネルと同じ ch02～ch19）"))
+        layout.addWidget(QtWidgets.QLabel("タイマー設定"))
         layout.addWidget(self.timer_table)
 
         buttons_layout = QtWidgets.QHBoxLayout()
@@ -700,13 +622,11 @@ class ConfigDialog(QtWidgets.QDialog):
         self._reload_form_from_config()
 
     def _ai_choice_to_display(self, value: Optional[str]) -> str:
-        return AI_SAME_AS_NORMAL_LABEL if value == "same_as_normal" else str(value or "")
-
-    def _set_ai_combo_value(self, combo: QtWidgets.QComboBox, value: Optional[str], choices: List[str]) -> None:
-        display_value = self._ai_choice_to_display(value)
-        if display_value not in choices:
-            display_value = AI_SAME_AS_NORMAL_LABEL
-        combo.setCurrentText(display_value)
+        if value == "same_as_normal":
+            return AI_CHOICES[0]
+        if value in AI_CHOICES:
+            return value
+        return AI_CHOICES[1]
 
     def _set_sleep_rule(self, rules: List[dict]) -> None:
         default_rule = {"start": "00:00", "end": "05:00"}
@@ -723,12 +643,12 @@ class ConfigDialog(QtWidgets.QDialog):
     def _reload_form_from_config(self) -> None:
         normal_value = self.config.get("normal_channel", "ch05")
         if normal_value not in NORMAL_CHOICES:
-            normal_value = "ch05"
+            normal_value = NORMAL_CHOICES[0]
         self.normal_combo.setCurrentText(normal_value)
         ai_channels = self.config.get("ai_channels", {})
-        self._set_ai_combo_value(self.ai_level2, ai_channels.get("level2"), AI_LEVEL2_CHOICES)
-        self._set_ai_combo_value(self.ai_level3, ai_channels.get("level3"), AI_LEVEL3_CHOICES)
-        self._set_ai_combo_value(self.ai_level4, ai_channels.get("level4"), AI_LEVEL4_CHOICES)
+        self.ai_level2.setCurrentText(self._ai_choice_to_display(ai_channels.get("level2")))
+        self.ai_level3.setCurrentText(self._ai_choice_to_display(ai_channels.get("level3")))
+        self.ai_level4.setCurrentText(self._ai_choice_to_display(ai_channels.get("level4")))
         self._set_sleep_rule(self.config.get("sleep_rules", []))
         rules = self.config.get("timer_rules", [])
         self._rebuild_timer_rows(rules)
@@ -742,7 +662,7 @@ class ConfigDialog(QtWidgets.QDialog):
         channel_combo.addItems(TIMER_CHOICES)
         channel_value = rule.get("channel", TIMER_CHOICES[0])
         if channel_value not in TIMER_CHOICES:
-            channel_value = "ch05"
+            channel_value = TIMER_CHOICES[0]
         channel_combo.setCurrentText(channel_value)
         self.timer_table.setCellWidget(row, 2, channel_combo)
 
@@ -860,7 +780,7 @@ class ConfigDialog(QtWidgets.QDialog):
         }
 
     def _ai_choice_to_value(self, value: str) -> str:
-        if value == AI_SAME_AS_NORMAL_LABEL:
+        if value == AI_CHOICES[0]:
             return "same_as_normal"
         return value
 
@@ -1349,7 +1269,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self.apply_dynamic_column_widths)
         self._setup_log_stream()
         self._load_sign_states()
-        self._ensure_config_and_content_layout()
         self.refresh_summary()
         self.start_watchers()
 
@@ -1374,17 +1293,6 @@ class ControllerWindow(QtWidgets.QMainWindow):
         self._dbg_watchdog_timer.setInterval(1000)  # 1秒周期
         self._dbg_watchdog_timer.timeout.connect(self._dbg_watchdog_tick)
         self._dbg_watchdog_timer.start()
-
-    def _ensure_config_and_content_layout(self) -> None:
-        for channel in CHANNELS:
-            ensure_dir(CONTENT_DIR / channel)
-        for idx in range(1, N_SIGNAGE + 1):
-            sign_name = f"Sign{idx:02d}"
-            sign_dir = CONFIG_DIR / sign_name
-            ensure_dir(sign_dir)
-            config_path = sign_dir / "config.json"
-            if not config_path.exists():
-                write_json_atomic(config_path, default_sign_config(sign_name))
 
     def _init_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -2573,7 +2481,7 @@ QPushButton:disabled {
 
     def _display_ai_channel(self, value: Optional[str]) -> str:
         if value == "same_as_normal":
-            return AI_SAME_AS_NORMAL_LABEL
+            return AI_CHOICES[0]
         return value or "-"
 
     def _tcp_probe(self, ip: str, port: int, timeout: float = 1.0) -> bool:
