@@ -173,7 +173,6 @@ class StreamWorker(QThread):
         self._mutex.unlock()
 
         try:
-            frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
             periodic_reopen_sec = 1800.0
             reconnect_count = 0
             while self._is_running():
@@ -196,7 +195,6 @@ class StreamWorker(QThread):
 
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     self.status_changed.emit("OK")
-                    last_emit = 0.0
                     opened_at = time.monotonic()
                     read_fail_count = 0
                     fps_frames = 0
@@ -231,9 +229,6 @@ class StreamWorker(QThread):
                         last_success_read_at = time.monotonic()
 
                         now = time.monotonic()
-                        if frame_interval > 0 and (now - last_emit) < frame_interval:
-                            continue
-                        last_emit = now
                         fps_frames += 1
                         if (now - fps_last_ts) >= 1.0:
                             current_fps = fps_frames / max(1e-6, (now - fps_last_ts))
