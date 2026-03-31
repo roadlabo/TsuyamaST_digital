@@ -170,8 +170,8 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "infer_interval_sec": 0.20,
-            "pre_grab_count": 1,
+            "infer_interval_sec": 0.0,
+            "pre_grab_count": 0,
             "periodic_reopen_sec": 1800,
             "force_tracker_reset_sec": 600,
             "imgsz": 512,
@@ -205,8 +205,8 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "infer_interval_sec": 0.20,
-            "pre_grab_count": 1,
+            "infer_interval_sec": 0.0,
+            "pre_grab_count": 0,
             "periodic_reopen_sec": 1800,
             "force_tracker_reset_sec": 600,
             "imgsz": 512,
@@ -240,8 +240,8 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "infer_interval_sec": 0.20,
-            "pre_grab_count": 1,
+            "infer_interval_sec": 0.0,
+            "pre_grab_count": 0,
             "periodic_reopen_sec": 1800,
             "force_tracker_reset_sec": 600,
             "imgsz": 512,
@@ -1153,8 +1153,8 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         self.conf = QtWidgets.QDoubleSpinBox(); self.conf.setRange(0, 1); self.conf.setSingleStep(0.01); self.conf.setValue(float(camera_cfg.get("confidence_threshold", 0.25)))
         self.iou = QtWidgets.QDoubleSpinBox(); self.iou.setRange(0, 1); self.iou.setSingleStep(0.01); self.iou.setValue(float(camera_cfg.get("iou_threshold", 0.5)))
         self.frame_skip = QtWidgets.QSpinBox(); self.frame_skip.setRange(1, 30); self.frame_skip.setValue(int(camera_cfg.get("frame_skip", 1)))
-        self.infer_interval = QtWidgets.QDoubleSpinBox(); self.infer_interval.setRange(0.0, 2.0); self.infer_interval.setSingleStep(0.01); self.infer_interval.setDecimals(2); self.infer_interval.setValue(float(camera_cfg.get("infer_interval_sec", 0.20)))
-        self.pre_grab_count = QtWidgets.QSpinBox(); self.pre_grab_count.setRange(0, 20); self.pre_grab_count.setValue(int(camera_cfg.get("pre_grab_count", 1)))
+        self.infer_interval = QtWidgets.QDoubleSpinBox(); self.infer_interval.setRange(0.0, 2.0); self.infer_interval.setSingleStep(0.01); self.infer_interval.setDecimals(2); self.infer_interval.setValue(float(camera_cfg.get("infer_interval_sec", 0.0)))
+        self.pre_grab_count = QtWidgets.QSpinBox(); self.pre_grab_count.setRange(0, 20); self.pre_grab_count.setValue(int(camera_cfg.get("pre_grab_count", 0)))
         self.periodic_reopen_sec = QtWidgets.QSpinBox(); self.periodic_reopen_sec.setRange(0, 86400); self.periodic_reopen_sec.setValue(int(camera_cfg.get("periodic_reopen_sec", 1800)))
         self.force_tracker_reset_sec = QtWidgets.QSpinBox(); self.force_tracker_reset_sec.setRange(0, 86400); self.force_tracker_reset_sec.setValue(int(camera_cfg.get("force_tracker_reset_sec", 600)))
         self.imgsz = QtWidgets.QSpinBox(); self.imgsz.setRange(320, 2048); self.imgsz.setSingleStep(32); self.imgsz.setValue(int(camera_cfg.get("imgsz", 512)))
@@ -2144,8 +2144,7 @@ class CameraWorker(QtCore.QObject):
         self.last_wakimura_update_ts = 0.0
         self.wakimura_update_interval_sec = 1.0
         self.cached_wakimura_payload = self._default_wakimura_payload()
-        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.20)))
-        self.last_infer_ts = 0.0
+        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.0)))
         self.last_graph_revision_ts = 0.0
         self.capture_opened_at = time.time()
         self.last_tracker_reset_at = time.time()
@@ -2185,7 +2184,7 @@ class CameraWorker(QtCore.QObject):
         self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 3)))
         self.congestion.update_smoothing_window(int(self.system_cfg.get("congestion_smoothing_window", 6)))
         self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
-        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.20)))
+        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.0)))
 
         new_model_path = resolve_model_path(self.camera_cfg, self.system_cfg, self.root_dir)
         if new_model_path != old_model_path:
@@ -2238,7 +2237,6 @@ class CameraWorker(QtCore.QObject):
             self._set_status("RUNNING")
             self.reconnect_fail_count = 0
             self.read_fail_count = 0
-            self.last_infer_ts = 0.0
             self.low_fps_started_at = 0.0
             self.low_fps_reset_at = 0.0
             self.low_fps_recover_stage = 0
@@ -2639,7 +2637,7 @@ class CameraWorker(QtCore.QObject):
                     return None
 
                 read_start = time.time()
-                pre_grab = max(0, int(self.camera_cfg.get("pre_grab_count", 1)))
+                pre_grab = max(0, int(self.camera_cfg.get("pre_grab_count", 0)))
                 for _ in range(pre_grab):
                     try:
                         if self.cap is None:
@@ -2676,11 +2674,6 @@ class CameraWorker(QtCore.QObject):
             frame_skip = max(1, int(self.camera_cfg.get("frame_skip", 1)))
             if self.frame_index % frame_skip != 0:
                 return None
-
-            now_ts = time.time()
-            if self.infer_interval_sec > 0 and (now_ts - self.last_infer_ts < self.infer_interval_sec):
-                return None
-            self.last_infer_ts = now_ts
 
             try:
                 infer_start = time.time()
