@@ -138,7 +138,7 @@ DEFAULT_SYSTEM_CONFIG: dict[str, Any] = {
     "metrics_save_interval_sec": 5,
     "ui_refresh_interval_ms": 500,
     "ai_status_json_path": "app/11_config/ai_status.json",
-    "status_update_interval_sec": 10,
+    "status_update_interval_sec": 30,
     "output_root": "app/04_ai_monitor/data",
     "display_update_interval_ms": 200,
     "graph_update_interval_sec": 10,
@@ -168,6 +168,10 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
+            "infer_interval_sec": 0.15,
+            "pre_grab_count": 2,
+            "periodic_reopen_sec": 1800,
+            "force_tracker_reset_sec": 600,
             "imgsz": 512,
             "target_classes": [2, 3, 5, 7],
             "bt_track_high_thresh": 0.3,
@@ -199,6 +203,10 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
+            "infer_interval_sec": 0.15,
+            "pre_grab_count": 2,
+            "periodic_reopen_sec": 1800,
+            "force_tracker_reset_sec": 600,
             "imgsz": 640,
             "target_classes": [2, 3, 5, 7],
             "bt_track_high_thresh": 0.3,
@@ -230,6 +238,10 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
+            "infer_interval_sec": 0.15,
+            "pre_grab_count": 2,
+            "periodic_reopen_sec": 1800,
+            "force_tracker_reset_sec": 600,
             "imgsz": 512,
             "target_classes": [2, 3, 5, 7],
             "bt_track_high_thresh": 0.3,
@@ -257,6 +269,24 @@ KEEP_CAMERA_KEYS = [
     "stay_zone_polygon",
     "congestion_threshold",
     "long_stay_minutes",
+    "pre_grab_count",
+    "periodic_reopen_sec",
+    "force_tracker_reset_sec",
+    "infer_interval_sec",
+    "frame_skip",
+    "imgsz",
+    "confidence_threshold",
+    "iou_threshold",
+    "target_classes",
+    "bt_track_high_thresh",
+    "bt_track_low_thresh",
+    "bt_match_thresh",
+    "bt_track_buffer",
+    "crossing_judgment_pattern",
+    "distance_threshold",
+    "congestion_calculation_interval",
+    "enable_congestion",
+    "display_scale",
 ]
 
 # =========================================
@@ -560,7 +590,7 @@ class StatusManager:
 
     def update_if_needed(self, level: int) -> None:
         now = time.time()
-        update_interval_sec = max(1, int(self.system_cfg.get("status_update_interval_sec", 10)))
+        update_interval_sec = max(30, int(self.system_cfg.get("status_update_interval_sec", 30)))
         if level == self._last_level and (now - self._last_write_time) < update_interval_sec:
             return
         payload = {
@@ -1046,6 +1076,10 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         self.conf = QtWidgets.QDoubleSpinBox(); self.conf.setRange(0, 1); self.conf.setSingleStep(0.01); self.conf.setValue(float(camera_cfg.get("confidence_threshold", 0.25)))
         self.iou = QtWidgets.QDoubleSpinBox(); self.iou.setRange(0, 1); self.iou.setSingleStep(0.01); self.iou.setValue(float(camera_cfg.get("iou_threshold", 0.5)))
         self.frame_skip = QtWidgets.QSpinBox(); self.frame_skip.setRange(1, 30); self.frame_skip.setValue(int(camera_cfg.get("frame_skip", 1)))
+        self.infer_interval = QtWidgets.QDoubleSpinBox(); self.infer_interval.setRange(0.0, 2.0); self.infer_interval.setSingleStep(0.01); self.infer_interval.setDecimals(2); self.infer_interval.setValue(float(camera_cfg.get("infer_interval_sec", 0.15)))
+        self.pre_grab_count = QtWidgets.QSpinBox(); self.pre_grab_count.setRange(0, 20); self.pre_grab_count.setValue(int(camera_cfg.get("pre_grab_count", 2)))
+        self.periodic_reopen_sec = QtWidgets.QSpinBox(); self.periodic_reopen_sec.setRange(0, 86400); self.periodic_reopen_sec.setValue(int(camera_cfg.get("periodic_reopen_sec", 1800)))
+        self.force_tracker_reset_sec = QtWidgets.QSpinBox(); self.force_tracker_reset_sec.setRange(0, 86400); self.force_tracker_reset_sec.setValue(int(camera_cfg.get("force_tracker_reset_sec", 600)))
         self.imgsz = QtWidgets.QSpinBox(); self.imgsz.setRange(320, 2048); self.imgsz.setSingleStep(32); self.imgsz.setValue(int(camera_cfg.get("imgsz", 640)))
         self.bt_hi = QtWidgets.QDoubleSpinBox(); self.bt_hi.setRange(0, 1); self.bt_hi.setValue(float(camera_cfg.get("bt_track_high_thresh", 0.3)))
         self.bt_lo = QtWidgets.QDoubleSpinBox(); self.bt_lo.setRange(0, 1); self.bt_lo.setValue(float(camera_cfg.get("bt_track_low_thresh", 0.1)))
@@ -1062,6 +1096,10 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         ai_form.addRow("confidence_threshold", self.conf)
         ai_form.addRow("iou_threshold", self.iou)
         ai_form.addRow("frame_skip", self.frame_skip)
+        ai_form.addRow("infer_interval_sec", self.infer_interval)
+        ai_form.addRow("pre_grab_count", self.pre_grab_count)
+        ai_form.addRow("periodic_reopen_sec", self.periodic_reopen_sec)
+        ai_form.addRow("force_tracker_reset_sec", self.force_tracker_reset_sec)
         ai_form.addRow("imgsz", self.imgsz)
         ai_form.addRow("bt_track_high_thresh", self.bt_hi)
         ai_form.addRow("bt_track_low_thresh", self.bt_lo)
@@ -1197,6 +1235,10 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         cfg["confidence_threshold"] = float(self.conf.value())
         cfg["iou_threshold"] = float(self.iou.value())
         cfg["frame_skip"] = int(self.frame_skip.value())
+        cfg["infer_interval_sec"] = float(self.infer_interval.value())
+        cfg["pre_grab_count"] = int(self.pre_grab_count.value())
+        cfg["periodic_reopen_sec"] = int(self.periodic_reopen_sec.value())
+        cfg["force_tracker_reset_sec"] = int(self.force_tracker_reset_sec.value())
         cfg["imgsz"] = int(self.imgsz.value())
         cfg["target_classes"] = [i for i, cb in self.class_checks.items() if cb.isChecked()]
         cfg["bt_track_high_thresh"] = float(self.bt_hi.value())
@@ -2010,10 +2052,12 @@ class CameraWorker(QtCore.QObject):
         self.last_wakimura_update_ts = 0.0
         self.wakimura_update_interval_sec = 1.0
         self.cached_wakimura_payload = self._default_wakimura_payload()
-        # old版寄りに戻すため、推論の時間間引きを停止（frame_skip のみ有効）
-        self.infer_interval_sec = 0.0
+        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.15)))
         self.last_infer_ts = 0.0
         self.last_graph_revision_ts = 0.0
+        self.capture_opened_at = time.time()
+        self.last_tracker_reset_at = time.time()
+        self.last_perf_log_at = 0.0
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
@@ -2043,6 +2087,7 @@ class CameraWorker(QtCore.QObject):
         self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 3)))
         self.congestion.update_smoothing_window(int(self.system_cfg.get("congestion_smoothing_window", 6)))
         self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
+        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.15)))
 
         new_model_path = resolve_model_path(self.camera_cfg, self.system_cfg, self.root_dir)
         if new_model_path != old_model_path:
@@ -2078,6 +2123,7 @@ class CameraWorker(QtCore.QObject):
             except Exception:
                 pass
         self.read_fail_count = 0
+        self.capture_opened_at = time.time()
 
     def _reconnect_capture(self, reason: str = "") -> None:
         now_ts = time.time()
@@ -2345,12 +2391,31 @@ class CameraWorker(QtCore.QObject):
             now_ts = time.time()
             if now_ts < self._next_reconnect_time or now_ts < self._next_infer_retry_time:
                 return None
+            periodic_reopen_sec = max(0, int(self.camera_cfg.get("periodic_reopen_sec", 1800)))
+            if periodic_reopen_sec > 0 and (time.time() - self.capture_opened_at) >= periodic_reopen_sec:
+                self.error_occurred.emit(self.camera_id, f"[INFO] cam{self.camera_id} periodic reopen start")
+                self._reconnect_capture("periodic reopen")
+                return None
+
+            force_tracker_reset_sec = max(0, int(self.camera_cfg.get("force_tracker_reset_sec", 600)))
+            if force_tracker_reset_sec > 0 and (time.time() - self.last_tracker_reset_at) >= force_tracker_reset_sec:
+                self._reset_tracking_state()
+                self.last_tracker_reset_at = time.time()
+                self.error_occurred.emit(self.camera_id, f"[INFO] cam{self.camera_id} tracker state reset")
 
             try:
                 if self.cap is None or not self.cap.isOpened():
                     self._reconnect_capture("cap not opened")
                     return None
 
+                pre_grab = max(0, int(self.camera_cfg.get("pre_grab_count", 2)))
+                for _ in range(pre_grab):
+                    try:
+                        if self.cap is None:
+                            break
+                        self.cap.grab()
+                    except Exception:
+                        break
                 ok, frame = self.cap.read()
                 if not ok or frame is None:
                     self.read_fail_count += 1
@@ -2534,6 +2599,18 @@ class CameraWorker(QtCore.QObject):
                 self.last_graph_revision_ts = time.time()
 
             self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks))
+            periodic_elapsed = time.time() - self.capture_opened_at
+            tracker_elapsed = time.time() - self.last_tracker_reset_at
+            if time.time() - self.last_perf_log_at >= 5.0:
+                self.last_perf_log_at = time.time()
+                self.error_occurred.emit(
+                    self.camera_id,
+                    (
+                        f"[PERF] cam{self.camera_id} fps={self.fps:.2f} read_fail={self.read_fail_count} "
+                        f"tracks={len(tracks)} cong={float(congestion_score):.3f} "
+                        f"reopen_elapsed={periodic_elapsed:.1f}s reset_elapsed={tracker_elapsed:.1f}s"
+                    ),
+                )
             try:
                 long_stay_list.sort(key=lambda x: x[1], reverse=True)
             except Exception as exc:
@@ -2591,6 +2668,30 @@ class CameraWorker(QtCore.QObject):
             self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} loop exception: {exc}")
             self._reconnect_capture("loop exception")
             return None
+
+    def _reset_tracking_state(self) -> None:
+        self.track_class_memory.clear()
+        self.display_id_map.clear()
+        self.display_id_counter = 1
+        self.cross_flash_frames.clear()
+        self.counter.state.previous_side.clear()
+        self.counter.state.counted_track_ids.clear()
+        self.congestion.state.previous_positions.clear()
+        self.congestion.state.last_seen_at.clear()
+        self.track_state.first_seen.clear()
+        self.track_state.long_stay_emitted.clear()
+        try:
+            if hasattr(self.model, "predictor") and self.model.predictor is not None:
+                trackers = getattr(self.model.predictor, "trackers", None)
+                if trackers:
+                    for tr in trackers:
+                        try:
+                            if hasattr(tr, "reset"):
+                                tr.reset()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     def _resize_for_display(self, frame: np.ndarray) -> np.ndarray:
         if frame is None:
