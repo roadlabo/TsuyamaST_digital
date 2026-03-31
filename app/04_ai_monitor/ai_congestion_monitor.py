@@ -1629,8 +1629,8 @@ class CameraPanel(QtWidgets.QFrame):
 
         role_style = {
             "KING": ("#D9A441", "#111111"),
-            "QUEEN": ("#6ECBEF", "#082033"),
-            "JACK": ("#C2185B", "#FFFFFF"),
+            "QUEEN": ("#C2185B", "#FFFFFF"),
+            "JACK": ("#6ECBEF", "#082033"),
         }
         role_bg, role_fg = role_style.get(role_name, ("#2A3B47", "#FFFFFF"))
         self.role_badge = QtWidgets.QLabel(role_name)
