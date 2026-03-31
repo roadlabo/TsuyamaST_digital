@@ -13,7 +13,7 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from zipfile import BadZipFile
 from pathlib import Path
 from typing import Any
@@ -170,8 +170,8 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "infer_interval_sec": 0.15,
-            "pre_grab_count": 2,
+            "infer_interval_sec": 0.20,
+            "pre_grab_count": 1,
             "periodic_reopen_sec": 1800,
             "force_tracker_reset_sec": 600,
             "imgsz": 512,
@@ -205,11 +205,11 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "infer_interval_sec": 0.15,
-            "pre_grab_count": 2,
+            "infer_interval_sec": 0.20,
+            "pre_grab_count": 1,
             "periodic_reopen_sec": 1800,
             "force_tracker_reset_sec": 600,
-            "imgsz": 640,
+            "imgsz": 512,
             "target_classes": [2, 3, 5, 7],
             "bt_track_high_thresh": 0.3,
             "bt_track_low_thresh": 0.1,
@@ -240,8 +240,8 @@ DEFAULT_CAMERA_SETTINGS: dict[str, Any] = {
             "confidence_threshold": 0.25,
             "iou_threshold": 0.5,
             "frame_skip": 1,
-            "infer_interval_sec": 0.15,
-            "pre_grab_count": 2,
+            "infer_interval_sec": 0.20,
+            "pre_grab_count": 1,
             "periodic_reopen_sec": 1800,
             "force_tracker_reset_sec": 600,
             "imgsz": 512,
@@ -1153,11 +1153,11 @@ class CameraSettingsDialog(QtWidgets.QDialog):
         self.conf = QtWidgets.QDoubleSpinBox(); self.conf.setRange(0, 1); self.conf.setSingleStep(0.01); self.conf.setValue(float(camera_cfg.get("confidence_threshold", 0.25)))
         self.iou = QtWidgets.QDoubleSpinBox(); self.iou.setRange(0, 1); self.iou.setSingleStep(0.01); self.iou.setValue(float(camera_cfg.get("iou_threshold", 0.5)))
         self.frame_skip = QtWidgets.QSpinBox(); self.frame_skip.setRange(1, 30); self.frame_skip.setValue(int(camera_cfg.get("frame_skip", 1)))
-        self.infer_interval = QtWidgets.QDoubleSpinBox(); self.infer_interval.setRange(0.0, 2.0); self.infer_interval.setSingleStep(0.01); self.infer_interval.setDecimals(2); self.infer_interval.setValue(float(camera_cfg.get("infer_interval_sec", 0.15)))
-        self.pre_grab_count = QtWidgets.QSpinBox(); self.pre_grab_count.setRange(0, 20); self.pre_grab_count.setValue(int(camera_cfg.get("pre_grab_count", 2)))
+        self.infer_interval = QtWidgets.QDoubleSpinBox(); self.infer_interval.setRange(0.0, 2.0); self.infer_interval.setSingleStep(0.01); self.infer_interval.setDecimals(2); self.infer_interval.setValue(float(camera_cfg.get("infer_interval_sec", 0.20)))
+        self.pre_grab_count = QtWidgets.QSpinBox(); self.pre_grab_count.setRange(0, 20); self.pre_grab_count.setValue(int(camera_cfg.get("pre_grab_count", 1)))
         self.periodic_reopen_sec = QtWidgets.QSpinBox(); self.periodic_reopen_sec.setRange(0, 86400); self.periodic_reopen_sec.setValue(int(camera_cfg.get("periodic_reopen_sec", 1800)))
         self.force_tracker_reset_sec = QtWidgets.QSpinBox(); self.force_tracker_reset_sec.setRange(0, 86400); self.force_tracker_reset_sec.setValue(int(camera_cfg.get("force_tracker_reset_sec", 600)))
-        self.imgsz = QtWidgets.QSpinBox(); self.imgsz.setRange(320, 2048); self.imgsz.setSingleStep(32); self.imgsz.setValue(int(camera_cfg.get("imgsz", 640)))
+        self.imgsz = QtWidgets.QSpinBox(); self.imgsz.setRange(320, 2048); self.imgsz.setSingleStep(32); self.imgsz.setValue(int(camera_cfg.get("imgsz", 512)))
         self.bt_hi = QtWidgets.QDoubleSpinBox(); self.bt_hi.setRange(0, 1); self.bt_hi.setValue(float(camera_cfg.get("bt_track_high_thresh", 0.3)))
         self.bt_lo = QtWidgets.QDoubleSpinBox(); self.bt_lo.setRange(0, 1); self.bt_lo.setValue(float(camera_cfg.get("bt_track_low_thresh", 0.1)))
         self.bt_match = QtWidgets.QDoubleSpinBox(); self.bt_match.setRange(0, 1); self.bt_match.setValue(float(camera_cfg.get("bt_match_thresh", 0.8)))
@@ -2144,12 +2144,16 @@ class CameraWorker(QtCore.QObject):
         self.last_wakimura_update_ts = 0.0
         self.wakimura_update_interval_sec = 1.0
         self.cached_wakimura_payload = self._default_wakimura_payload()
-        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.15)))
+        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.20)))
         self.last_infer_ts = 0.0
         self.last_graph_revision_ts = 0.0
         self.capture_opened_at = time.time()
         self.last_tracker_reset_at = time.time()
         self.last_perf_log_at = 0.0
+        self.low_fps_started_at = 0.0
+        self.low_fps_reset_at = 0.0
+        self.low_fps_recover_stage = 0
+        self.last_low_fps_recover_at = 0.0
 
         self.today = datetime.now().date()
         self.metrics_dir = root_dir / "data" / "metrics" / f"cam{self.camera_id}"
@@ -2181,7 +2185,7 @@ class CameraWorker(QtCore.QObject):
         self.congestion.update_interval(int(new_cfg.get("congestion_calculation_interval", 3)))
         self.congestion.update_smoothing_window(int(self.system_cfg.get("congestion_smoothing_window", 6)))
         self.display_scale = float(self.camera_cfg.get("display_scale", 0.8))
-        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.15)))
+        self.infer_interval_sec = max(0.0, float(self.camera_cfg.get("infer_interval_sec", 0.20)))
 
         new_model_path = resolve_model_path(self.camera_cfg, self.system_cfg, self.root_dir)
         if new_model_path != old_model_path:
@@ -2233,6 +2237,11 @@ class CameraWorker(QtCore.QObject):
             self.connect()
             self._set_status("RUNNING")
             self.reconnect_fail_count = 0
+            self.read_fail_count = 0
+            self.last_infer_ts = 0.0
+            self.low_fps_started_at = 0.0
+            self.low_fps_reset_at = 0.0
+            self.low_fps_recover_stage = 0
             self.error_occurred.emit(self.camera_id, f"[INFO] cam{self.camera_id} reconnect success")
         except Exception as exc:
             self.reconnect_fail_count += 1
@@ -2296,16 +2305,28 @@ class CameraWorker(QtCore.QObject):
             )
         if df is None or df.empty:
             return ltor, rtol
+        valid = 0
+        skipped = 0
+        first_ts: dt_time | None = None
+        last_ts: dt_time | None = None
         for _, row in df.iterrows():
             try:
-                hhmm = str(row.get("時刻（10分単位）", "")).strip()
-                dt = datetime.strptime(hhmm, "%H:%M")
+                parsed = self._parse_excel_hhmm(row.get("時刻（10分単位）", ""))
+                if parsed is None:
+                    skipped += 1
+                    continue
+                dt = datetime.combine(prev, parsed)
                 idx = (dt.hour * 60 + dt.minute) // 10
                 if 0 <= idx < 144:
                     ltor[idx] = int(row.get(f"Camera{self.camera_id} LtoR", 0) or 0)
                     rtol[idx] = int(row.get(f"Camera{self.camera_id} RtoL", 0) or 0)
+                    valid += 1
+                    first_ts = parsed if first_ts is None else first_ts
+                    last_ts = parsed
             except Exception:
+                skipped += 1
                 continue
+        self._emit_graph_load_log(prev, valid, skipped, first_ts, last_ts)
         return ltor, rtol
 
     def _load_previous_day_congestion_points(self) -> list[tuple[datetime, float]]:
@@ -2316,25 +2337,69 @@ class CameraWorker(QtCore.QObject):
             return list(getattr(self, "previous_day_congestion_points", points))
         if df is None or df.empty:
             return points
+        valid = 0
+        skipped = 0
+        first_ts: dt_time | None = None
+        last_ts: dt_time | None = None
         for _, row in df.iterrows():
             try:
-                hhmm = str(row.get("時刻（10分単位）", "")).strip()
-                ts = datetime.combine(prev, datetime.strptime(hhmm, "%H:%M").time())
+                parsed = self._parse_excel_hhmm(row.get("時刻（10分単位）", ""))
+                if parsed is None:
+                    skipped += 1
+                    continue
+                ts = datetime.combine(prev, parsed)
                 score = float(row.get(f"Camera{self.camera_id} 渋滞指数", 0.0) or 0.0)
                 points.append((ts, score))
+                valid += 1
+                first_ts = parsed if first_ts is None else first_ts
+                last_ts = parsed
             except Exception:
+                skipped += 1
                 continue
+        self._emit_graph_load_log(prev, valid, skipped, first_ts, last_ts)
         return points
 
     @staticmethod
     def _parse_hhmm_to_bin_index(value: Any) -> int | None:
-        try:
-            hhmm = str(value).strip()
-            dt = datetime.strptime(hhmm, "%H:%M")
-            idx = (dt.hour * 60 + dt.minute) // 10
-            return idx if 0 <= idx < 144 else None
-        except Exception:
+        parsed = CameraWorker._parse_excel_hhmm(value)
+        if parsed is None:
             return None
+        idx = (parsed.hour * 60 + parsed.minute) // 10
+        return idx if 0 <= idx < 144 else None
+
+    @staticmethod
+    def _parse_excel_hhmm(value: Any) -> dt_time | None:
+        if value is None:
+            return None
+        if isinstance(value, pd.Timestamp):
+            return value.to_pydatetime().time().replace(microsecond=0)
+        if isinstance(value, datetime):
+            return value.time().replace(microsecond=0)
+        if isinstance(value, dt_time):
+            return value.replace(microsecond=0)
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%H:%M", "%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                return parsed.time().replace(microsecond=0)
+            except ValueError:
+                continue
+        return None
+
+    def _emit_graph_load_log(self, target_date: date, valid: int, skipped: int, first_ts: dt_time | None, last_ts: dt_time | None) -> None:
+        first_text = first_ts.strftime("%H:%M") if first_ts is not None else "-"
+        last_text = last_ts.strftime("%H:%M") if last_ts is not None else "-"
+        logging.info(
+            "[GRAPH] cam%s date=%s valid=%s skipped=%s first=%s last=%s",
+            self.camera_id,
+            target_date.isoformat(),
+            valid,
+            skipped,
+            first_text,
+            last_text,
+        )
 
     def _load_today_histogram(self) -> tuple[list[int], list[int]]:
         ltor = [0] * 144
@@ -2349,15 +2414,26 @@ class CameraWorker(QtCore.QObject):
             return ltor, rtol
         ltor_col = f"Camera{self.camera_id} LtoR"
         rtol_col = f"Camera{self.camera_id} RtoL"
+        valid = 0
+        skipped = 0
+        first_ts: dt_time | None = None
+        last_ts: dt_time | None = None
         for _, row in df.iterrows():
             idx = self._parse_hhmm_to_bin_index(row.get("時刻（10分単位）", ""))
             if idx is None:
+                skipped += 1
                 continue
             try:
                 ltor[idx] = int(row.get(ltor_col, 0) or 0)
                 rtol[idx] = int(row.get(rtol_col, 0) or 0)
+                parsed = self._parse_excel_hhmm(row.get("時刻（10分単位）", ""))
+                valid += 1
+                first_ts = parsed if first_ts is None else first_ts
+                last_ts = parsed
             except Exception:
+                skipped += 1
                 continue
+        self._emit_graph_load_log(self.today, valid, skipped, first_ts, last_ts)
         return ltor, rtol
 
     def _load_today_congestion_points(self) -> list[tuple[datetime, float]]:
@@ -2368,14 +2444,26 @@ class CameraWorker(QtCore.QObject):
         if df is None or df.empty:
             return points
         score_col = f"Camera{self.camera_id} 渋滞指数"
+        valid = 0
+        skipped = 0
+        first_ts: dt_time | None = None
+        last_ts: dt_time | None = None
         for _, row in df.iterrows():
             try:
-                hhmm = str(row.get("時刻（10分単位）", "")).strip()
-                ts = datetime.combine(self.today, datetime.strptime(hhmm, "%H:%M").time())
+                parsed = self._parse_excel_hhmm(row.get("時刻（10分単位）", ""))
+                if parsed is None:
+                    skipped += 1
+                    continue
+                ts = datetime.combine(self.today, parsed)
                 score = float(row.get(score_col, 0.0) or 0.0)
                 points.append((ts, score))
+                valid += 1
+                first_ts = parsed if first_ts is None else first_ts
+                last_ts = parsed
             except Exception:
+                skipped += 1
                 continue
+        self._emit_graph_load_log(self.today, valid, skipped, first_ts, last_ts)
         return points
 
     def _rollover_if_needed(self, now: datetime) -> None:
@@ -2527,6 +2615,9 @@ class CameraWorker(QtCore.QObject):
     def process_once_nonblocking(self) -> dict[str, Any] | None:
         try:
             start = time.time()
+            read_ms = 0.0
+            infer_ms = 0.0
+            overlay_ms = 0.0
             now_ts = time.time()
             if now_ts < self._next_reconnect_time or now_ts < self._next_infer_retry_time:
                 return None
@@ -2547,7 +2638,8 @@ class CameraWorker(QtCore.QObject):
                     self._reconnect_capture("cap not opened")
                     return None
 
-                pre_grab = max(0, int(self.camera_cfg.get("pre_grab_count", 2)))
+                read_start = time.time()
+                pre_grab = max(0, int(self.camera_cfg.get("pre_grab_count", 1)))
                 for _ in range(pre_grab):
                     try:
                         if self.cap is None:
@@ -2563,6 +2655,7 @@ class CameraWorker(QtCore.QObject):
                         self._reconnect_capture("read failed")
                     return None
                 self.read_fail_count = 0
+                read_ms = (time.time() - read_start) * 1000.0
             except cv2.error as exc:
                 self.error_occurred.emit(self.camera_id, f"[WARN] cam{self.camera_id} OpenCV error: {exc}")
                 self._reconnect_capture("cv2.error")
@@ -2590,6 +2683,7 @@ class CameraWorker(QtCore.QObject):
             self.last_infer_ts = now_ts
 
             try:
+                infer_start = time.time()
                 result = self.model.track(
                     source=frame,
                     persist=True,
@@ -2598,9 +2692,10 @@ class CameraWorker(QtCore.QObject):
                     device=self.device,
                     conf=float(self.camera_cfg.get("confidence_threshold", 0.25)),
                     iou=float(self.camera_cfg.get("iou_threshold", 0.5)),
-                    imgsz=int(self.camera_cfg.get("imgsz", 640)),
+                    imgsz=int(self.camera_cfg.get("imgsz", 512)),
                     classes=sorted(self.target_classes) if self.target_classes else None,
                 )[0]
+                infer_ms = (time.time() - infer_start) * 1000.0
             except Exception as exc:
                 self._next_infer_retry_time = time.time() + 3.0
                 self._set_status("MODEL ERROR")
@@ -2738,16 +2833,21 @@ class CameraWorker(QtCore.QObject):
             if len(self.congestion.state.frame_time_stamps) > prev_points_len:
                 self.last_graph_revision_ts = time.time()
 
+            overlay_start = time.time()
             self.last_frame = self._resize_for_display(self._draw_overlay(frame.copy(), tracks))
+            overlay_ms = (time.time() - overlay_start) * 1000.0
             periodic_elapsed = time.time() - self.capture_opened_at
             tracker_elapsed = time.time() - self.last_tracker_reset_at
+
+            self._maybe_recover_low_fps()
             if time.time() - self.last_perf_log_at >= 5.0:
                 self.last_perf_log_at = time.time()
                 self.error_occurred.emit(
                     self.camera_id,
                     (
-                        f"[PERF] cam{self.camera_id} fps={self.fps:.2f} read_fail={self.read_fail_count} "
-                        f"tracks={len(tracks)} cong={float(congestion_score):.3f} "
+                        f"[PERF] cam{self.camera_id} read={read_ms:.1f}ms infer={infer_ms:.1f}ms "
+                        f"overlay={overlay_ms:.1f}ms total={elapsed*1000.0:.1f}ms fps={self.fps:.2f} "
+                        f"read_fail={self.read_fail_count} tracks={len(tracks)} cong={float(congestion_score):.3f} "
                         f"reopen_elapsed={periodic_elapsed:.1f}s reset_elapsed={tracker_elapsed:.1f}s"
                     ),
                 )
@@ -2832,6 +2932,39 @@ class CameraWorker(QtCore.QObject):
                             pass
         except Exception:
             pass
+
+    def _maybe_recover_low_fps(self) -> None:
+        now_ts = time.time()
+        fps_threshold = 4.5
+        sustain_sec = 30.0
+        cooldown_sec = 300.0
+        if self.fps >= fps_threshold:
+            self.low_fps_started_at = 0.0
+            self.low_fps_reset_at = 0.0
+            self.low_fps_recover_stage = 0
+            return
+        if self.low_fps_started_at <= 0.0:
+            self.low_fps_started_at = now_ts
+            return
+        if now_ts - self.low_fps_started_at < sustain_sec:
+            return
+        if now_ts - self.last_low_fps_recover_at < cooldown_sec:
+            return
+        if self.low_fps_recover_stage == 0:
+            self._reset_tracking_state()
+            self.last_tracker_reset_at = now_ts
+            self.low_fps_recover_stage = 1
+            self.low_fps_reset_at = now_ts
+            self.last_low_fps_recover_at = now_ts
+            self.error_occurred.emit(self.camera_id, f"[RECOVER] cam{self.camera_id} low fps detected ({self.fps:.2f}). tracker reset.")
+            return
+        if self.low_fps_recover_stage == 1 and (now_ts - self.low_fps_reset_at) >= 10.0:
+            self.low_fps_recover_stage = 0
+            self.low_fps_started_at = 0.0
+            self.low_fps_reset_at = 0.0
+            self.last_low_fps_recover_at = now_ts
+            self.error_occurred.emit(self.camera_id, f"[RECOVER] cam{self.camera_id} low fps persists ({self.fps:.2f}). reconnect.")
+            self._reconnect_capture("low fps")
 
     def _resize_for_display(self, frame: np.ndarray) -> np.ndarray:
         if frame is None:
