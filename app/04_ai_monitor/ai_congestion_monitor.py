@@ -2041,7 +2041,7 @@ class CameraPanel(QtWidgets.QFrame):
             f"現在滞在台数：{nt}台\n判定基準：7台以上\n判定：[WIN] or [HL]"
         )
         self.wakimura_cards["exit"].setText(
-            f"基準退出台数(5min)：50台\n現在退出状況(5min)：{n_out}台\nα[WIN]={n_out}/50={n_out/50.0:.2f}"
+            f"基準退出台数：50台\n現在退出状況：{n_out}台\nα[WIN]={n_out}/50={n_out/50.0:.2f}"
         )
         self.wakimura_cards["time"].setText(
             f"基準滞在時間：{base_stay}秒\n平均滞在時間：{avg_stay_sec}秒\nα[HL]={base_stay}/{max(1, avg_stay_sec)}={base_stay/max(1, avg_stay_sec):.2f}"
