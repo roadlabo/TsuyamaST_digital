@@ -95,3 +95,54 @@ venv固定：C:\_TsuyamaSignage\runtime\venv\Scripts\python(w).exe
   - 動画表示を約80%スケールで表示（アスペクト比維持）
   - 各カメラ右側カードを小型化（横並び運用を見据えたコンパクト表示）
   - 渋滞指数グラフのTHラベル/凡例は左側表示に統一し、右端の重なりを回避
+
+---
+
+# RTSP入力MP4録画システム
+
+最大20台のRTSPカメラを、カメラごとのFFmpeg外部プロセスでMP4録画するWindows向けの実用最小版です。
+
+## 重要方針
+
+- 録画中ファイルは非共有の `temp` に `.partial` として保存します。
+- 完成したMP4だけを `archive` に移動します。
+- VPN共有するのは原則 `archive` のみです。
+- 現地PCだけが設定・状態管理の主体です。
+- 事務所PCは状態JSONを読み、操作依頼は `commands/pending` にJSONを書きます。
+- JSON書き込みは一時ファイルへ書いてから `os.replace` で置換します。
+
+## 構成
+
+```text
+src/
+  main_local.py
+  main_office.py
+  recorder/
+  config/
+  status/
+  commands/
+  utils/
+docs/
+  COMPUTER_SETTING.md
+  OPERATION.md
+requirements.txt
+```
+
+## 起動
+
+現地PC:
+
+```bat
+python src\main_local.py
+```
+
+事務所PC:
+
+```bat
+python src\main_office.py
+```
+
+## ドキュメント
+
+- PC設定: `docs/COMPUTER_SETTING.md`
+- 操作手順: `docs/OPERATION.md`

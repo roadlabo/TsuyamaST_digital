@@ -1,0 +1,3 @@
+# Python 3.10+ recommended
+# UI uses the standard-library tkinter module.
+# FFmpeg/FFprobe must be installed separately and available on PATH, or configured in app_settings.json.
