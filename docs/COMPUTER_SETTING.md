@@ -32,13 +32,13 @@ D:\NVR\
 現地PCでは以下を実行します。
 
 ```bat
-python src\main_local.py
+python app\05_nvr_recorder\start_local_recorder.py
 ```
 
 事務所PCでは共有パスを指定して以下を実行します。
 
 ```bat
-python src\main_office.py
+python app\05_nvr_recorder\start_office_monitor.py
 ```
 
 ## 5. 注意

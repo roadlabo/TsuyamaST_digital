@@ -17,6 +17,7 @@ TsuyamaST_digital\
     02_SignageController\
     03_ip_camera_viewer\
     04_ai_monitor\
+    05_nvr_recorder\
     10_common\
     11_config\
     90_sample\
@@ -37,6 +38,7 @@ TsuyamaST_digital\
 2. `04_ai_monitor`（AI監視）
 3. `02_SignageController`（全体制御）
 4. `03_ip_camera_viewer`（カメラ確認）
+5. `05_nvr_recorder`（RTSP録画）
 
 ## 旧フォルダ名との対応表
 | 旧フォルダ名 | 新フォルダ名 |
@@ -45,6 +47,7 @@ TsuyamaST_digital\
 | SignageController | 02_SignageController |
 | ip_camera_viewer | 03_ip_camera_viewer |
 | ai_monitor | 04_ai_monitor |
+| nvr_recorder | 05_nvr_recorder |
 | common | 10_common |
 | config | 11_config |
 | sample | 90_sample |
@@ -64,7 +67,7 @@ TsuyamaST_digital\
 ## 動画同期の方式（ミラー同期）
 - **全消去全転送ではありません**。差分のみコピーします。
 - **マスターに無いファイルは削除**します（ADD/UPD/DEL のミラー同期）。
-- **mtime/ctime/size が違う場合は差し換え**します（`compare_ctime` 設定で挙動を切替）。
+- **mtime/ctime/size が違う場合は差し替え**します（`compare_ctime` 設定で挙動を切替）。
 
 ## Controller 起動（タスクスケジューラ）
 
@@ -114,14 +117,15 @@ venv固定：C:\_TsuyamaSignage\runtime\venv\Scripts\python(w).exe
 ## 構成
 
 ```text
-src/
-  main_local.py
-  main_office.py
-  recorder/
-  config/
-  status/
-  commands/
-  utils/
+app/
+  05_nvr_recorder/
+    start_local_recorder.py
+    start_office_monitor.py
+    recorder/
+    config/
+    status/
+    commands/
+    utils/
 docs/
   COMPUTER_SETTING.md
   OPERATION.md
@@ -133,16 +137,17 @@ requirements.txt
 現地PC:
 
 ```bat
-python src\main_local.py
+python app\05_nvr_recorder\start_local_recorder.py
 ```
 
 事務所PC:
 
 ```bat
-python src\main_office.py
+python app\05_nvr_recorder\start_office_monitor.py
 ```
 
 ## ドキュメント
 
+- 録画フォルダ説明: `app/05_nvr_recorder/README.md`
 - PC設定: `docs/COMPUTER_SETTING.md`
 - 操作手順: `docs/OPERATION.md`
