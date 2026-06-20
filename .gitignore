@@ -1,13 +1,23 @@
 # =========================================
-# Runtime (embeddable python / deployed files)
+# Runtime / generated artifacts
 # =========================================
-runtime/*
-!runtime/certs/
-runtime/certs/*
-!runtime/certs/cacert.pem
-!runtime/python/
-runtime/python/*
-!runtime/python/.gitkeep
-logs/runtime/python/ 
+/runtime/
 /logs/
-/runtime/python/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Binary and office artifacts
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+*.bmp
+*.tif
+*.tiff
+*.pdf
+*.xls
+*.xlsx
+*.xlsm
