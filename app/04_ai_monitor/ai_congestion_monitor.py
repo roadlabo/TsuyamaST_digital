@@ -5,6 +5,7 @@ from __future__ import annotations
 # =========================================
 import argparse
 import csv
+import faulthandler
 import json
 import logging
 import os
@@ -42,10 +43,12 @@ _congestion_common = import_module("10_common.congestion_common")
 CongestionSmoother = _congestion_common.CongestionSmoother
 level_style = _congestion_common.level_style
 
+RECOVERED_CORRUPT_FILES: list[Path] = []
+
 
 def setup_logging(log_dir: Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "ai_monitor.log"
+    log_path = log_dir / f"{datetime.now():%Y%m%d}ai_monitor.log"
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     root = logging.getLogger()
     if root.handlers:
@@ -57,6 +60,19 @@ def setup_logging(log_dir: Path) -> None:
     file_handler.setFormatter(formatter)
     root.addHandler(stream_handler)
     root.addHandler(file_handler)
+
+
+def discard_corrupt_output_file(path: Path, reason: str) -> bool:
+    try:
+        if not path.exists():
+            return False
+        path.unlink()
+        RECOVERED_CORRUPT_FILES.append(path)
+        logging.warning("[RECOVERY] corrupt output file discarded: %s (%s)", path, reason)
+        return True
+    except Exception as exc:
+        logging.warning("[RECOVERY] failed to discard corrupt output file: %s (%s / %s)", path, reason, exc)
+        return False
 
 
 def _sleep_backoff(i: int, cap: float = 0.5) -> None:
@@ -98,7 +114,7 @@ def write_json_atomic(path: Path, payload: dict[str, Any], retries: int = 10) ->
                 pass
 
 
-def safe_read_json(path: Path, default: Any, retries: int = 3) -> Any:
+def safe_read_json(path: Path, default: Any, retries: int = 3, discard_corrupt: bool = False) -> Any:
     if not path.exists():
         return default
     last_exc: Exception | None = None
@@ -108,7 +124,12 @@ def safe_read_json(path: Path, default: Any, retries: int = 3) -> Any:
                 return json.load(fh)
         except FileNotFoundError:
             return default
-        except (json.JSONDecodeError, PermissionError, OSError) as exc:
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            if discard_corrupt and discard_corrupt_output_file(path, str(exc)):
+                return default
+            _sleep_backoff(i, cap=0.2)
+        except (PermissionError, OSError) as exc:
             last_exc = exc
             _sleep_backoff(i, cap=0.2)
         except Exception as exc:
@@ -627,7 +648,13 @@ class ReportWriter:
         out_path = self.output_root / "reports" / "daily" / f"{target_date.isoformat()}.xlsx"
         if not out_path.exists():
             raise FileNotFoundError(f"日次Excelが見つかりません: {out_path}")
-        wb = load_workbook(out_path)
+        try:
+            wb = load_workbook(out_path)
+        except (BadZipFile, EOFError, KeyError, ValueError) as exc:
+            discard_corrupt_output_file(out_path, str(exc))
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Data"
         if "Graph" not in wb.sheetnames:
             wb.create_sheet("Graph")
         wb.save(out_path)
@@ -661,6 +688,9 @@ class ReportWriter:
                 continue
             try:
                 data_df = pd.read_excel(file, sheet_name="Data")
+            except (BadZipFile, EOFError, KeyError, ValueError) as exc:
+                discard_corrupt_output_file(file, str(exc))
+                continue
             except Exception:
                 continue
             if data_df.empty:
@@ -925,7 +955,11 @@ class TenMinuteRecordWriter:
         path = self.output_root / f"{target_date.isoformat()}.xlsx"
         if not path.exists():
             return None
-        wb = load_workbook(path)
+        try:
+            wb = load_workbook(path)
+        except (BadZipFile, EOFError, KeyError, ValueError) as exc:
+            discard_corrupt_output_file(path, str(exc))
+            return None
         ws_data = wb["Data"] if "Data" in wb.sheetnames else wb.active
         if "Graph" in wb.sheetnames:
             del wb["Graph"]
@@ -977,7 +1011,17 @@ class TenMinuteRecordWriter:
         self.output_root.mkdir(parents=True, exist_ok=True)
         path = self.output_root / f"{target_date.isoformat()}.xlsx"
         if path.exists():
-            wb = load_workbook(path)
+            try:
+                wb = load_workbook(path)
+            except (BadZipFile, EOFError, KeyError, ValueError) as exc:
+                discard_corrupt_output_file(path, str(exc))
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "Data"
+                ws.append(self.HEADERS)
+                wb.create_sheet("Graph")
+                wb.save(path)
+                return wb, path
             ws = wb["Data"] if "Data" in wb.sheetnames else wb.active
             existing_headers = [ws.cell(row=1, column=i + 1).value for i in range(len(self.HEADERS))]
             if existing_headers != self.HEADERS:
@@ -2275,6 +2319,9 @@ class CameraWorker(QtCore.QObject):
             df = pd.read_excel(path, sheet_name="Data")
         except (PermissionError, OSError, BadZipFile, ValueError) as exc:
             logging.warning("[GRAPH] read failed: %s (%s)", path, exc)
+            if isinstance(exc, (BadZipFile, ValueError)):
+                discard_corrupt_output_file(path, str(exc))
+                return pd.DataFrame(), True
             return None, False
         except Exception as exc:
             logging.warning("[GRAPH] read failed: %s (%s)", path, exc)
@@ -3226,9 +3273,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer.timeout.connect(self.tick)
         self.timer.start(int(self.app_cfg.system.get("display_update_interval_ms", 200)))
         self._load_pending_excel_writes()
+        QtCore.QTimer.singleShot(0, self.show_recovered_corrupt_files_notice)
         QtCore.QTimer.singleShot(0, self._show_on_target_screen)
 
     def tick(self) -> None:
+        self.show_recovered_corrupt_files_notice()
         now = datetime.now()
         self._rollover_system_level_history_if_needed(now)
         self._update_status_level()
@@ -3417,15 +3466,19 @@ class MainWindow(QtWidgets.QMainWindow):
         points: list[tuple[datetime, float]] = []
         if not csv_path.exists():
             return points
-        with csv_path.open("r", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                try:
-                    ts = datetime.strptime(str(row.get("timestamp", "")), "%Y-%m-%d %H:%M:%S")
-                    level = float(row.get("system_level", "0"))
-                    if 1.0 <= level <= 4.0:
-                        points.append((ts, level))
-                except Exception:
-                    continue
+        try:
+            with csv_path.open("r", encoding="utf-8") as fh:
+                for row in csv.DictReader(fh):
+                    try:
+                        ts = datetime.strptime(str(row.get("timestamp", "")), "%Y-%m-%d %H:%M:%S")
+                        level = float(row.get("system_level", "0"))
+                        if 1.0 <= level <= 4.0:
+                            points.append((ts, level))
+                    except Exception:
+                        continue
+        except UnicodeDecodeError as exc:
+            discard_corrupt_output_file(csv_path, str(exc))
+            return []
         return points
 
     def _rollover_system_level_history_if_needed(self, now: datetime) -> None:
@@ -3541,8 +3594,24 @@ class MainWindow(QtWidgets.QMainWindow):
             dialog.hide()
         self.deferred_excel_mgr.lock_notice_shown = False
 
+    def show_recovered_corrupt_files_notice(self) -> None:
+        if not RECOVERED_CORRUPT_FILES:
+            return
+        files = []
+        while RECOVERED_CORRUPT_FILES:
+            path = RECOVERED_CORRUPT_FILES.pop(0)
+            if path not in files:
+                files.append(path)
+        text = "\n".join(str(path) for path in files)
+        QtWidgets.QMessageBox.warning(
+            self,
+            "記録ファイル破損",
+            f"次の記録ファイルが破損しています。\n破棄して新しく作成します。\n\n{text}",
+            QtWidgets.QMessageBox.StandardButton.Ok,
+        )
+
     def _load_pending_excel_writes(self) -> None:
-        payload = safe_read_json(self.pending_excel_path, default={}, retries=3)
+        payload = safe_read_json(self.pending_excel_path, default={}, retries=3, discard_corrupt=True)
         if not isinstance(payload, dict):
             return
         loaded_rows = 0
@@ -3641,18 +3710,37 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root_dir = Path(args.root)
-    setup_logging(root_dir / "logs")
+    log_dir = root_dir / "logs"
+    setup_logging(log_dir)
     logging.info("AI monitor starting. root=%s", root_dir)
-    app = QtWidgets.QApplication(sys.argv)
-    win = MainWindow(root_dir)
-    win.show()
+    hang_dump = None
     try:
+        hang_dump_path = log_dir / "ai_monitor_startup_hang_dump.log"
+        hang_dump = hang_dump_path.open("w", encoding="utf-8")
+        faulthandler.dump_traceback_later(90, repeat=False, file=hang_dump)
+
+        logging.info("[STARTUP] creating QApplication")
+        app = QtWidgets.QApplication(sys.argv)
+        logging.info("[STARTUP] QApplication created")
+
+        logging.info("[STARTUP] creating MainWindow")
+        win = MainWindow(root_dir)
+        logging.info("[STARTUP] MainWindow created")
+
+        logging.info("[STARTUP] showing MainWindow")
+        win.show()
+        faulthandler.cancel_dump_traceback_later()
+        logging.info("[STARTUP] entering QApplication loop")
         return app.exec()
     except Exception:
-        err_path = root_dir / "logs" / "ai_monitor_last_traceback.log"
+        err_path = log_dir / "ai_monitor_last_traceback.log"
         err_path.write_text(traceback.format_exc(), encoding="utf-8")
-        logging.exception("fatal exception in QApplication loop")
+        logging.exception("fatal exception during startup or QApplication loop")
         return 1
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+        if hang_dump is not None:
+            hang_dump.close()
 
 
 if __name__ == "__main__":
