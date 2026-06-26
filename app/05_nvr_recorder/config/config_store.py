@@ -8,6 +8,7 @@ from typing import Any
 from utils.atomic_file import atomic_write_json, read_json
 
 MAX_CAMERAS = 20
+DEFAULT_CONFIG_DIR = "D:/NVR/config"
 
 
 @dataclass
@@ -34,14 +35,24 @@ class CameraConfig:
         )
 
 
+def build_dir_settings(base_dir: str | Path) -> dict[str, str]:
+    """Build standard runtime folders from one recording base directory."""
+    base = Path(base_dir)
+    normalized = base.as_posix()
+    return {
+        "base_dir": normalized,
+        "temp_dir": (base / "temp").as_posix(),
+        "archive_dir": (base / "archive").as_posix(),
+        "status_dir": (base / "status").as_posix(),
+        "commands_dir": (base / "commands").as_posix(),
+        "logs_dir": (base / "logs").as_posix(),
+        "quarantine_dir": (base / "quarantine").as_posix(),
+    }
+
+
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "base_dir": "D:/NVR",
-    "temp_dir": "D:/NVR/temp",
-    "archive_dir": "D:/NVR/archive",
-    "config_dir": "D:/NVR/config",
-    "status_dir": "D:/NVR/status",
-    "commands_dir": "D:/NVR/commands",
-    "logs_dir": "D:/NVR/logs",
+    **build_dir_settings("D:/NVR"),
+    "config_dir": DEFAULT_CONFIG_DIR,
     "ffmpeg_path": "ffmpeg",
     "ffprobe_path": "ffprobe",
     "min_free_gb": 50,
@@ -50,12 +61,23 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Merge settings and keep runtime folders aligned with base_dir."""
+    merged = DEFAULT_SETTINGS.copy()
+    merged.update(settings)
+    base_dir = str(merged.get("base_dir") or DEFAULT_SETTINGS["base_dir"])
+    config_dir = str(merged.get("config_dir") or DEFAULT_CONFIG_DIR)
+    merged.update(build_dir_settings(base_dir))
+    merged["config_dir"] = config_dir
+    return merged
+
+
 def default_cameras() -> list[CameraConfig]:
     return [CameraConfig(id=i, save_subdir=f"cam{i:02d}") for i in range(1, MAX_CAMERAS + 1)]
 
 
 class ConfigStore:
-    def __init__(self, config_dir: str | Path = "D:/NVR/config") -> None:
+    def __init__(self, config_dir: str | Path = DEFAULT_CONFIG_DIR) -> None:
         self.config_dir = Path(config_dir)
         self.cameras_path = self.config_dir / "cameras.json"
         self.settings_path = self.config_dir / "app_settings.json"
@@ -69,14 +91,10 @@ class ConfigStore:
 
     def load_settings(self) -> dict[str, Any]:
         data = read_json(self.settings_path, DEFAULT_SETTINGS.copy()) or DEFAULT_SETTINGS.copy()
-        merged = DEFAULT_SETTINGS.copy()
-        merged.update(data)
-        return merged
+        return normalize_settings(data)
 
     def save_settings(self, settings: dict[str, Any]) -> None:
-        merged = DEFAULT_SETTINGS.copy()
-        merged.update(settings)
-        atomic_write_json(self.settings_path, merged)
+        atomic_write_json(self.settings_path, normalize_settings(settings))
 
     def load_cameras(self) -> list[CameraConfig]:
         raw = read_json(self.cameras_path, None)
