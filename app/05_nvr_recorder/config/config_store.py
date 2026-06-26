@@ -8,6 +8,7 @@ from typing import Any
 from utils.atomic_file import atomic_write_json, read_json
 
 MAX_CAMERAS = 20
+DEFAULT_CONFIG_DIR = "D:/NVR/config"
 
 
 @dataclass
@@ -35,14 +36,13 @@ class CameraConfig:
 
 
 def build_dir_settings(base_dir: str | Path) -> dict[str, str]:
-    """Build the standard NVR folder layout from one base directory."""
+    """Build standard runtime folders from one recording base directory."""
     base = Path(base_dir)
     normalized = base.as_posix()
     return {
         "base_dir": normalized,
         "temp_dir": (base / "temp").as_posix(),
         "archive_dir": (base / "archive").as_posix(),
-        "config_dir": (base / "config").as_posix(),
         "status_dir": (base / "status").as_posix(),
         "commands_dir": (base / "commands").as_posix(),
         "logs_dir": (base / "logs").as_posix(),
@@ -52,6 +52,7 @@ def build_dir_settings(base_dir: str | Path) -> dict[str, str]:
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     **build_dir_settings("D:/NVR"),
+    "config_dir": DEFAULT_CONFIG_DIR,
     "ffmpeg_path": "ffmpeg",
     "ffprobe_path": "ffprobe",
     "min_free_gb": 50,
@@ -61,11 +62,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    """Merge settings and keep derived NVR folders aligned with base_dir."""
+    """Merge settings and keep runtime folders aligned with base_dir."""
     merged = DEFAULT_SETTINGS.copy()
     merged.update(settings)
     base_dir = str(merged.get("base_dir") or DEFAULT_SETTINGS["base_dir"])
+    config_dir = str(merged.get("config_dir") or DEFAULT_CONFIG_DIR)
     merged.update(build_dir_settings(base_dir))
+    merged["config_dir"] = config_dir
     return merged
 
 
@@ -74,7 +77,7 @@ def default_cameras() -> list[CameraConfig]:
 
 
 class ConfigStore:
-    def __init__(self, config_dir: str | Path = "D:/NVR/config") -> None:
+    def __init__(self, config_dir: str | Path = DEFAULT_CONFIG_DIR) -> None:
         self.config_dir = Path(config_dir)
         self.cameras_path = self.config_dir / "cameras.json"
         self.settings_path = self.config_dir / "app_settings.json"
