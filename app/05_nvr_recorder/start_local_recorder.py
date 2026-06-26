@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import shutil
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
-from config.config_store import ConfigStore, CameraConfig
+from config.config_store import CameraConfig, ConfigStore, build_dir_settings
 from recorder.recorder_manager import RecorderManager
 from utils.logging_setup import setup_logging
 
@@ -26,7 +26,7 @@ class LocalApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("RTSP MP4録画システム（現地PC）")
-        self.geometry("1280x760")
+        self.geometry("1280x820")
         self.store = ConfigStore()
         self.store.ensure_defaults()
         self.settings = self.store.load_settings()
@@ -41,6 +41,15 @@ class LocalApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
+        storage = ttk.LabelFrame(self, text="録画保存先")
+        storage.pack(fill="x", padx=10, pady=8)
+        self.base_dir_var = tk.StringVar(value=self.settings.get("base_dir", "D:/NVR"))
+        ttk.Label(storage, text="NVRベースフォルダ").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        ttk.Entry(storage, textvariable=self.base_dir_var, width=90).grid(row=0, column=1, sticky="we", padx=6, pady=4)
+        ttk.Button(storage, text="参照...", command=self._browse_base_dir).grid(row=0, column=2, padx=6, pady=4)
+        ttk.Button(storage, text="保存先を適用", command=self._apply_base_dir).grid(row=0, column=3, padx=6, pady=4)
+        storage.columnconfigure(1, weight=1)
+
         columns = ("id", "name", "enabled", "state", "last_file", "error")
         self.tree = ttk.Treeview(self, columns=columns, show="headings", height=15)
         for col, text, width in [
@@ -86,8 +95,33 @@ class LocalApp(tk.Tk):
 
         self.disk_label = ttk.Label(self, text="空き容量: -")
         self.disk_label.pack(anchor="w", padx=10)
+        self.path_label = ttk.Label(self, text="")
+        self.path_label.pack(anchor="w", padx=10)
         self.log_text = tk.Text(self, height=12)
         self.log_text.pack(fill="both", expand=True, padx=10, pady=8)
+
+    def _browse_base_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.base_dir_var.get() or "D:/", title="録画保存先ベースフォルダを選択")
+        if selected:
+            self.base_dir_var.set(selected)
+
+    def _apply_base_dir(self) -> None:
+        base_dir = self.base_dir_var.get().strip()
+        if not base_dir:
+            messagebox.showwarning("保存先", "録画保存先を入力してください。")
+            return
+        if self.manager.system_status() == "running":
+            if not messagebox.askyesno("保存先変更", "録画管理を一度停止して保存先を変更します。よろしいですか？"):
+                return
+        self._save_current_form()
+        self.manager.stop_services()
+        self.settings.update(build_dir_settings(base_dir))
+        self.store.save_settings(self.settings)
+        self.store.save_cameras(self.cameras)
+        self.logger = setup_logging(self.settings["logs_dir"])
+        self._rebuild_manager()
+        messagebox.showinfo("保存先", f"録画保存先を変更しました。\n{self.settings['base_dir']}")
+        self.logger.info("録画保存先変更: %s", self.settings["base_dir"])
 
     def _on_select(self, _event=None) -> None:
         sel = self.tree.selection()
@@ -114,12 +148,15 @@ class LocalApp(tk.Tk):
 
     def _save_config(self) -> None:
         self._save_current_form()
+        self.store.save_settings(self.settings)
         self.store.save_cameras(self.cameras)
         self._rebuild_manager()
         messagebox.showinfo("保存", "設定を保存し、録画管理へ反映しました。")
         self.logger.info("設定保存")
 
     def _reload_config(self) -> None:
+        self.settings = self.store.load_settings()
+        self.base_dir_var.set(self.settings.get("base_dir", "D:/NVR"))
         self.cameras = self.store.load_cameras()
         self._rebuild_manager()
         self._load_camera_to_form(self.selected_id.get())
@@ -143,8 +180,12 @@ class LocalApp(tk.Tk):
                 cam.id, cam.name, "ON" if cam.enabled else "OFF", st.get("recording_status", ""),
                 st.get("last_completed_file", ""), st.get("last_error", ""),
             ))
-        usage = shutil.disk_usage(self.settings["archive_dir"])
-        self.disk_label.config(text=f"空き容量: {usage.free / (1024 ** 3):.1f} GB / Archive: {self.settings['archive_dir']}")
+        try:
+            usage = shutil.disk_usage(self.settings["archive_dir"])
+            self.disk_label.config(text=f"空き容量: {usage.free / (1024 ** 3):.1f} GB / 全体: {usage.total / (1024 ** 3):.1f} GB")
+        except OSError as exc:
+            self.disk_label.config(text=f"空き容量: 確認できません ({exc})")
+        self.path_label.config(text=f"保存先: {self.settings['base_dir']} / Archive: {self.settings['archive_dir']}")
         log_path = Path(self.settings["logs_dir"]) / "app.log"
         if log_path.exists():
             text = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
