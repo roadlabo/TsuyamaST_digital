@@ -12,6 +12,7 @@ from pathlib import Path
 
 from config.config_store import CameraConfig
 from recorder.ffmpeg_runner import FFmpegRunner
+from utils.disk_cleanup import cleanup_for_free_space
 
 CAMERA_STATES = ["未設定", "無効", "停止中", "接続確認中", "録画中", "区切り中", "再接続中", "エラー"]
 
@@ -128,6 +129,7 @@ class CameraRecorder:
             self._stop_process()
             if self._current_temp and self._current_temp.exists() and self._current_temp.stat().st_size > 0 and self._segment_start:
                 try:
+                    cleanup_for_free_space(self.settings["archive_dir"], float(self.settings.get("min_free_gb", 5120)), self.logger)
                     dest = self._archive_path(self._segment_start, end_time)
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(self._current_temp, dest)
