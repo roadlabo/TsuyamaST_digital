@@ -26,7 +26,7 @@ class LocalApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("RTSP MP4録画システム（現地PC）")
-        self.geometry("1280x820")
+        self.geometry("1280x840")
         self.store = ConfigStore()
         self.store.ensure_defaults()
         self.settings = self.store.load_settings()
@@ -41,13 +41,19 @@ class LocalApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
-        storage = ttk.LabelFrame(self, text="録画保存先")
+        storage = ttk.LabelFrame(self, text="保存先設定")
         storage.pack(fill="x", padx=10, pady=8)
-        self.base_dir_var = tk.StringVar(value=self.settings.get("base_dir", "D:/NVR"))
-        ttk.Label(storage, text="NVRベースフォルダ").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(storage, textvariable=self.base_dir_var, width=90).grid(row=0, column=1, sticky="we", padx=6, pady=4)
-        ttk.Button(storage, text="参照...", command=self._browse_base_dir).grid(row=0, column=2, padx=6, pady=4)
-        ttk.Button(storage, text="保存先を適用", command=self._apply_base_dir).grid(row=0, column=3, padx=6, pady=4)
+        self.system_dir_var = tk.StringVar(value=self.settings.get("system_dir", "D:/NVR"))
+        self.storage_dir_var = tk.StringVar(value=self.settings.get("storage_dir", "D:/NVR"))
+        ttk.Label(storage, text="一時・ログ・状態フォルダ(内蔵SSD)").grid(row=0, column=0, sticky="w", padx=6, pady=3)
+        ttk.Entry(storage, textvariable=self.system_dir_var, width=88).grid(row=0, column=1, sticky="we", padx=6, pady=3)
+        ttk.Button(storage, text="参照...", command=self._browse_system_dir).grid(row=0, column=2, padx=6, pady=3)
+        ttk.Label(storage, text="完成MP4保存フォルダ(外付けHDD)").grid(row=1, column=0, sticky="w", padx=6, pady=3)
+        ttk.Entry(storage, textvariable=self.storage_dir_var, width=88).grid(row=1, column=1, sticky="we", padx=6, pady=3)
+        ttk.Button(storage, text="参照...", command=self._browse_storage_dir).grid(row=1, column=2, padx=6, pady=3)
+        ttk.Button(storage, text="保存先を適用", command=self._apply_storage_dirs).grid(row=0, column=3, rowspan=2, padx=6, pady=3)
+        self.cleanup_note = ttk.Label(storage, text="HDDの空き容量が約5TBを下回ると、完成MP4を古いものから自動削除します。日数による削除は行いません。")
+        self.cleanup_note.grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=3)
         storage.columnconfigure(1, weight=1)
 
         columns = ("id", "name", "enabled", "state", "last_file", "error")
@@ -68,7 +74,6 @@ class LocalApp(tk.Tk):
         self.rtsp_var = tk.StringVar()
         self.subdir_var = tk.StringVar()
         self.segment_var = tk.IntVar(value=10)
-        self.retention_var = tk.IntVar(value=30)
         fields = [("名前", self.name_var, 0), ("RTSP URL", self.rtsp_var, 1), ("保存サブdir", self.subdir_var, 2)]
         for label, var, row in fields:
             ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
@@ -77,8 +82,7 @@ class LocalApp(tk.Tk):
         ttk.Checkbutton(form, text="有効", variable=self.enabled_var).grid(row=3, column=0, padx=6)
         ttk.Label(form, text="区切り(分)").grid(row=3, column=1, sticky="e")
         ttk.Spinbox(form, from_=1, to=120, textvariable=self.segment_var, width=8).grid(row=3, column=2, sticky="w")
-        ttk.Label(form, text="保存日数").grid(row=3, column=3, sticky="e")
-        ttk.Spinbox(form, from_=1, to=3650, textvariable=self.retention_var, width=8).grid(row=3, column=4, sticky="w")
+        ttk.Label(form, text="保存期間は日数ではなく、HDD空き容量で管理します").grid(row=3, column=3, columnspan=3, sticky="w", padx=6)
         form.columnconfigure(1, weight=1)
 
         buttons = ttk.Frame(self)
@@ -100,28 +104,35 @@ class LocalApp(tk.Tk):
         self.log_text = tk.Text(self, height=12)
         self.log_text.pack(fill="both", expand=True, padx=10, pady=8)
 
-    def _browse_base_dir(self) -> None:
-        selected = filedialog.askdirectory(initialdir=self.base_dir_var.get() or "D:/", title="録画保存先ベースフォルダを選択")
+    def _browse_system_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.system_dir_var.get() or "D:/", title="一時・ログ・状態フォルダを選択")
         if selected:
-            self.base_dir_var.set(selected)
+            self.system_dir_var.set(selected)
 
-    def _apply_base_dir(self) -> None:
-        base_dir = self.base_dir_var.get().strip()
-        if not base_dir:
-            messagebox.showwarning("保存先", "録画保存先を入力してください。")
+    def _browse_storage_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.storage_dir_var.get() or "D:/", title="完成MP4保存フォルダを選択")
+        if selected:
+            self.storage_dir_var.set(selected)
+
+    def _apply_storage_dirs(self) -> None:
+        system_dir = self.system_dir_var.get().strip()
+        storage_dir = self.storage_dir_var.get().strip()
+        if not system_dir or not storage_dir:
+            messagebox.showwarning("保存先", "一時フォルダと保存フォルダを両方入力してください。")
             return
         if self.manager.system_status() == "running":
             if not messagebox.askyesno("保存先変更", "録画管理を一度停止して保存先を変更します。よろしいですか？"):
                 return
         self._save_current_form()
         self.manager.stop_services()
-        self.settings.update(build_dir_settings(base_dir))
+        self.settings.update(build_dir_settings(system_dir, storage_dir))
+        self.settings["min_free_gb"] = 5120
         self.store.save_settings(self.settings)
         self.store.save_cameras(self.cameras)
         self.logger = setup_logging(self.settings["logs_dir"])
         self._rebuild_manager()
-        messagebox.showinfo("保存先", f"録画保存先を変更しました。\n{self.settings['base_dir']}")
-        self.logger.info("録画保存先変更: %s", self.settings["base_dir"])
+        messagebox.showinfo("保存先", f"保存先を変更しました。\n一時: {self.settings['system_dir']}\n完成MP4: {self.settings['archive_dir']}")
+        self.logger.info("保存先変更: system=%s storage=%s", self.settings["system_dir"], self.settings["storage_dir"])
 
     def _on_select(self, _event=None) -> None:
         sel = self.tree.selection()
@@ -136,18 +147,18 @@ class LocalApp(tk.Tk):
         self.rtsp_var.set(cam.rtsp_url)
         self.subdir_var.set(cam.save_subdir)
         self.segment_var.set(cam.segment_minutes)
-        self.retention_var.set(cam.retention_days)
 
     def _save_current_form(self) -> None:
         idx = self.selected_id.get() - 1
         self.cameras[idx] = CameraConfig(
             id=self.selected_id.get(), name=self.name_var.get(), enabled=self.enabled_var.get(),
             rtsp_url=self.rtsp_var.get(), save_subdir=self.subdir_var.get() or f"cam{self.selected_id.get():02d}",
-            segment_minutes=int(self.segment_var.get()), retention_days=int(self.retention_var.get()),
+            segment_minutes=int(self.segment_var.get()), retention_days=30,
         )
 
     def _save_config(self) -> None:
         self._save_current_form()
+        self.settings["min_free_gb"] = 5120
         self.store.save_settings(self.settings)
         self.store.save_cameras(self.cameras)
         self._rebuild_manager()
@@ -156,7 +167,8 @@ class LocalApp(tk.Tk):
 
     def _reload_config(self) -> None:
         self.settings = self.store.load_settings()
-        self.base_dir_var.set(self.settings.get("base_dir", "D:/NVR"))
+        self.system_dir_var.set(self.settings.get("system_dir", "D:/NVR"))
+        self.storage_dir_var.set(self.settings.get("storage_dir", "D:/NVR"))
         self.cameras = self.store.load_cameras()
         self._rebuild_manager()
         self._load_camera_to_form(self.selected_id.get())
@@ -182,10 +194,11 @@ class LocalApp(tk.Tk):
             ))
         try:
             usage = shutil.disk_usage(self.settings["archive_dir"])
-            self.disk_label.config(text=f"空き容量: {usage.free / (1024 ** 3):.1f} GB / 全体: {usage.total / (1024 ** 3):.1f} GB")
+            min_free = float(self.settings.get("min_free_gb", 5120))
+            self.disk_label.config(text=f"HDD空き容量: {usage.free / (1024 ** 4):.2f} TB / 全体: {usage.total / (1024 ** 4):.2f} TB / 自動削除閾値: {min_free / 1024:.1f} TB")
         except OSError as exc:
-            self.disk_label.config(text=f"空き容量: 確認できません ({exc})")
-        self.path_label.config(text=f"保存先: {self.settings['base_dir']} / Archive: {self.settings['archive_dir']}")
+            self.disk_label.config(text=f"HDD空き容量: 確認できません ({exc})")
+        self.path_label.config(text=f"一時: {self.settings['temp_dir']} / 完成MP4: {self.settings['archive_dir']}")
         log_path = Path(self.settings["logs_dir"]) / "app.log"
         if log_path.exists():
             text = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
