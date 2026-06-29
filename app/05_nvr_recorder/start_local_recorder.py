@@ -77,11 +77,18 @@ def unique_drive_roots(*paths: str) -> list[str]:
     return sorted(seen)
 
 
+def newest_first_log_text(text: str, max_lines: int = 250) -> str:
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    return "\n".join(reversed(lines[-max_lines:]))
+
+
 class LocalApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("RTSP MP4録画システム（現地PC）")
-        self.geometry("1360x900")
+        self.geometry("1360x930")
         self.store = ConfigStore()
         self.store.ensure_defaults()
         self.settings = self.store.load_settings()
@@ -101,6 +108,7 @@ class LocalApp(tk.Tk):
         style = ttk.Style(self)
         style.configure("Title.TLabel", font=("Yu Gothic UI", 10, "bold"))
         style.configure("Action.TLabel", font=("Yu Gothic UI", 11, "bold"))
+        style.configure("Help.TLabel", foreground="#555555")
 
         storage = ttk.LabelFrame(self, text="保存先設定")
         storage.pack(fill="x", padx=10, pady=8)
@@ -131,7 +139,7 @@ class LocalApp(tk.Tk):
         self._build_drive_rows()
 
         columns = ("id", "name", "enabled", "state", "last_file", "error")
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=13)
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12)
         for col, text, width in [
             ("id", "ID", 40), ("name", "カメラ名", 160), ("enabled", "有効", 55),
             ("state", "状態", 120), ("last_file", "最終録画ファイル", 520), ("error", "最終エラー", 280),
@@ -164,19 +172,32 @@ class LocalApp(tk.Tk):
         ttk.Label(form, text="保存期間は日数ではなく、HDD空き容量で管理します").grid(row=3, column=3, columnspan=3, sticky="w", padx=6)
         form.columnconfigure(1, weight=1)
 
-        buttons = ttk.Frame(self)
-        buttons.pack(fill="x", padx=10, pady=6)
+        actions = ttk.LabelFrame(self, text="操作ボタン（ボタン右側に動作説明）")
+        actions.pack(fill="x", padx=10, pady=6)
         button_specs = [
-            ("設定読込", self._reload_config_with_lamp), ("設定保存", self._save_config_with_lamp), ("接続テスト", self._test_connection_with_lamp),
-            ("全録画開始", self._start_all_with_lamp), ("全録画停止", self._stop_all_with_lamp),
-            ("個別開始", self._start_selected_with_lamp), ("個別停止", self._stop_selected_with_lamp),
-            ("全カメラMP4区切り", self._split_all_with_lamp), ("容量整理", self._cleanup_with_lamp),
+            ("設定読込", self._reload_config_with_lamp, "保存済みの設定を読み直します"),
+            ("設定保存", self._save_config_with_lamp, "カメラ設定と保存先設定を保存します"),
+            ("接続テスト", self._test_connection_with_lamp, "選択中カメラのRTSP接続を確認します"),
+            ("全録画開始", self._start_all_with_lamp, "有効な全カメラの録画を開始します"),
+            ("全録画停止", self._stop_all_with_lamp, "全カメラの録画を停止します"),
+            ("全カメラMP4区切り", self._split_all_with_lamp, "現在のMP4を確定して新しい録画に切替えます"),
+            ("個別開始", self._start_selected_with_lamp, "選択中カメラだけ録画を開始します"),
+            ("個別停止", self._stop_selected_with_lamp, "選択中カメラだけ録画を停止します"),
+            ("容量整理", self._cleanup_with_lamp, "HDD空き容量を確認し古いMP4を整理します"),
         ]
-        for text, cmd in button_specs:
-            ttk.Button(buttons, text=text, command=cmd).pack(side="left", padx=4)
+        for index, (text, cmd, desc) in enumerate(button_specs):
+            row = index % 3
+            col_group = index // 3
+            base_col = col_group * 2
+            ttk.Button(actions, text=text, command=cmd, width=18).grid(row=row, column=base_col, sticky="ew", padx=(6, 4), pady=3)
+            ttk.Label(actions, text=desc, style="Help.TLabel").grid(row=row, column=base_col + 1, sticky="w", padx=(0, 12), pady=3)
+        for col in (1, 3, 5):
+            actions.columnconfigure(col, weight=1)
 
-        self.log_text = tk.Text(self, height=10)
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=8)
+        log_frame = ttk.LabelFrame(self, text="最新LOG（新しい順：一番上が最新）")
+        log_frame.pack(fill="both", expand=True, padx=10, pady=8)
+        self.log_text = tk.Text(log_frame, height=10)
+        self.log_text.pack(fill="both", expand=True, padx=6, pady=6)
 
     def _build_drive_rows(self) -> None:
         for child in self.drives_frame.winfo_children():
@@ -361,9 +382,10 @@ class LocalApp(tk.Tk):
         self.path_label.config(text=f"一時: {self.settings['temp_dir']} / 完成MP4: {self.settings['archive_dir']}")
         log_path = Path(self.settings["logs_dir"]) / "app.log"
         if log_path.exists():
-            text = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+            text = log_path.read_text(encoding="utf-8", errors="replace")
             self.log_text.delete("1.0", "end")
-            self.log_text.insert("end", text)
+            self.log_text.insert("end", newest_first_log_text(text))
+            self.log_text.yview_moveto(0.0)
         self.after(2000, self._refresh_status)
 
     def _on_close(self) -> None:
