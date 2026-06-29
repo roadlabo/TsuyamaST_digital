@@ -8,7 +8,10 @@ from typing import Any
 from utils.atomic_file import atomic_write_json, read_json
 
 MAX_CAMERAS = 20
+DEFAULT_SYSTEM_DIR = "D:/NVR"
 DEFAULT_CONFIG_DIR = "D:/NVR/config"
+DEFAULT_STORAGE_DIR = "D:/NVR"
+DEFAULT_MIN_FREE_GB = 5120
 
 
 @dataclass
@@ -35,40 +38,44 @@ class CameraConfig:
         )
 
 
-def build_dir_settings(base_dir: str | Path) -> dict[str, str]:
-    """Build standard runtime folders from one recording base directory."""
-    base = Path(base_dir)
-    normalized = base.as_posix()
+def build_dir_settings(system_dir: str | Path, storage_dir: str | Path) -> dict[str, str]:
+    """Build runtime folders from SSD system dir and HDD storage dir."""
+    system = Path(system_dir)
+    storage = Path(storage_dir)
     return {
-        "base_dir": normalized,
-        "temp_dir": (base / "temp").as_posix(),
-        "archive_dir": (base / "archive").as_posix(),
-        "status_dir": (base / "status").as_posix(),
-        "commands_dir": (base / "commands").as_posix(),
-        "logs_dir": (base / "logs").as_posix(),
-        "quarantine_dir": (base / "quarantine").as_posix(),
+        "base_dir": system.as_posix(),
+        "system_dir": system.as_posix(),
+        "storage_dir": storage.as_posix(),
+        "temp_dir": (system / "temp").as_posix(),
+        "archive_dir": (storage / "archive").as_posix(),
+        "status_dir": (system / "status").as_posix(),
+        "commands_dir": (system / "commands").as_posix(),
+        "logs_dir": (system / "logs").as_posix(),
+        "quarantine_dir": (system / "quarantine").as_posix(),
     }
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    **build_dir_settings("D:/NVR"),
+    **build_dir_settings(DEFAULT_SYSTEM_DIR, DEFAULT_STORAGE_DIR),
     "config_dir": DEFAULT_CONFIG_DIR,
     "ffmpeg_path": "ffmpeg",
     "ffprobe_path": "ffprobe",
-    "min_free_gb": 50,
+    "min_free_gb": DEFAULT_MIN_FREE_GB,
     "status_interval_seconds": 5,
     "command_interval_seconds": 3,
 }
 
 
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    """Merge settings and keep runtime folders aligned with base_dir."""
+    """Merge settings and keep derived folders aligned."""
     merged = DEFAULT_SETTINGS.copy()
     merged.update(settings)
-    base_dir = str(merged.get("base_dir") or DEFAULT_SETTINGS["base_dir"])
+    system_dir = str(merged.get("system_dir") or merged.get("base_dir") or DEFAULT_SYSTEM_DIR)
+    storage_dir = str(merged.get("storage_dir") or DEFAULT_STORAGE_DIR)
     config_dir = str(merged.get("config_dir") or DEFAULT_CONFIG_DIR)
-    merged.update(build_dir_settings(base_dir))
+    merged.update(build_dir_settings(system_dir, storage_dir))
     merged["config_dir"] = config_dir
+    merged["min_free_gb"] = float(merged.get("min_free_gb") or DEFAULT_MIN_FREE_GB)
     return merged
 
 
